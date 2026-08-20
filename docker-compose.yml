@@ -1,0 +1,14 @@
+version: '3.8'
+
+services:
+  gemini-alpha-lab:
+    build: .
+    container_name: gemini-alpha-lab-bot
+    restart: always
+    ports:
+      - "8888:8888"
+    environment:
+      - PYTHONUNBUFFERED=1
+      - PORT=8888
+    volumes:
+      - ./data:/app/data

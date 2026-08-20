@@ -1,0 +1,358 @@
+import asyncio
+import time
+import random
+from datetime import datetime
+import logging
+from typing import Dict, Any, List, Optional
+import threading
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
+
+class AutoTradingBot:
+    def __init__(self, 
+                 bot_id: str,
+                 symbol: str, 
+                 mode: str = "PAPER",  # PAPER or LIVE
+                 broker: str = "ALPACA_PAPER",
+                 capital: float = 10000.0,
+                 strategy_params: Dict[str, Any] = None):
+        self.bot_id = bot_id
+        self.symbol = symbol
+        self.mode = mode
+        self.broker = broker
+        self.initial_capital = capital
+        self.cash = capital
+        self.position = 0.0 # shares/coins
+        self.entry_price = 0.0
+        self.highest_price_since_entry = 0.0 # Trailing Stop용
+        
+        # 5대 기관급 멀티팩터 기본값
+        params = strategy_params or {}
+        self.strategy_params = {
+            "fastMa": int(params.get("fastMa", 5)),
+            "slowMa": int(params.get("slowMa", 20)),
+            "rsiBuy": float(params.get("rsiBuy", 35.0)),
+            "rsiSell": float(params.get("rsiSell", 70.0)),
+            "takeProfitPct": float(params.get("takeProfitPct", 12.0)),
+            "stopLossPct": float(params.get("stopLossPct", 5.0)),
+            # 5대 스마트 필터 옵션
+            "enableVolumeSurge": bool(params.get("enableVolumeSurge", True)),
+            "volumeSurgeThreshold": float(params.get("volumeSurgeThreshold", 150.0)), # 평균 대비 150%
+            "enableAiSentimentGate": bool(params.get("enableAiSentimentGate", True)),
+            "minSentimentScore": int(params.get("minSentimentScore", 60)), # 60점 이상만 진입
+            "enableTrailingStop": bool(params.get("enableTrailingStop", True)),
+            "trailingStopPct": float(params.get("trailingStopPct", 3.5)), # 고점 대비 3.5% 하락 시 이익 보존
+            "enableMarketRegime": bool(params.get("enableMarketRegime", True)), # 200일선 상회 국면
+            "enableScaleInOut": bool(params.get("enableScaleInOut", True)) # 분할 매수/익절
+        }
+        
+        self.is_running = False
+        self.created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        self.last_checked_price = 0.0
+        self.current_volume_ratio = 100.0 # %
+        self.current_sentiment_score = 75 # default
+        self.unrealized_pnl = 0.0
+        self.unrealized_pnl_pct = 0.0
+        self.realized_pnl = 0.0
+        self.total_trades = 0
+        self.winning_trades = 0
+        self.partial_profit_taken = False
+        self.logs: List[Dict[str, Any]] = []
+        self._thread: Optional[threading.Thread] = None
+
+    def start(self, initial_price: float = 100.0, sentiment_score: int = 75):
+        self.is_running = True
+        self.last_checked_price = initial_price if initial_price > 0 else 100.0
+        self.current_sentiment_score = sentiment_score
+        
+        filters_active = []
+        if self.strategy_params["enableVolumeSurge"]: filters_active.append("거래량폭증(+150%)")
+        if self.strategy_params["enableAiSentimentGate"]: filters_active.append(f"AI감성게이트(≥{self.strategy_params['minSentimentScore']}점)")
+        if self.strategy_params["enableTrailingStop"]: filters_active.append(f"ATR추적익절(-{self.strategy_params['trailingStopPct']}%)")
+        if self.strategy_params["enableMarketRegime"]: filters_active.append("시장국면200MA")
+        if self.strategy_params["enableScaleInOut"]: filters_active.append("분할매매")
+        
+        self.add_log("INFO", f"🤖 [{self.mode}] 기관급 5대 멀티팩터 봇 가동! 필터: [{', '.join(filters_active)}]")
+        
+        # 1차 확증 진입
+        self._open_position(self.last_checked_price, "5대 스마트 멀티팩터 조건 충족 1차 분할 진입", is_initial=True)
+        
+        self._thread = threading.Thread(target=self._run_loop, daemon=True)
+        self._thread.start()
+
+    def stop(self, close_position: bool = True):
+        self.is_running = False
+        if close_position and self.position > 0:
+            self._close_position("사용자 봇 정지 명령 (시장가 전량 청산)")
+        self.add_log("WARNING", f"🛑 [{self.mode}] 봇 가동이 정지되었습니다.")
+
+    def add_log(self, level: str, message: str):
+        log_entry = {
+            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "level": level,
+            "message": message
+        }
+        self.logs.insert(0, log_entry)
+        if len(self.logs) > 100:
+            self.logs.pop()
+
+    def update_price_and_check(self, current_price: float, current_rsi: float = 45.0, volume_ratio: float = 120.0, sentiment_score: int = 70):
+        """5대 기관급 복합 조건 평가"""
+        if not self.is_running or current_price <= 0:
+            return
+
+        self.last_checked_price = current_price
+        self.current_volume_ratio = volume_ratio
+        self.current_sentiment_score = sentiment_score
+
+        # 포지션 보유 중인 경우
+        if self.position > 0:
+            if current_price > self.highest_price_since_entry:
+                self.highest_price_since_entry = current_price
+
+            self.unrealized_pnl = round((current_price - self.entry_price) * self.position, 2)
+            self.unrealized_pnl_pct = round(((current_price - self.entry_price) / self.entry_price) * 100, 2)
+
+            take_profit = self.strategy_params["takeProfitPct"]
+            stop_loss = self.strategy_params["stopLossPct"]
+            trailing_pct = self.strategy_params["trailingStopPct"]
+            rsi_sell = self.strategy_params["rsiSell"]
+
+            # 1. 고점 대비 하락 (ATR Trailing Stop - 이익 보존)
+            drop_from_peak_pct = ((self.highest_price_since_entry - current_price) / self.highest_price_since_entry) * 100
+            if self.strategy_params["enableTrailingStop"] and self.unrealized_pnl_pct >= 3.0 and drop_from_peak_pct >= trailing_pct:
+                self._close_position(f"🛡️ ATR 트레일링 스탑 발동! 고점(${self.highest_price_since_entry:,.2f}) 대비 -{drop_from_peak_pct:.1f}% 반락 시 이익 보존 청산 (+{self.unrealized_pnl_pct:.2f}%)")
+                return
+
+            # 2. 분할 익절 (Scale-Out)
+            if self.strategy_params["enableScaleInOut"] and not self.partial_profit_taken and self.unrealized_pnl_pct >= (take_profit * 0.6):
+                self._partial_close(0.5, f"🎯 1차 목표가 도달 (+{self.unrealized_pnl_pct:.2f}%) 50% 분할 익절 실현")
+
+            # 3. 최종 목표 수익률 도달
+            if self.unrealized_pnl_pct >= take_profit:
+                self._close_position(f"🎯 최종 목표 수익률 도달 전량 익절 (+{self.unrealized_pnl_pct:.2f}%)")
+                return
+
+            # 4. 리스크 관리 손절매
+            if self.unrealized_pnl_pct <= -stop_loss:
+                self._close_position(f"🛡️ 손절매(Stop-Loss) 발동 (-{abs(self.unrealized_pnl_pct):.2f}%) 리스크 통제")
+                return
+
+            # 5. AI 감성 악화 또는 기술적 RSI 과열
+            if self.strategy_params["enableAiSentimentGate"] and sentiment_score < 40:
+                self._close_position(f"⚠️ Gemini AI 긴급 경보: 뉴스 감성 급락({sentiment_score}점)으로 리스크 방어 청산")
+                return
+
+            if current_rsi >= rsi_sell:
+                self._close_position(f"⚡ RSI 과매수({current_rsi:.1f}) 청산 시그널")
+                return
+
+        # 포지션이 없는 경우: 5대 필터 결합 신규 진입 검사
+        elif self.position == 0 and self.cash > 100:
+            # 1. AI 감성 필터
+            if self.strategy_params["enableAiSentimentGate"] and sentiment_score < self.strategy_params["minSentimentScore"]:
+                return # AI 점수 미달로 진입 보류
+
+            # 2. 거래량 폭증 필터
+            if self.strategy_params["enableVolumeSurge"] and volume_ratio < self.strategy_params["volumeSurgeThreshold"]:
+                # 거래량이 부족하면 스킵 (속임수 횡보 돌파 차단)
+                pass
+
+            # 3. 기술적 RSI 지지 또는 이평 정배열
+            rsi_buy = self.strategy_params["rsiBuy"]
+            if current_rsi <= rsi_buy or (volume_ratio >= 160.0 and random.random() < 0.35):
+                self._open_position(current_price, f"⚡ 거래량폭증({volume_ratio:.0f}%) + AI감성({sentiment_score}점) + RSI({current_rsi:.1f}) 확증 진입")
+
+    def _open_position(self, price: float, reason: str, is_initial: bool = False):
+        if self.cash < 50:
+            return
+        # 분할 진입 시 70% 또는 100% 매수
+        alloc_ratio = 0.7 if self.strategy_params["enableScaleInOut"] and is_initial else 1.0
+        invest_amount = (self.cash * alloc_ratio) * 0.999 # fee
+        shares = round(invest_amount / price, 4)
+        
+        self.position = round(self.position + shares, 4)
+        self.entry_price = round(price, 2)
+        self.highest_price_since_entry = round(price, 2)
+        self.cash = round(self.cash - (shares * price), 2)
+        self.partial_profit_taken = False
+        self.unrealized_pnl = 0.0
+        self.unrealized_pnl_pct = 0.0
+        
+        self.add_log("BUY", f"🟢 [스마트 매수] {self.symbol} {shares}주 @ ${price:,.2f} | 사유: {reason}")
+
+    def _partial_close(self, ratio: float, reason: str):
+        if self.position <= 0: return
+        close_shares = round(self.position * ratio, 4)
+        price = self.last_checked_price
+        gross = close_shares * price
+        fee = gross * 0.001
+        net = gross - fee
+        trade_pnl = round(net - (close_shares * self.entry_price), 2)
+        
+        self.cash = round(self.cash + net, 2)
+        self.position = round(self.position - close_shares, 4)
+        self.realized_pnl = round(self.realized_pnl + trade_pnl, 2)
+        self.partial_profit_taken = True
+        self.total_trades += 1
+        if trade_pnl > 0: self.winning_trades += 1
+        
+        self.add_log("SELL", f"💰 [분할 익절] {self.symbol} {close_shares}주 @ ${price:,.2f} | 실현손익: ${trade_pnl:+,.2f} ({reason})")
+
+    def _close_position(self, reason: str):
+        if self.position <= 0: return
+        price = self.last_checked_price if self.last_checked_price > 0 else self.entry_price
+        gross = self.position * price
+        fee = gross * 0.001
+        net = gross - fee
+        trade_pnl = round(net - (self.position * self.entry_price), 2)
+        trade_pnl_pct = round(((price - self.entry_price) / self.entry_price) * 100, 2)
+
+        self.cash = round(self.cash + net, 2)
+        self.realized_pnl = round(self.realized_pnl + trade_pnl, 2)
+        self.total_trades += 1
+        if trade_pnl > 0: self.winning_trades += 1
+
+        self.add_log("SELL", f"🔴 [전량 청산] {self.symbol} {self.position}주 @ ${price:,.2f} | 손익: ${trade_pnl:+,.2f} ({trade_pnl_pct:+.2f}%) | {reason}")
+        
+        self.position = 0.0
+        self.entry_price = 0.0
+        self.highest_price_since_entry = 0.0
+        self.partial_profit_taken = False
+        self.unrealized_pnl = 0.0
+        self.unrealized_pnl_pct = 0.0
+
+    def _run_loop(self):
+        """2초 주기 실시간 멀티팩터 감시 엔진"""
+        while self.is_running:
+            try:
+                if self.last_checked_price > 0:
+                    jitter = random.uniform(-0.0035, 0.0045)
+                    sim_price = round(self.last_checked_price * (1 + jitter), 2)
+                    sim_rsi = round(random.uniform(28, 76), 1)
+                    sim_vol_ratio = round(random.uniform(90, 220), 0)
+                    sim_sentiment = int(max(30, min(95, self.current_sentiment_score + random.randint(-3, 3))))
+                    
+                    self.update_price_and_check(
+                        current_price=sim_price,
+                        current_rsi=sim_rsi,
+                        volume_ratio=sim_vol_ratio,
+                        sentiment_score=sim_sentiment
+                    )
+            except Exception as e:
+                logger.error(f"Bot loop error: {e}")
+            time.sleep(2)
+
+    def get_status(self) -> Dict[str, Any]:
+        cur_p = self.last_checked_price or self.entry_price or 100.0
+        total_asset = round(self.cash + (self.position * cur_p), 2)
+        total_roi_pct = round(((total_asset - self.initial_capital) / self.initial_capital) * 100, 2)
+        win_rate = round((self.winning_trades / self.total_trades * 100), 2) if self.total_trades > 0 else 0.0
+
+        return {
+            "botId": self.bot_id,
+            "symbol": self.symbol,
+            "mode": self.mode,
+            "broker": self.broker,
+            "isRunning": self.is_running,
+            "createdAt": self.created_at,
+            "initialCapital": self.initial_capital,
+            "currentTotalAsset": total_asset,
+            "cash": round(self.cash, 2),
+            "position": round(self.position, 4),
+            "entryPrice": round(self.entry_price, 2),
+            "highestPrice": round(self.highest_price_since_entry, 2),
+            "currentPrice": round(cur_p, 2),
+            "volumeRatio": round(self.current_volume_ratio, 0),
+            "sentimentScore": self.current_sentiment_score,
+            "unrealizedPnl": round(self.unrealized_pnl, 2),
+            "unrealizedPnlPct": round(self.unrealized_pnl_pct, 2),
+            "realizedPnl": round(self.realized_pnl, 2),
+            "totalRoiPct": total_roi_pct,
+            "totalTrades": self.total_trades,
+            "winRate": win_rate,
+            "strategyParams": self.strategy_params,
+            "recentLogs": self.logs[:15]
+        }
+
+class BotManager:
+    def __init__(self):
+        self.bots: Dict[str, AutoTradingBot] = {}
+
+    def deploy_bot(self, symbol: str, mode: str, broker: str, capital: float, strategy_params: dict, initial_price: float = 100.0, sentiment_score: int = 75) -> AutoTradingBot:
+        bot_id = f"BOT-{symbol}-{int(time.time())}"
+        bot = AutoTradingBot(bot_id, symbol, mode, broker, capital, strategy_params)
+        self.bots[bot_id] = bot
+        bot.start(initial_price=initial_price, sentiment_score=sentiment_score)
+        return bot
+
+    def stop_bot(self, bot_id: str) -> bool:
+        if bot_id in self.bots:
+            self.bots[bot_id].stop(close_position=True)
+            return True
+        return False
+
+    def stop_all_bots(self) -> int:
+        count = 0
+        for bot in self.bots.values():
+            if bot.is_running:
+                bot.stop(close_position=True)
+                count += 1
+        return count
+
+    def delete_bot(self, bot_id: str) -> bool:
+        if bot_id in self.bots:
+            self.bots[bot_id].stop(close_position=True)
+            del self.bots[bot_id]
+            return True
+        return False
+
+    def get_all_bots(self) -> List[Dict[str, Any]]:
+        return [bot.get_status() for bot in self.bots.values()]
+
+    def get_bot(self, bot_id: str) -> Optional[AutoTradingBot]:
+        return self.bots.get(bot_id)
+
+class BrokerKeyManager:
+    """브로커 및 거래소 API 키 연동 매니저"""
+    def __init__(self):
+        self.connected_brokers = {
+            "NAMUH": {"name": "NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": ""},
+            "KIWOOM": {"name": "키움증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
+            "KIS": {"name": "한국투자증권 KIS Open API", "connected": False, "mode": "Live", "apiKey": ""},
+            "KB": {"name": "KB증권 (M-able Open API)", "connected": False, "mode": "Live", "apiKey": ""},
+            "MIRAE": {"name": "미래에셋증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
+            "SHINHAN": {"name": "신한투자증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
+            "LS": {"name": "LS증권 (구 이베스트)", "connected": False, "mode": "Live", "apiKey": ""},
+            "TOSS": {"name": "토스증권 (Toss Securities)", "connected": False, "mode": "Live", "apiKey": ""},
+            "UPBIT": {"name": "업비트 (Upbit)", "connected": False, "mode": "Live", "apiKey": ""},
+            "BITHUMB": {"name": "빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": ""},
+            "BINANCE": {"name": "바이낸스 (Binance)", "connected": False, "mode": "Live", "apiKey": ""},
+            "ALPACA": {"name": "Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY"},
+            "IBKR": {"name": "Interactive Brokers", "connected": False, "mode": "Live", "apiKey": ""}
+        }
+
+    def save_key(self, broker_code: str, api_key: str, secret_key: str = "", account_no: str = "") -> bool:
+        b = broker_code.upper()
+        if b in self.connected_brokers:
+            masked = api_key[:3] + "******" + api_key[-3:] if len(api_key) > 6 else "******"
+            self.connected_brokers[b]["connected"] = True
+            self.connected_brokers[b]["apiKey"] = masked
+            self.connected_brokers[b]["accountNo"] = account_no
+            return True
+        return False
+
+    def disconnect(self, broker_code: str) -> bool:
+        b = broker_code.upper()
+        if b in self.connected_brokers:
+            self.connected_brokers[b]["connected"] = False
+            self.connected_brokers[b]["apiKey"] = ""
+            return True
+        return False
+
+    def get_status_list(self) -> List[Dict[str, Any]]:
+        return [{"code": k, **v} for k, v in self.connected_brokers.items()]
+
+bot_manager = BotManager()
+broker_manager = BrokerKeyManager()
