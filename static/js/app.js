@@ -811,12 +811,14 @@ function getQuantParams() {
 async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000, broker = null) {
     try {
         const selectedBroker = broker || (document.getElementById("botBrokerSelect") ? document.getElementById("botBrokerSelect").value : "BITHUMB");
+        const strategyParams = params || getQuantParams();
+        
         const payload = {
-            symbol: symbol,
-            mode: mode,
+            symbol: symbol || "BTC",
+            mode: mode || "PAPER",
             broker: selectedBroker,
             capital: Number(capital) || 1000000,
-            strategyParams: params
+            strategyParams: strategyParams
         };
 
         const res = await fetch("/api/bot/deploy", {
@@ -827,7 +829,15 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000,
         
         const botData = await res.json();
         if (!res.ok) {
-            throw new Error(botData.detail || "서버에서 봇 배포를 거부했습니다.");
+            let errMsg = "서버에서 봇 배포를 거부했습니다.";
+            if (typeof botData.detail === "string") {
+                errMsg = botData.detail;
+            } else if (Array.isArray(botData.detail)) {
+                errMsg = botData.detail.map(d => d.msg || JSON.stringify(d)).join(", ");
+            } else if (botData.detail) {
+                errMsg = JSON.stringify(botData.detail);
+            }
+            throw new Error(errMsg);
         }
 
         const capDisplay = (botData.initialCapital != null ? Number(botData.initialCapital) : Number(capital)).toLocaleString();
@@ -1387,13 +1397,14 @@ async function handleConfirmCopyDeploy(e) {
     e.preventDefault();
     if (!pendingBotConfig) return;
 
-    const symbol = document.getElementById("copyModalSymbol").value.trim().toUpperCase();
+    const symbol = document.getElementById("copyModalSymbol").value.trim().toUpperCase() || "BTC";
     const mode = document.getElementById("copyModalMode").value;
     const broker = document.getElementById("copyModalBroker").value;
     const capital = parseFloat(document.getElementById("copyModalCapital").value) || 1000000;
+    const configToDeploy = { ...pendingBotConfig };
 
     closeCopyBotModal();
-    await deployTradingBot(symbol, pendingBotConfig, mode, capital, broker);
+    await deployTradingBot(symbol, configToDeploy, mode, capital, broker);
 }
 
 function testBotInQuant(botId) {
