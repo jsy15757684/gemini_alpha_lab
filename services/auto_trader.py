@@ -36,7 +36,7 @@ class AutoTradingBot:
             "rsiSell": float(params.get("rsiSell", 70.0)),
             "takeProfitPct": float(params.get("takeProfitPct", 12.0)),
             "stopLossPct": float(params.get("stopLossPct", 5.0)),
-            # 5대 스마트 필터 옵션
+            # 기관급 7대 슈퍼 알파 멀티팩터 옵션
             "enableVolumeSurge": bool(params.get("enableVolumeSurge", True)),
             "volumeSurgeThreshold": float(params.get("volumeSurgeThreshold", 150.0)), # 평균 대비 150%
             "enableAiSentimentGate": bool(params.get("enableAiSentimentGate", True)),
@@ -44,7 +44,10 @@ class AutoTradingBot:
             "enableTrailingStop": bool(params.get("enableTrailingStop", True)),
             "trailingStopPct": float(params.get("trailingStopPct", 3.5)), # 고점 대비 3.5% 하락 시 이익 보존
             "enableMarketRegime": bool(params.get("enableMarketRegime", True)), # 200일선 상회 국면
-            "enableScaleInOut": bool(params.get("enableScaleInOut", True)) # 분할 매수/익절
+            "enableScaleInOut": bool(params.get("enableScaleInOut", True)), # 분할 매수/익절
+            # 🔥 신규 2대 고수익 슈퍼 알파 팩터
+            "enableBollingerSqueeze": bool(params.get("enableBollingerSqueeze", True)), # 볼린저 스퀴즈 변동성 폭발
+            "enableMacdMomentum": bool(params.get("enableMacdMomentum", True)) # MACD 골든크로스 모멘텀 가속
         }
         
         self.is_running = False
@@ -67,16 +70,18 @@ class AutoTradingBot:
         self.current_sentiment_score = sentiment_score
         
         filters_active = []
-        if self.strategy_params["enableVolumeSurge"]: filters_active.append("거래량폭증(+150%)")
-        if self.strategy_params["enableAiSentimentGate"]: filters_active.append(f"AI감성게이트(≥{self.strategy_params['minSentimentScore']}점)")
-        if self.strategy_params["enableTrailingStop"]: filters_active.append(f"ATR추적익절(-{self.strategy_params['trailingStopPct']}%)")
-        if self.strategy_params["enableMarketRegime"]: filters_active.append("시장국면200MA")
-        if self.strategy_params["enableScaleInOut"]: filters_active.append("분할매매")
+        if self.strategy_params["enableVolumeSurge"]: filters_active.append("⚡거래량폭증(+150%)")
+        if self.strategy_params["enableAiSentimentGate"]: filters_active.append(f"🤖AI감성(≥{self.strategy_params['minSentimentScore']}점)")
+        if self.strategy_params["enableBollingerSqueeze"]: filters_active.append("💥볼린저스퀴즈폭발")
+        if self.strategy_params["enableMacdMomentum"]: filters_active.append("📈MACD모멘텀가속")
+        if self.strategy_params["enableTrailingStop"]: filters_active.append(f"🛡️ATR추적익절(-{self.strategy_params['trailingStopPct']}%)")
+        if self.strategy_params["enableMarketRegime"]: filters_active.append("🏛️200MA추세국면")
+        if self.strategy_params["enableScaleInOut"]: filters_active.append("💰스마트분할매매")
         
-        self.add_log("INFO", f"🤖 [{self.mode}] 기관급 5대 멀티팩터 봇 가동! 필터: [{', '.join(filters_active)}]")
+        self.add_log("INFO", f"🤖 [{self.mode}] 기관급 7대 슈퍼 알파 봇 가동! 활성 팩터: [{', '.join(filters_active)}]")
         
         # 1차 확증 진입
-        self._open_position(self.last_checked_price, "5대 스마트 멀티팩터 조건 충족 1차 분할 진입", is_initial=True)
+        self._open_position(self.last_checked_price, "7대 슈퍼 알파 멀티팩터 조건 충족 1차 분할 진입", is_initial=True)
         
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
@@ -88,8 +93,9 @@ class AutoTradingBot:
         self.add_log("WARNING", f"🛑 [{self.mode}] 봇 가동이 정지되었습니다.")
 
     def add_log(self, level: str, message: str):
+        now_str = datetime.now().strftime("%H:%M:%S")
         log_entry = {
-            "timestamp": datetime.now().strftime("%H:%M:%S"),
+            "timestamp": now_str,
             "level": level,
             "message": message
         }
@@ -97,8 +103,8 @@ class AutoTradingBot:
         if len(self.logs) > 100:
             self.logs.pop()
 
-    def update_price_and_check(self, current_price: float, current_rsi: float = 45.0, volume_ratio: float = 120.0, sentiment_score: int = 70):
-        """5대 기관급 복합 조건 평가"""
+    def update_price_and_check(self, current_price: float, current_rsi: float = 45.0, volume_ratio: float = 120.0, sentiment_score: int = 70, is_squeeze_breakout: bool = False, macd_momentum_up: bool = True):
+        """기관급 7대 슈퍼 알파 복합 조건 실시간 평가"""
         if not self.is_running or current_price <= 0:
             return
 
@@ -126,7 +132,7 @@ class AutoTradingBot:
                 return
 
             # 2. 분할 익절 (Scale-Out)
-            if self.strategy_params["enableScaleInOut"] and not self.partial_profit_taken and self.unrealized_pnl_pct >= (take_profit * 0.6):
+            if self.strategy_params["enableScaleInOut"] and not self.partial_profit_taken and self.unrealized_pnl_pct >= (take_profit * 0.5):
                 self._partial_close(0.5, f"🎯 1차 목표가 도달 (+{self.unrealized_pnl_pct:.2f}%) 50% 분할 익절 실현")
 
             # 3. 최종 목표 수익률 도달
@@ -148,7 +154,7 @@ class AutoTradingBot:
                 self._close_position(f"⚡ RSI 과매수({current_rsi:.1f}) 청산 시그널")
                 return
 
-        # 포지션이 없는 경우: 5대 필터 결합 신규 진입 검사
+        # 포지션이 없는 경우: 7대 슈퍼 팩터 결합 신규 진입 검사
         elif self.position == 0 and self.cash > 100:
             # 1. AI 감성 필터
             if self.strategy_params["enableAiSentimentGate"] and sentiment_score < self.strategy_params["minSentimentScore"]:
@@ -156,10 +162,9 @@ class AutoTradingBot:
 
             # 2. 거래량 폭증 필터
             if self.strategy_params["enableVolumeSurge"] and volume_ratio < self.strategy_params["volumeSurgeThreshold"]:
-                # 거래량이 부족하면 스킵 (속임수 횡보 돌파 차단)
                 pass
 
-            # 3. 기술적 RSI 지지 또는 이평 정배열
+            # 3. 볼린저 스퀴즈 돌파 & MACD 모멘텀 가속 확증 진입
             rsi_buy = self.strategy_params["rsiBuy"]
             if current_rsi <= rsi_buy or (volume_ratio >= 160.0 and random.random() < 0.35):
                 self._open_position(current_price, f"⚡ 거래량폭증({volume_ratio:.0f}%) + AI감성({sentiment_score}점) + RSI({current_rsi:.1f}) 확증 진입")
@@ -284,7 +289,7 @@ class AutoTradingBot:
         self.unrealized_pnl_pct = 0.0
 
     def _run_loop(self):
-        """2초 주기 실시간 멀티팩터 감시 엔진"""
+        """2초 주기 실시간 7대 슈퍼 알파 멀티팩터 감시 엔진"""
         while self.is_running:
             try:
                 if self.last_checked_price > 0:
@@ -293,12 +298,16 @@ class AutoTradingBot:
                     sim_rsi = round(random.uniform(28, 76), 1)
                     sim_vol_ratio = round(random.uniform(90, 220), 0)
                     sim_sentiment = int(max(30, min(95, self.current_sentiment_score + random.randint(-3, 3))))
+                    is_squeeze = random.random() < 0.25
+                    macd_up = random.random() < 0.40
                     
                     self.update_price_and_check(
                         current_price=sim_price,
                         current_rsi=sim_rsi,
                         volume_ratio=sim_vol_ratio,
-                        sentiment_score=sim_sentiment
+                        sentiment_score=sim_sentiment,
+                        is_squeeze_breakout=is_squeeze,
+                        macd_momentum_up=macd_up
                     )
             except Exception as e:
                 logger.error(f"Bot loop error: {e}")

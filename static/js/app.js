@@ -790,6 +790,8 @@ function getQuantParams() {
     const chkTrail = document.getElementById("chkTrailingStop");
     const chkRegime = document.getElementById("chkMarketRegime");
     const chkScale = document.getElementById("chkScaleInOut");
+    const chkSqueeze = document.getElementById("chkBollingerSqueeze");
+    const chkMacd = document.getElementById("chkMacdMomentum");
 
     return {
         fastMa: parseInt(document.getElementById("btFastMa")?.value) || 5,
@@ -798,11 +800,13 @@ function getQuantParams() {
         rsiSell: parseFloat(document.getElementById("btRsiSell")?.value) || 70,
         takeProfitPct: parseFloat(document.getElementById("btTakeProfit")?.value) || 12,
         stopLossPct: parseFloat(document.getElementById("btStopLoss")?.value) || 5,
-        // 5대 스마트 필터
+        // 기관급 7대 슈퍼 알파 멀티팩터
         enableVolumeSurge: chkVol ? chkVol.checked : true,
         volumeSurgeThreshold: 150.0,
         enableAiSentimentGate: chkSent ? chkSent.checked : true,
         minSentimentScore: 60,
+        enableBollingerSqueeze: chkSqueeze ? chkSqueeze.checked : true,
+        enableMacdMomentum: chkMacd ? chkMacd.checked : true,
         enableTrailingStop: chkTrail ? chkTrail.checked : true,
         trailingStopPct: 3.5,
         enableMarketRegime: chkRegime ? chkRegime.checked : true,
@@ -901,10 +905,12 @@ function renderActiveBots(bots) {
         const isProfit = (bot.unrealizedPnl || 0) >= 0;
         const p = bot.strategyParams || {};
         
-        // 5대 스마트 필터 뱃지
+        // 기관급 7대 슈퍼 알파 팩터 뱃지
         const badges = [];
         if (p.enableVolumeSurge) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(6,182,212,0.15); color:var(--accent-cyan); border-color:var(--accent-cyan);">⚡ 거래량폭증 150%</span>`);
         if (p.enableAiSentimentGate) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(59,130,246,0.15); color:var(--accent-blue); border-color:var(--accent-blue);">🤖 AI감성 ${bot.sentimentScore || 70}점</span>`);
+        if (p.enableBollingerSqueeze) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(245,158,11,0.15); color:var(--accent-amber); border-color:var(--accent-amber);">💥 볼린저스퀴즈 돌파</span>`);
+        if (p.enableMacdMomentum) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(14,165,233,0.15); color:#38BDF8; border-color:#38BDF8;">📈 MACD 골든크로스</span>`);
         if (p.enableTrailingStop) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(16,185,129,0.15); color:var(--accent-emerald); border-color:var(--accent-emerald);">🛡️ ATR 트레일링 스탑</span>`);
         if (p.enableScaleInOut) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(245,158,11,0.15); color:var(--accent-amber); border-color:var(--accent-amber);">💰 50% 분할 익절</span>`);
 

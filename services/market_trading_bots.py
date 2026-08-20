@@ -24,6 +24,7 @@ FEATURED_AI_BOTS = [
             "takeProfitPct": 15.0, "stopLossPct": 4.0,
             "enableVolumeSurge": True, "volumeSurgeThreshold": 150,
             "enableAiSentimentGate": True, "minSentimentScore": 75,
+            "enableBollingerSqueeze": True, "enableMacdMomentum": True,
             "enableTrailingStop": True, "trailingStopPct": 3.0,
             "enableScaleInOut": True
         }
@@ -47,6 +48,7 @@ FEATURED_AI_BOTS = [
             "takeProfitPct": 6.0, "stopLossPct": 4.5,
             "enableVolumeSurge": False,
             "enableAiSentimentGate": True, "minSentimentScore": 55,
+            "enableBollingerSqueeze": True, "enableMacdMomentum": True,
             "enableTrailingStop": False,
             "enableScaleInOut": True
         }
@@ -70,6 +72,7 @@ FEATURED_AI_BOTS = [
             "takeProfitPct": 10.0, "stopLossPct": 6.0,
             "enableVolumeSurge": True, "volumeSurgeThreshold": 120,
             "enableAiSentimentGate": True, "minSentimentScore": 60,
+            "enableBollingerSqueeze": True, "enableMacdMomentum": True,
             "enableTrailingStop": True, "trailingStopPct": 3.5,
             "enableScaleInOut": True
         }
@@ -93,6 +96,7 @@ FEATURED_AI_BOTS = [
             "takeProfitPct": 25.0, "stopLossPct": 5.0,
             "enableVolumeSurge": True, "volumeSurgeThreshold": 160,
             "enableAiSentimentGate": True, "minSentimentScore": 70,
+            "enableBollingerSqueeze": True, "enableMacdMomentum": True,
             "enableTrailingStop": True, "trailingStopPct": 4.0,
             "enableScaleInOut": True
         }
@@ -116,6 +120,7 @@ FEATURED_AI_BOTS = [
             "takeProfitPct": 8.0, "stopLossPct": 3.5,
             "enableVolumeSurge": True, "volumeSurgeThreshold": 170,
             "enableAiSentimentGate": True, "minSentimentScore": 60,
+            "enableBollingerSqueeze": True, "enableMacdMomentum": True,
             "enableTrailingStop": True, "trailingStopPct": 2.5,
             "enableScaleInOut": False
         }
