@@ -815,6 +815,17 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000,
         const selectedBroker = broker || (document.getElementById("botBrokerSelect") ? document.getElementById("botBrokerSelect").value : "BITHUMB");
         const strategyParams = params || getQuantParams();
         
+        // 실전 LIVE 모드인데 해당 브로커가 아직 미연동 상태인 경우 친절하게 안내
+        if (mode === "LIVE") {
+            const currentBroker = cachedBrokers.find(b => b.code === selectedBroker);
+            if (currentBroker && !currentBroker.connected && selectedBroker !== "ALPACA") {
+                if (confirm(`⚠️ [${currentBroker.name}] API 키가 아직 등록되지 않았습니다.\n지금 API 키 등록 창을 열어 연동하시겠습니까?\n(모의투자 Paper 모드는 API 키 없이 즉시 가동 가능합니다)`)) {
+                    openBrokerModal(selectedBroker, currentBroker.name);
+                    return;
+                }
+            }
+        }
+
         const payload = {
             symbol: symbol || "BTC",
             mode: mode || "PAPER",
@@ -1380,11 +1391,27 @@ function openCopyBotModal(name, defaultSymbol, config, description = "") {
     const title = document.getElementById("copyBotModalTitle");
     const desc = document.getElementById("copyBotModalDesc");
     const symInput = document.getElementById("copyModalSymbol");
+    const brokerSelect = document.getElementById("copyModalBroker");
 
     if (modal && title && desc && symInput) {
         title.textContent = `⚡ [${name}] 복제 & 가동 설정`;
         desc.textContent = description || "연동할 거래소와 매매 모드, 운용 자본을 설정하면 즉시 24시간 실전 자동매매가 시작됩니다.";
-        symInput.value = defaultSymbol;
+        
+        // 종목명 정리 (BTC-USD -> BTC, ETH-USD -> ETH)
+        const cleanSym = (defaultSymbol || "BTC").replace("-USD", "");
+        symInput.value = cleanSym;
+        
+        // 종목 특성에 따른 스마트 브로커 자동 매칭
+        if (brokerSelect) {
+            if (["BTC", "ETH", "SOL", "XRP", "DOGE"].some(c => cleanSym.includes(c))) {
+                brokerSelect.value = "BITHUMB";
+            } else if (cleanSym.endsWith(".KS") || cleanSym.endsWith(".KQ") || ["삼성전자", "SK하이닉스"].includes(cleanSym)) {
+                brokerSelect.value = "NAMUH";
+            } else {
+                brokerSelect.value = "ALPACA";
+            }
+        }
+
         modal.classList.remove("hidden");
     }
 }
