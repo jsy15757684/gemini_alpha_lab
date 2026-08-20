@@ -380,19 +380,12 @@ class BrokerKeyManager:
     """브로커 및 거래소 API 키 연동 매니저"""
     def __init__(self):
         self.connected_brokers = {
-            "BITHUMB": {"name": "빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": ""},
-            "UPBIT": {"name": "업비트 (Upbit)", "connected": False, "mode": "Live", "apiKey": ""},
-            "NAMUH": {"name": "NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": ""},
-            "KIWOOM": {"name": "키움증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
-            "KIS": {"name": "한국투자증권 KIS Open API", "connected": False, "mode": "Live", "apiKey": ""},
-            "KB": {"name": "KB증권 (M-able Open API)", "connected": False, "mode": "Live", "apiKey": ""},
-            "MIRAE": {"name": "미래에셋증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
-            "SHINHAN": {"name": "신한투자증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
-            "LS": {"name": "LS증권 (구 이베스트)", "connected": False, "mode": "Live", "apiKey": ""},
-            "TOSS": {"name": "토스증권 (Toss Securities)", "connected": False, "mode": "Live", "apiKey": ""},
-            "BINANCE": {"name": "바이낸스 (Binance)", "connected": False, "mode": "Live", "apiKey": ""},
-            "ALPACA": {"name": "Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY"},
-            "IBKR": {"name": "Interactive Brokers", "connected": False, "mode": "Live", "apiKey": ""}
+            "NAMUH": {"name": "🌳 NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": ""},
+            "BITHUMB": {"name": "🪙 빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": ""},
+            "UPBIT": {"name": "🪙 업비트 (Upbit)", "connected": False, "mode": "Live", "apiKey": ""},
+            "BINANCE": {"name": "🌐 바이낸스 (Binance)", "connected": False, "mode": "Live", "apiKey": ""},
+            "ALPACA": {"name": "🇺🇸 Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY"},
+            "IBKR": {"name": "🌐 Interactive Brokers", "connected": False, "mode": "Live", "apiKey": ""}
         }
         self.bithumb_client = BithumbClient()
 
