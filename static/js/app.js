@@ -277,11 +277,6 @@ function renderQuoteUI(q) {
     document.getElementById("statPBR").textContent = q.priceToBook ? `${q.priceToBook}x` : 'N/A';
     document.getElementById("stat52H").textContent = `${Number(q.fiftyTwoWeekHigh || 0).toLocaleString()} ${q.currency}`;
     document.getElementById("stat52L").textContent = `${Number(q.fiftyTwoWeekLow || 0).toLocaleString()} ${q.currency}`;
-    
-    const targetVal = Number(q.targetPrice || q.targetHighPrice || 0);
-    const upside = q.targetUpsidePct != null ? q.targetUpsidePct : ((targetVal - q.currentPrice) / q.currentPrice * 100).toFixed(1);
-    const upsideStr = upside >= 0 ? `+${upside}%` : `${upside}%`;
-    document.getElementById("statTarget").innerHTML = `${targetVal.toLocaleString()} ${q.currency} <span style="font-size:0.75rem; color:var(--accent-emerald); font-weight:700;">(${upsideStr})</span>`;
 }
 
 function renderSentimentUI(s) {
