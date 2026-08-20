@@ -180,6 +180,15 @@ class AutoTradingBot:
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_pct = 0.0
         
+        # 빗썸 실전 Live 매수 집행
+        if self.mode == "LIVE" and "BITHUMB" in self.broker.upper():
+            try:
+                coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
+                buy_res = broker_manager.bithumb_client.place_market_buy(coin_sym, shares)
+                self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 매수 체결] {coin_sym} {shares}개 시장가 접수 (응답: {buy_res.get('status')})")
+            except Exception as e:
+                self.add_log("ERROR", f"빗썸 실전 매수 주문 오류: {str(e)}")
+        
         self.add_log("BUY", f"🟢 [스마트 매수] {self.symbol} {shares}주 @ ${price:,.2f} | 사유: {reason}")
 
     def _partial_close(self, ratio: float, reason: str):
@@ -198,6 +207,15 @@ class AutoTradingBot:
         self.total_trades += 1
         if trade_pnl > 0: self.winning_trades += 1
         
+        # 빗썸 실전 Live 분할 매도 집행
+        if self.mode == "LIVE" and "BITHUMB" in self.broker.upper():
+            try:
+                coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
+                sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, close_shares)
+                self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 분할익절 체결] {coin_sym} {close_shares}개 시장가 접수 (응답: {sell_res.get('status')})")
+            except Exception as e:
+                self.add_log("ERROR", f"빗썸 실전 매도 주문 오류: {str(e)}")
+        
         self.add_log("SELL", f"💰 [분할 익절] {self.symbol} {close_shares}주 @ ${price:,.2f} | 실현손익: ${trade_pnl:+,.2f} ({reason})")
 
     def _close_position(self, reason: str):
@@ -208,6 +226,15 @@ class AutoTradingBot:
         net = gross - fee
         trade_pnl = round(net - (self.position * self.entry_price), 2)
         trade_pnl_pct = round(((price - self.entry_price) / self.entry_price) * 100, 2)
+
+        # 빗썸 실전 Live 전량 청산 집행
+        if self.mode == "LIVE" and "BITHUMB" in self.broker.upper():
+            try:
+                coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
+                sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, self.position)
+                self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 전량청산 체결] {coin_sym} {self.position}개 시장가 접수 (응답: {sell_res.get('status')})")
+            except Exception as e:
+                self.add_log("ERROR", f"빗썸 실전 청산 주문 오류: {str(e)}")
 
         self.cash = round(self.cash + net, 2)
         self.realized_pnl = round(self.realized_pnl + trade_pnl, 2)

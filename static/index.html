@@ -458,21 +458,33 @@
                         <span class="badge-win">24H 무중단 감시</span>
                     </div>
 
-                    <div class="grid-3" style="margin-bottom: 1rem;">
+                    <div class="grid-4" style="margin-bottom: 1rem;">
                         <div>
                             <div class="stat-label">대상 종목</div>
-                            <input type="text" id="botSymbolInput" value="NVDA" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
+                            <input type="text" id="botSymbolInput" value="BTC" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;" placeholder="예: BTC, ETH, NVDA">
                         </div>
                         <div>
-                            <div class="stat-label">매매 모드 (안전장치)</div>
+                            <div class="stat-label">매매 모드</div>
                             <select id="botModeSelect" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; background: var(--bg-card); color: #fff;">
+                                <option value="LIVE">🔥 실전 매매 (Live Real Money)</option>
                                 <option value="PAPER">🛡️ 모의투자 (Paper Mode)</option>
-                                <option value="LIVE">🔥 실전 매매 (Live Broker)</option>
                             </select>
                         </div>
                         <div>
-                            <div class="stat-label">운용 자본 ($)</div>
-                            <input type="number" id="botCapitalInput" value="10000" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
+                            <div class="stat-label">연동 거래소/증권사</div>
+                            <select id="botBrokerSelect" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; background: var(--bg-card); color: var(--accent-amber); font-weight: 700;">
+                                <option value="BITHUMB">🪙 빗썸 실전 (Bithumb Live)</option>
+                                <option value="UPBIT">🪙 업비트 실전 (Upbit Live)</option>
+                                <option value="NAMUH">🌳 NH투자증권 나무 (NAMUH)</option>
+                                <option value="KIWOOM">📈 키움증권 (Kiwoom Live)</option>
+                                <option value="KIS">🇰🇷 한국투자증권 (KIS Live)</option>
+                                <option value="ALPACA">🇺🇸 Alpaca Trading (미국주식)</option>
+                                <option value="BINANCE">🌐 바이낸스 (Binance Live)</option>
+                            </select>
+                        </div>
+                        <div>
+                            <div class="stat-label">운용 자본 (KRW / $)</div>
+                            <input type="number" id="botCapitalInput" value="1000000" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;" placeholder="예: 1000000원">
                         </div>
                     </div>
 

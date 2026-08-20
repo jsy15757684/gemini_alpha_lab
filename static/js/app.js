@@ -156,9 +156,10 @@ function setupEventListeners() {
         startBotBtn.addEventListener("click", () => {
             const symbol = document.getElementById("botSymbolInput").value.trim().toUpperCase() || currentSymbol;
             const mode = document.getElementById("botModeSelect").value;
-            const capital = parseFloat(document.getElementById("botCapitalInput").value) || 10000;
+            const broker = document.getElementById("botBrokerSelect") ? document.getElementById("botBrokerSelect").value : "BITHUMB";
+            const capital = parseFloat(document.getElementById("botCapitalInput").value) || 1000000;
             const params = getQuantParams();
-            deployTradingBot(symbol, params, mode, capital);
+            deployTradingBot(symbol, params, mode, capital, broker);
         });
     }
 
@@ -807,12 +808,13 @@ function getQuantParams() {
     };
 }
 
-async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000) {
+async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000, broker = null) {
     try {
+        const selectedBroker = broker || (document.getElementById("botBrokerSelect") ? document.getElementById("botBrokerSelect").value : "BITHUMB");
         const payload = {
             symbol: symbol,
             mode: mode,
-            broker: mode === "LIVE" ? "ALPACA_LIVE" : "ALPACA_PAPER",
+            broker: selectedBroker,
             capital: capital,
             strategyParams: params
         };
@@ -823,6 +825,8 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000)
             body: JSON.stringify(payload)
         });
         const botData = await res.json();
+
+        alert(`🚀 [${botData.mode}] ${botData.symbol} 자동매매 봇이 [${selectedBroker}] 실전 거래소와 연동되어 가동되었습니다!\n• 봇 ID: ${botData.botId}\n• 운용자본: ${botData.initialCapital.toLocaleString()}`);
 
         // Switch to Bot Hub Tab
         document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
