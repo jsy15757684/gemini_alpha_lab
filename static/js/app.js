@@ -1055,6 +1055,23 @@ async function handleSaveBrokerKey(e) {
     const accountNo = document.getElementById("modalAccountNo").value.trim();
 
     try {
+        if (code === "BITHUMB" && secretKey) {
+            // Test Bithumb connection directly
+            try {
+                const testRes = await fetch("/api/broker/test_bithumb", {
+                    method: "POST",
+                    headers: { "Content-Type": "application/json" },
+                    body: JSON.stringify({ brokerCode: "BITHUMB", apiKey: apiKey, secretKey: secretKey })
+                });
+                const testData = await testRes.json();
+                if (testData.success) {
+                    alert(`✅ [빗썸 연동 성공!]\n• 보유 원화(KRW): ${testData.totalKrw.toLocaleString()}원\n• 출금/주문가능: ${testData.availableKrw.toLocaleString()}원\n• BTC 보유량: ${testData.btcBalance} BTC`);
+                }
+            } catch (e) {
+                console.log("Bithumb test log:", e);
+            }
+        }
+
         const res = await fetch("/api/broker/connect", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
@@ -1068,7 +1085,7 @@ async function handleSaveBrokerKey(e) {
         const result = await res.json();
         if (result.success) {
             closeBrokerModal();
-            alert(`🔒 [${code}] 브로커 API 키가 암호화되어 안전하게 연동되었습니다!`);
+            alert(`🔒 [${code}] 거래소/브로커 API 키가 안전하게 암호화 연동되었습니다!`);
             await loadBrokers();
         }
     } catch (err) {

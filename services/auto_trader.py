@@ -314,10 +314,14 @@ class BotManager:
     def get_bot(self, bot_id: str) -> Optional[AutoTradingBot]:
         return self.bots.get(bot_id)
 
+from services.bithumb_client import BithumbClient
+
 class BrokerKeyManager:
     """브로커 및 거래소 API 키 연동 매니저"""
     def __init__(self):
         self.connected_brokers = {
+            "BITHUMB": {"name": "빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": ""},
+            "UPBIT": {"name": "업비트 (Upbit)", "connected": False, "mode": "Live", "apiKey": ""},
             "NAMUH": {"name": "NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": ""},
             "KIWOOM": {"name": "키움증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
             "KIS": {"name": "한국투자증권 KIS Open API", "connected": False, "mode": "Live", "apiKey": ""},
@@ -326,12 +330,11 @@ class BrokerKeyManager:
             "SHINHAN": {"name": "신한투자증권 Open API", "connected": False, "mode": "Live", "apiKey": ""},
             "LS": {"name": "LS증권 (구 이베스트)", "connected": False, "mode": "Live", "apiKey": ""},
             "TOSS": {"name": "토스증권 (Toss Securities)", "connected": False, "mode": "Live", "apiKey": ""},
-            "UPBIT": {"name": "업비트 (Upbit)", "connected": False, "mode": "Live", "apiKey": ""},
-            "BITHUMB": {"name": "빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": ""},
             "BINANCE": {"name": "바이낸스 (Binance)", "connected": False, "mode": "Live", "apiKey": ""},
             "ALPACA": {"name": "Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY"},
             "IBKR": {"name": "Interactive Brokers", "connected": False, "mode": "Live", "apiKey": ""}
         }
+        self.bithumb_client = BithumbClient()
 
     def save_key(self, broker_code: str, api_key: str, secret_key: str = "", account_no: str = "") -> bool:
         b = broker_code.upper()
@@ -340,14 +343,24 @@ class BrokerKeyManager:
             self.connected_brokers[b]["connected"] = True
             self.connected_brokers[b]["apiKey"] = masked
             self.connected_brokers[b]["accountNo"] = account_no
+
+            if b == "BITHUMB":
+                self.bithumb_client = BithumbClient(connect_key=api_key, secret_key=secret_key)
+
             return True
         return False
+
+    def test_bithumb_connection(self, api_key: str, secret_key: str) -> Dict[str, Any]:
+        temp_client = BithumbClient(connect_key=api_key, secret_key=secret_key)
+        return temp_client.test_connection()
 
     def disconnect(self, broker_code: str) -> bool:
         b = broker_code.upper()
         if b in self.connected_brokers:
             self.connected_brokers[b]["connected"] = False
             self.connected_brokers[b]["apiKey"] = ""
+            if b == "BITHUMB":
+                self.bithumb_client = BithumbClient()
             return True
         return False
 

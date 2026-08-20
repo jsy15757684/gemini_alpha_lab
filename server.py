@@ -275,6 +275,14 @@ def connect_broker_endpoint(req: ConnectBrokerRequest):
     )
     return {"success": success, "broker": req.brokerCode}
 
+@app.post("/api/broker/test_bithumb")
+def test_bithumb_endpoint(req: ConnectBrokerRequest):
+    result = broker_manager.test_bithumb_connection(
+        api_key=req.apiKey,
+        secret_key=req.secretKey or ""
+    )
+    return result
+
 @app.post("/api/broker/disconnect")
 def disconnect_broker_endpoint(req: DisconnectBrokerRequest):
     success = broker_manager.disconnect(req.brokerCode)
