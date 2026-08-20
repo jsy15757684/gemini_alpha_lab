@@ -218,20 +218,22 @@ def generate_report_endpoint(req: GenerateReportRequest):
 @app.post("/api/bot/deploy")
 def deploy_bot_endpoint(req: DeployBotRequest):
     try:
-        sym = req.symbol.upper()
+        resolved_sym = resolve_symbol(req.symbol)
         # Initial quote check
-        q = get_asset_quote(sym)
-        init_price = q.get("currentPrice") or 100.0
+        q = get_asset_quote(resolved_sym)
+        init_price = float(q.get("currentPrice", 0.0))
+        if init_price <= 0:
+            init_price = 100.0
         
         # Get AI sentiment
-        sentiment = gemini_ai.analyze_sentiment_and_news(sym, q)
+        sentiment = gemini_ai.analyze_sentiment_and_news(resolved_sym, q)
         sentiment_score = int(sentiment.get("sentimentScore", 75))
 
         bot = bot_manager.deploy_bot(
-            symbol=sym,
+            symbol=resolved_sym,
             mode=req.mode,
             broker=req.broker,
-            capital=req.capital,
+            capital=float(req.capital),
             strategy_params=req.strategyParams,
             initial_price=init_price,
             sentiment_score=sentiment_score

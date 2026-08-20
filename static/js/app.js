@@ -815,7 +815,7 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000,
             symbol: symbol,
             mode: mode,
             broker: selectedBroker,
-            capital: capital,
+            capital: Number(capital) || 1000000,
             strategyParams: params
         };
 
@@ -824,9 +824,14 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000,
             headers: { "Content-Type": "application/json" },
             body: JSON.stringify(payload)
         });
+        
         const botData = await res.json();
+        if (!res.ok) {
+            throw new Error(botData.detail || "서버에서 봇 배포를 거부했습니다.");
+        }
 
-        alert(`🚀 [${botData.mode}] ${botData.symbol} 자동매매 봇이 [${selectedBroker}] 실전 거래소와 연동되어 가동되었습니다!\n• 봇 ID: ${botData.botId}\n• 운용자본: ${botData.initialCapital.toLocaleString()}`);
+        const capDisplay = (botData.initialCapital != null ? Number(botData.initialCapital) : Number(capital)).toLocaleString();
+        alert(`🚀 [${botData.mode || mode}] ${botData.symbol || symbol} 자동매매 봇이 [${selectedBroker}] 실전 거래소와 연동되어 가동되었습니다!\n• 봇 ID: ${botData.botId}\n• 운용자본: ${capDisplay}`);
 
         // Switch to Bot Hub Tab
         document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -870,7 +875,7 @@ function renderActiveBots(bots) {
     container.innerHTML = "";
     bots.forEach(bot => {
         const isRunning = bot.isRunning;
-        const isProfit = bot.unrealizedPnl >= 0;
+        const isProfit = (bot.unrealizedPnl || 0) >= 0;
         const p = bot.strategyParams || {};
         
         // 5대 스마트 필터 뱃지
@@ -879,6 +884,9 @@ function renderActiveBots(bots) {
         if (p.enableAiSentimentGate) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(59,130,246,0.15); color:var(--accent-blue); border-color:var(--accent-blue);">🤖 AI감성 ${bot.sentimentScore || 70}점</span>`);
         if (p.enableTrailingStop) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(16,185,129,0.15); color:var(--accent-emerald); border-color:var(--accent-emerald);">🛡️ ATR 트레일링 스탑</span>`);
         if (p.enableScaleInOut) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(245,158,11,0.15); color:var(--accent-amber); border-color:var(--accent-amber);">💰 50% 분할 익절</span>`);
+
+        const totalAssetStr = (bot.currentTotalAsset != null ? Number(bot.currentTotalAsset) : 0).toLocaleString();
+        const unrealizedPnlStr = (bot.unrealizedPnl != null ? Number(bot.unrealizedPnl) : 0).toLocaleString();
 
         const card = document.createElement("div");
         card.style.backgroundColor = "var(--bg-card-subtle)";
@@ -891,7 +899,7 @@ function renderActiveBots(bots) {
                 <div style="display: flex; align-items: center; gap: 0.75rem;">
                     <span style="font-size: 1.25rem; font-weight: 800;">${bot.symbol}</span>
                     <span class="${bot.mode === 'LIVE' ? 'badge-loss' : 'badge-win'}" style="font-size: 0.75rem;">
-                        ${bot.mode === 'LIVE' ? '🔥 실전 매매' : '🛡️ 모의투자 Paper'}
+                        ${bot.mode === 'LIVE' ? `🔥 실전 [${bot.broker || 'Live'}]` : '🛡️ 모의투자 Paper'}
                     </span>
                     <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">${bot.botId}</span>
                 </div>
@@ -914,35 +922,35 @@ function renderActiveBots(bots) {
             <div class="grid-4" style="margin-bottom: 1rem;">
                 <div class="stat-box">
                     <div class="stat-label">총 자산 가치</div>
-                    <div class="stat-value">$${bot.currentTotalAsset.toLocaleString()}</div>
-                    <div class="stat-sub ${bot.totalRoiPct >= 0 ? 'text-emerald' : 'text-rose'}">
-                        수익률: ${bot.totalRoiPct >= 0 ? '+' : ''}${bot.totalRoiPct}%
+                    <div class="stat-value">$${totalAssetStr}</div>
+                    <div class="stat-sub ${(bot.totalRoiPct || 0) >= 0 ? 'text-emerald' : 'text-rose'}">
+                        수익률: ${(bot.totalRoiPct || 0) >= 0 ? '+' : ''}${bot.totalRoiPct || 0}%
                     </div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">보유 포지션</div>
-                    <div class="stat-value">${bot.position}주</div>
+                    <div class="stat-value">${bot.position || 0}주/개</div>
                     <div class="stat-sub text-muted">진입가: $${bot.entryPrice || 0} (현재가: $${bot.currentPrice || 0})</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">미실현 평가손익</div>
                     <div class="stat-value ${isProfit ? 'text-emerald' : 'text-rose'}">
-                        ${isProfit ? '+' : ''}$${bot.unrealizedPnl}
+                        ${isProfit ? '+' : ''}$${unrealizedPnlStr}
                     </div>
                     <div class="stat-sub ${isProfit ? 'text-emerald' : 'text-rose'}">
-                        (${isProfit ? '+' : ''}${bot.unrealizedPnlPct}%)
+                        (${isProfit ? '+' : ''}${bot.unrealizedPnlPct || 0}%)
                     </div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">실시간 수급 & 승률</div>
                     <div class="stat-value">${bot.volumeRatio || 120}%</div>
-                    <div class="stat-sub text-cyan">거래량 폭증 지수 | 승률: ${bot.winRate}%</div>
+                    <div class="stat-sub text-cyan">거래량 폭증 지수 | 승률: ${bot.winRate || 0}%</div>
                 </div>
             </div>
 
             <div style="background-color: var(--bg-main); padding: 0.75rem; border-radius: var(--radius-sm); border: 1px solid var(--border-subtle); max-height: 120px; overflow-y: auto;">
                 <div style="font-size: 0.75rem; font-weight: 700; color: var(--text-muted); margin-bottom: 0.4rem;">실시간 멀티팩터 체결 & 모니터링 로그</div>
-                ${bot.recentLogs.map(l => `
+                ${(bot.recentLogs || []).map(l => `
                     <div style="font-size: 0.8rem; font-family: var(--font-mono); color: var(--text-secondary); margin-bottom: 0.2rem;">
                         <span style="color: var(--text-muted);">${l.timestamp}</span> [${l.level}] ${l.message}
                     </div>
