@@ -382,10 +382,7 @@ class BrokerKeyManager:
         self.connected_brokers = {
             "NAMUH": {"name": "🌳 NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": ""},
             "BITHUMB": {"name": "🪙 빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": ""},
-            "UPBIT": {"name": "🪙 업비트 (Upbit)", "connected": False, "mode": "Live", "apiKey": ""},
-            "BINANCE": {"name": "🌐 바이낸스 (Binance)", "connected": False, "mode": "Live", "apiKey": ""},
-            "ALPACA": {"name": "🇺🇸 Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY"},
-            "IBKR": {"name": "🌐 Interactive Brokers", "connected": False, "mode": "Live", "apiKey": ""}
+            "ALPACA": {"name": "🇺🇸 Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY"}
         }
         self.bithumb_client = BithumbClient()
 
