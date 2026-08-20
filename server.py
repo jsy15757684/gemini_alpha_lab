@@ -4,6 +4,7 @@ from fastapi import FastAPI, Query, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 from pydantic import BaseModel
 from typing import Optional, List, Dict, Any
 
@@ -23,6 +24,9 @@ app = FastAPI(
     description="AI Quantitative Investment & Auto-Trading Operating System",
     version="2.0.0"
 )
+
+# Gzip High-Speed Compression (압축 전송)
+app.add_middleware(GZipMiddleware, minimum_size=500)
 
 app.add_middleware(
     CORSMiddleware,
