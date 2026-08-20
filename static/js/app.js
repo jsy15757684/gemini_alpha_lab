@@ -1339,13 +1339,53 @@ function filterMarketplace(category) {
     renderMarketplace(cachedMarketplaceBots);
 }
 
+let pendingBotConfig = null;
+
 function copyAndDeployBot(botId) {
     const bot = cachedMarketplaceBots.find(b => b.id === botId);
     if (!bot) return;
+    openCopyBotModal(bot.name, bot.targetAsset, bot.config, bot.description);
+}
 
-    if (confirm(`🔥 [${bot.name}]을(를) 내 계좌로 1-Click 복제하여 24시간 자동매매 봇으로 가동하시겠습니까?\n• 대상 종목: ${bot.targetAsset}\n• 예상 연수익률: +${bot.apy}% (승률 ${bot.winRate}%)`)) {
-        deployTradingBot(bot.targetAsset, bot.config, "PAPER", 10000);
+function deployGuruBot(guruId) {
+    const guru = cachedGurus.find(g => g.id === guruId);
+    if (!guru) return;
+    const topPick = guru.recommendedPicks[0].symbol;
+    openCopyBotModal(`${guru.name} 구루 봇`, topPick, guru.strategyParams, guru.philosophy);
+}
+
+function openCopyBotModal(name, defaultSymbol, config, description = "") {
+    pendingBotConfig = config;
+    const modal = document.getElementById("copyBotModal");
+    const title = document.getElementById("copyBotModalTitle");
+    const desc = document.getElementById("copyBotModalDesc");
+    const symInput = document.getElementById("copyModalSymbol");
+
+    if (modal && title && desc && symInput) {
+        title.textContent = `⚡ [${name}] 복제 & 가동 설정`;
+        desc.textContent = description || "연동할 거래소와 매매 모드, 운용 자본을 설정하면 즉시 24시간 실전 자동매매가 시작됩니다.";
+        symInput.value = defaultSymbol;
+        modal.classList.remove("hidden");
     }
+}
+
+function closeCopyBotModal() {
+    const modal = document.getElementById("copyBotModal");
+    if (modal) modal.classList.add("hidden");
+    pendingBotConfig = null;
+}
+
+async function handleConfirmCopyDeploy(e) {
+    e.preventDefault();
+    if (!pendingBotConfig) return;
+
+    const symbol = document.getElementById("copyModalSymbol").value.trim().toUpperCase();
+    const mode = document.getElementById("copyModalMode").value;
+    const broker = document.getElementById("copyModalBroker").value;
+    const capital = parseFloat(document.getElementById("copyModalCapital").value) || 1000000;
+
+    closeCopyBotModal();
+    await deployTradingBot(symbol, pendingBotConfig, mode, capital, broker);
 }
 
 function testBotInQuant(botId) {
@@ -1377,6 +1417,9 @@ function testBotInQuant(botId) {
 
 window.filterMarketplace = filterMarketplace;
 window.copyAndDeployBot = copyAndDeployBot;
+window.openCopyBotModal = openCopyBotModal;
+window.closeCopyBotModal = closeCopyBotModal;
+window.handleConfirmCopyDeploy = handleConfirmCopyDeploy;
 window.testBotInQuant = testBotInQuant;
 window.applyGuruStrategy = applyGuruStrategy;
 window.deployGuruBot = deployGuruBot;
