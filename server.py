@@ -305,7 +305,14 @@ app.mount("/static", StaticFiles(directory=static_dir), name="static")
 def serve_index():
     index_file = os.path.join(static_dir, "index.html")
     if os.path.exists(index_file):
-        return FileResponse(index_file)
+        return FileResponse(
+            index_file,
+            headers={
+                "Cache-Control": "no-cache, no-store, must-revalidate",
+                "Pragma": "no-cache",
+                "Expires": "0"
+            }
+        )
     return HTMLResponse("<h1>Gemini Alpha Lab Server Running</h1>")
 
 if __name__ == "__main__":
