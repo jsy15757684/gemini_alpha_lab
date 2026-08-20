@@ -167,34 +167,55 @@ class AutoTradingBot:
     def _open_position(self, price: float, reason: str, is_initial: bool = False):
         if self.cash < 50:
             return
+        
+        is_bithumb = "BITHUMB" in self.broker.upper()
+        # 빗썸의 경우 원화 시세 가져오기
+        actual_price = price
+        if is_bithumb:
+            coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
+            t_res = broker_manager.bithumb_client.get_ticker(coin_sym, "KRW")
+            if t_res.get("status") == "0000":
+                actual_price = float(t_res.get("data", {}).get("closing_price", price))
+            elif actual_price < 100000: # 달러 시세인 경우 대략 1350 환율 적용
+                actual_price = actual_price * 1350.0
+
         # 분할 진입 시 70% 또는 100% 매수
         alloc_ratio = 0.7 if self.strategy_params["enableScaleInOut"] and is_initial else 1.0
         invest_amount = (self.cash * alloc_ratio) * 0.999 # fee
-        shares = round(invest_amount / price, 4)
+        shares = round(invest_amount / actual_price, 4)
+        if shares <= 0:
+            shares = 0.0001
         
         self.position = round(self.position + shares, 4)
-        self.entry_price = round(price, 2)
-        self.highest_price_since_entry = round(price, 2)
-        self.cash = round(self.cash - (shares * price), 2)
+        self.entry_price = round(actual_price, 2)
+        self.highest_price_since_entry = round(actual_price, 2)
+        self.cash = round(self.cash - (shares * actual_price), 2)
         self.partial_profit_taken = False
         self.unrealized_pnl = 0.0
         self.unrealized_pnl_pct = 0.0
         
         # 빗썸 실전 Live 매수 집행
-        if self.mode == "LIVE" and "BITHUMB" in self.broker.upper():
+        if self.mode == "LIVE" and is_bithumb:
             try:
                 coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
                 buy_res = broker_manager.bithumb_client.place_market_buy(coin_sym, shares)
-                self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 매수 체결] {coin_sym} {shares}개 시장가 접수 (응답: {buy_res.get('status')})")
+                status_code = buy_res.get("status", "error")
+                msg = buy_res.get("message", "정상 접수")
+                if status_code == "0000":
+                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 매수 성공] {coin_sym} {shares}개 시장가 체결! (주문번호: {buy_res.get('order_id')})")
+                else:
+                    self.add_log("WARNING", f"⚠️ [빗썸 매수 거부] {msg} (API Key 미등록 또는 잔고 부족)")
             except Exception as e:
                 self.add_log("ERROR", f"빗썸 실전 매수 주문 오류: {str(e)}")
         
-        self.add_log("BUY", f"🟢 [스마트 매수] {self.symbol} {shares}주 @ ${price:,.2f} | 사유: {reason}")
+        curr_unit = "원" if is_bithumb else "$"
+        self.add_log("BUY", f"🟢 [스마트 매수] {self.symbol} {shares}개 @ {actual_price:,.0f}{curr_unit} | 사유: {reason}")
 
     def _partial_close(self, ratio: float, reason: str):
         if self.position <= 0: return
+        is_bithumb = "BITHUMB" in self.broker.upper()
         close_shares = round(self.position * ratio, 4)
-        price = self.last_checked_price
+        price = self.last_checked_price if self.last_checked_price > 0 else self.entry_price
         gross = close_shares * price
         fee = gross * 0.001
         net = gross - fee
@@ -208,18 +229,25 @@ class AutoTradingBot:
         if trade_pnl > 0: self.winning_trades += 1
         
         # 빗썸 실전 Live 분할 매도 집행
-        if self.mode == "LIVE" and "BITHUMB" in self.broker.upper():
+        if self.mode == "LIVE" and is_bithumb:
             try:
                 coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
                 sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, close_shares)
-                self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 분할익절 체결] {coin_sym} {close_shares}개 시장가 접수 (응답: {sell_res.get('status')})")
+                status_code = sell_res.get("status", "error")
+                msg = sell_res.get("message", "정상 접수")
+                if status_code == "0000":
+                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 분할익절 성공] {coin_sym} {close_shares}개 시장가 체결!")
+                else:
+                    self.add_log("WARNING", f"⚠️ [빗썸 매도 거부] {msg}")
             except Exception as e:
                 self.add_log("ERROR", f"빗썸 실전 매도 주문 오류: {str(e)}")
         
-        self.add_log("SELL", f"💰 [분할 익절] {self.symbol} {close_shares}주 @ ${price:,.2f} | 실현손익: ${trade_pnl:+,.2f} ({reason})")
+        curr_unit = "원" if is_bithumb else "$"
+        self.add_log("SELL", f"💰 [분할 익절] {self.symbol} {close_shares}개 @ {price:,.0f}{curr_unit} | 실현손익: {trade_pnl:+,.0f}{curr_unit} ({reason})")
 
     def _close_position(self, reason: str):
         if self.position <= 0: return
+        is_bithumb = "BITHUMB" in self.broker.upper()
         price = self.last_checked_price if self.last_checked_price > 0 else self.entry_price
         gross = self.position * price
         fee = gross * 0.001
@@ -228,11 +256,16 @@ class AutoTradingBot:
         trade_pnl_pct = round(((price - self.entry_price) / self.entry_price) * 100, 2)
 
         # 빗썸 실전 Live 전량 청산 집행
-        if self.mode == "LIVE" and "BITHUMB" in self.broker.upper():
+        if self.mode == "LIVE" and is_bithumb:
             try:
                 coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
                 sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, self.position)
-                self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 전량청산 체결] {coin_sym} {self.position}개 시장가 접수 (응답: {sell_res.get('status')})")
+                status_code = sell_res.get("status", "error")
+                msg = sell_res.get("message", "정상 접수")
+                if status_code == "0000":
+                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 전량청산 성공] {coin_sym} {self.position}개 시장가 체결 완료!")
+                else:
+                    self.add_log("WARNING", f"⚠️ [빗썸 청산 거부] {msg}")
             except Exception as e:
                 self.add_log("ERROR", f"빗썸 실전 청산 주문 오류: {str(e)}")
 
