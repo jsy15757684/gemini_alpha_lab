@@ -16,54 +16,45 @@ class BithumbClient:
     BASE_URL = "https://api.bithumb.com"
 
     def __init__(self, connect_key: str = "", secret_key: str = ""):
-        self.connect_key = connect_key.strip()
-        self.secret_key = secret_key.strip()
+        self.connect_key = str(connect_key).strip()
+        self.secret_key = str(secret_key).strip()
 
-    def _generate_signature(self, endpoint: str, params: Dict[str, Any]) -> Dict[str, str]:
-        """빗썸 API 인증용 HMAC-SHA512 헤더 생성"""
-        # microtime 문자열 생성 (현재 시간 * 1000)
+    def _post(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """빗썸 공식 표준 Private POST API 호출 (HMAC-SHA512 서명)"""
+        if not self.connect_key or not self.secret_key:
+            return {"status": "error", "message": "빗썸 API Connect Key와 Secret Key를 먼저 입력해주세요."}
+
+        # 파라미터 복사 및 endpoint 추가 (공식 규격)
+        request_params = dict(params) if params else {}
+        request_params["endpoint"] = endpoint
+
+        # 1. 쿼리 스트링 생성
+        str_data = urllib.parse.urlencode(request_params)
+        
+        # 2. Nonce 생성 (13자리 밀리초 타임스탬프)
         nonce = str(int(time.time() * 1000))
         
-        # 쿼리 스트링 인코딩
-        query_str = urllib.parse.urlencode(params)
+        # 3. 서명 원문 생성 (endpoint + NULL + query + NULL + nonce)
+        data_to_sign = f"{endpoint}\x00{str_data}\x00{nonce}"
+        utf8_data = data_to_sign.encode("utf-8")
         
-        # chr(0) 널바이트로 구분된 서명 원문 생성
-        data_to_sign = f"{endpoint}\x00{query_str}\x00{nonce}"
-        
-        # HMAC-SHA512 해싱 후 hex/base64 인코딩
-        signature = hmac.new(
-            self.secret_key.encode('utf-8'),
-            data_to_sign.encode('utf-8'),
-            hashlib.sha512
-        ).hexdigest()
-        
-        api_sign = base64.b64encode(signature.encode('utf-8')).decode('utf-8')
-        
-        return {
+        # 4. HMAC-SHA512 해싱 & Base64 인코딩
+        key = self.secret_key.encode("utf-8")
+        h = hmac.new(key, utf8_data, hashlib.sha512)
+        hex_output = h.hexdigest().encode("utf-8")
+        api_sign = base64.b64encode(hex_output).decode("utf-8")
+
+        headers = {
             "Api-Key": self.connect_key,
             "Api-Sign": api_sign,
             "Api-Nonce": nonce,
-            "api-client-type": "2",
-            "Content-Type": "application/x-www-form-urlencoded"
+            "api-client-type": "2"
         }
 
-    def _post(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-        """Private POST 요청 실행"""
-        if not self.connect_key or not self.secret_key:
-            return {"status": "error", "message": "빗썸 API Connect Key와 Secret Key가 설정되지 않았습니다."}
-
-        if params is None:
-            params = {}
-        
-        # 빗썸 API 표준 파라미터 (order_currency, payment_currency)
-        if "endpoint" not in params:
-            params["endpoint"] = endpoint
-
-        headers = self._generate_signature(endpoint, params)
         url = f"{self.BASE_URL}{endpoint}"
 
         try:
-            res = requests.post(url, headers=headers, data=params, timeout=5)
+            res = requests.post(url, headers=headers, data=request_params, timeout=5)
             data = res.json()
             return data
         except Exception as e:
