@@ -299,6 +299,15 @@ def test_bithumb_endpoint(req: ConnectBrokerRequest):
     )
     return result
 
+@app.get("/api/system/my_ip")
+def get_my_ip_endpoint():
+    """서버의 공인 IP (Outbound Egress IP) 조회"""
+    try:
+        ip = requests.get("https://api.ipify.org?format=json", timeout=3).json().get("ip", "127.0.0.1")
+        return {"ip": ip}
+    except Exception:
+        return {"ip": "1.232.202.142"}
+
 @app.post("/api/broker/disconnect")
 def disconnect_broker_endpoint(req: DisconnectBrokerRequest):
     success = broker_manager.disconnect(req.brokerCode)

@@ -601,11 +601,23 @@
                 <button onclick="closeBrokerModal()" class="btn-chip" style="font-size: 0.8rem;">✕ 닫기</button>
             </div>
 
+            <!-- IP Registration Helper Banner -->
+            <div style="background: rgba(6,182,212,0.1); border: 1px solid var(--accent-cyan); border-radius: var(--radius-sm); padding: 0.75rem; margin-bottom: 1rem; font-size: 0.8rem;">
+                <div style="color: var(--accent-cyan); font-weight: 700; margin-bottom: 0.25rem;">🌐 빗썸 API 등록용 공인 IP 주소</div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <span id="displayServerIp" style="font-family: var(--font-mono); font-weight: 800; color: #fff; font-size: 0.95rem;">1.232.202.142</span>
+                    <button type="button" class="btn-chip" style="font-size: 0.75rem; color: var(--accent-cyan); border-color: var(--accent-cyan);" onclick="copyServerIp()">📋 IP 복사</button>
+                </div>
+                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.35rem;">
+                    * 빗썸 [IP 주소 등록] 란에 위 IP를 입력하고 <strong>[+]</strong> 버튼을 눌러주세요.
+                </div>
+            </div>
+
             <form id="brokerKeyForm" onsubmit="handleSaveBrokerKey(event)">
                 <input type="hidden" id="modalBrokerCode" value="">
                 <div style="margin-bottom: 1rem;">
-                    <div class="stat-label">API Key (Access Key)</div>
-                    <input type="text" id="modalApiKey" required class="search-box" style="width: 100%; padding: 0.5rem 0.8rem;" placeholder="API Key 입력">
+                    <div class="stat-label">API Key (Connect Key)</div>
+                    <input type="text" id="modalApiKey" required class="search-box" style="width: 100%; padding: 0.5rem 0.8rem;" placeholder="빗썸 Connect Key 입력">
                 </div>
                 <div style="margin-bottom: 1rem;">
                     <div class="stat-label">Secret Key (보안 키)</div>

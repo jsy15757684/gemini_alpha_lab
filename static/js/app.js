@@ -1129,7 +1129,7 @@ function renderBrokers(brokers) {
     });
 }
 
-function openBrokerModal(code, name) {
+async function openBrokerModal(code, name) {
     const modal = document.getElementById("brokerModal");
     const title = document.getElementById("brokerModalTitle");
     const codeInput = document.getElementById("modalBrokerCode");
@@ -1139,7 +1139,30 @@ function openBrokerModal(code, name) {
         document.getElementById("modalApiKey").value = "";
         document.getElementById("modalSecretKey").value = "";
         document.getElementById("modalAccountNo").value = "";
+
+        // 서버의 최신 공인 IP 가져와서 표시
+        try {
+            const ipRes = await fetch("/api/system/my_ip");
+            const ipData = await ipRes.json();
+            const ipEl = document.getElementById("displayServerIp");
+            if (ipEl && ipData.ip) ipEl.textContent = ipData.ip;
+        } catch (e) {
+            console.log("Fetch IP error:", e);
+        }
+
         modal.classList.remove("hidden");
+    }
+}
+
+function copyServerIp() {
+    const ipEl = document.getElementById("displayServerIp");
+    if (ipEl) {
+        const ip = ipEl.textContent.trim();
+        navigator.clipboard.writeText(ip).then(() => {
+            alert(`📋 공인 IP [${ip}] 복사 완료!\n빗썸 [IP 주소 등록] 칸에 붙여넣기(Cmd+V) 해주세요.`);
+        }).catch(() => {
+            prompt("아래 IP를 복사하여 빗썸에 등록해주세요:", ip);
+        });
     }
 }
 
