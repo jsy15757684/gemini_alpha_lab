@@ -16,7 +16,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=3.2.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=3.3.0">
 </head>
 <body>
 
@@ -548,13 +548,40 @@
 
             <!-- Active Bots List Container -->
             <div class="card">
-                <div class="card-header">
-                    <div class="card-title">가동 중인 퀀트 봇 실시간 현황 (Active Bots)</div>
+                <div class="card-header" style="flex-wrap: wrap; gap: 0.75rem;">
+                    <div style="display: flex; align-items: center; gap: 0.75rem;">
+                        <div class="card-title" style="font-size: 1.15rem; font-weight: 800;">🚀 가동 중인 퀀트 봇 실시간 현황 (Active Bots)</div>
+                        <span id="activeBotCountBadge" class="badge-win" style="font-size: 0.75rem;">0대 가동 중</span>
+                    </div>
                     <div style="display: flex; gap: 0.5rem;">
-                        <button id="stopAllBotsBtn" class="btn-chip" style="color: var(--accent-rose); border-color: var(--accent-rose); font-weight: 700;">
-                            🛑 전체 봇 일괄 정지 & 비상 청산
+                        <button id="stopAllBotsBtn" class="btn-chip" style="color: var(--accent-rose); border-color: var(--accent-rose); font-weight: 800; font-size: 0.8rem;">
+                            🛑 전체 봇 긴급 정지 & 전량 청산
                         </button>
-                        <button id="refreshBotsBtn" class="btn-chip" style="font-size: 0.8rem;">🔄 새로고침</button>
+                        <button id="refreshBotsBtn" class="btn-chip" style="font-size: 0.8rem; font-weight: 700; color: var(--accent-cyan); border-color: var(--accent-cyan);">🔄 실시간 새로고침</button>
+                    </div>
+                </div>
+
+                <!-- Portfolio Summary Bar -->
+                <div id="botsPortfolioSummary" class="grid-4" style="margin-bottom: 1.25rem; background: var(--bg-card-subtle); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
+                    <div class="stat-box">
+                        <div class="stat-label">총 운용 자산 합계</div>
+                        <div class="stat-value" id="summaryTotalAsset" style="font-size: 1.2rem; font-weight: 800; color: #fff;">0원</div>
+                        <div class="stat-sub text-muted" id="summaryBotCount">활성 봇: 0개</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">총 평가 손익 (KRW)</div>
+                        <div class="stat-value text-emerald" id="summaryTotalPnl" style="font-size: 1.2rem; font-weight: 800;">+0원</div>
+                        <div class="stat-sub text-emerald" id="summaryTotalRoi">+0.00%</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">평균 승률 (Win Rate)</div>
+                        <div class="stat-value text-cyan" id="summaryWinRate" style="font-size: 1.2rem; font-weight: 800;">0.0%</div>
+                        <div class="stat-sub text-muted" id="summaryTradeCount">총 체결 0건</div>
+                    </div>
+                    <div class="stat-box">
+                        <div class="stat-label">실시간 엔진 상태</div>
+                        <div class="stat-value" style="font-size: 1.1rem; color: var(--accent-emerald);">● 24H LIVE</div>
+                        <div class="stat-sub text-muted">2초 주기 멀티팩터 감시</div>
                     </div>
                 </div>
 
@@ -650,6 +677,6 @@
     </div>
 
     <!-- App Script -->
-    <script src="/static/js/app.js?v=3.2.0"></script>
+    <script src="/static/js/app.js?v=3.3.0"></script>
 </body>
 </html>

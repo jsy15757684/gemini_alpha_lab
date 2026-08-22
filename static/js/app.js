@@ -892,10 +892,54 @@ function renderActiveBots(bots) {
     const container = document.getElementById("activeBotsList");
     if (!container) return;
 
+    // 종합 포트폴리오 요약 통계 집계
+    const runningBots = bots.filter(b => b.isRunning);
+    const countBadge = document.getElementById("activeBotCountBadge");
+    const summaryTotalAsset = document.getElementById("summaryTotalAsset");
+    const summaryBotCount = document.getElementById("summaryBotCount");
+    const summaryTotalPnl = document.getElementById("summaryTotalPnl");
+    const summaryTotalRoi = document.getElementById("summaryTotalRoi");
+    const summaryWinRate = document.getElementById("summaryWinRate");
+    const summaryTradeCount = document.getElementById("summaryTradeCount");
+
+    if (countBadge) countBadge.textContent = `${runningBots.length}대 가동 중 / 총 ${bots.length}대`;
+
+    let totalAssetSum = 0;
+    let totalPnlSum = 0;
+    let totalInitialSum = 0;
+    let totalTradesSum = 0;
+    let totalWinsSum = 0;
+
+    bots.forEach(b => {
+        totalAssetSum += (Number(b.currentTotalAsset) || 0);
+        totalPnlSum += (Number(b.unrealizedPnl) || 0) + (Number(b.realizedPnl) || 0);
+        totalInitialSum += (Number(b.initialCapital) || 1000000);
+        totalTradesSum += (Number(b.totalTrades) || 0);
+        totalWinsSum += (Number(b.winningTrades) || 0);
+    });
+
+    const totalRoi = totalInitialSum > 0 ? ((totalAssetSum - totalInitialSum) / totalInitialSum * 100).toFixed(2) : "0.00";
+    const avgWinRate = totalTradesSum > 0 ? ((totalWinsSum / totalTradesSum) * 100).toFixed(1) : "100.0";
+
+    if (summaryTotalAsset) summaryTotalAsset.textContent = `${Math.round(totalAssetSum).toLocaleString()}원`;
+    if (summaryBotCount) summaryBotCount.textContent = `활성 봇: ${runningBots.length}개 / 전체 ${bots.length}개`;
+    if (summaryTotalPnl) {
+        summaryTotalPnl.textContent = `${totalPnlSum >= 0 ? '+' : ''}${Math.round(totalPnlSum).toLocaleString()}원`;
+        summaryTotalPnl.className = `stat-value ${totalPnlSum >= 0 ? 'text-emerald' : 'text-rose'}`;
+    }
+    if (summaryTotalRoi) {
+        summaryTotalRoi.textContent = `수익률: ${totalRoi >= 0 ? '+' : ''}${totalRoi}%`;
+        summaryTotalRoi.className = `stat-sub ${totalRoi >= 0 ? 'text-emerald' : 'text-rose'}`;
+    }
+    if (summaryWinRate) summaryWinRate.textContent = `${avgWinRate}%`;
+    if (summaryTradeCount) summaryTradeCount.textContent = `총 체결 ${totalTradesSum}건 (승리 ${totalWinsSum}건)`;
+
     if (bots.length === 0) {
         container.innerHTML = `
-            <div style="text-align:center; padding: 2.5rem 0; color: var(--text-muted); font-size: 0.9rem;">
-                현재 가동 중인 봇이 없습니다. 상단에서 <strong>[🚀 5대 멀티팩터 자동매매 봇 가동 시작]</strong> 또는 마켓플레이스에서 <strong>[⚡ 1-Click 복제 & 가동]</strong>을 눌러주세요.
+            <div style="text-align:center; padding: 3rem 0; color: var(--text-muted); font-size: 0.95rem; background: var(--bg-card-subtle); border-radius: var(--radius-md); border: 1px dashed var(--border-subtle);">
+                <div style="font-size: 2rem; margin-bottom: 0.5rem;">🤖</div>
+                현재 가동 중인 봇이 없습니다.<br>
+                상단의 <strong>[🚀 빗썸 7대 슈퍼 알파 봇 가동 시작]</strong> 또는 <strong>[🔥 AI 봇 마켓플레이스]</strong>에서 1-Click 가동을 눌러주세요.
             </div>
         `;
         return;
