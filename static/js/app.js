@@ -1190,6 +1190,8 @@ async function handleSaveBrokerKey(e) {
                 const testData = await testRes.json();
                 if (testData.success) {
                     alert(`✅ [빗썸 연동 성공!]\n• 보유 원화(KRW): ${testData.totalKrw.toLocaleString()}원\n• 출금/주문가능: ${testData.availableKrw.toLocaleString()}원\n• BTC 보유량: ${testData.btcBalance} BTC`);
+                } else {
+                    alert(`⚠️ [빗썸 연동 안내]\n${testData.message || '인증 오류가 발생했습니다.'}\n\n* 빗썸 [IP 주소 등록]란에 1.232.202.142 가 등록되어 있는지 확인해주세요.`);
                 }
             } catch (e) {
                 console.log("Bithumb test log:", e);

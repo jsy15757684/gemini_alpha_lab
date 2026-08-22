@@ -212,17 +212,20 @@ class AutoTradingBot:
         
         # 빗썸 실전 Live 매수 집행
         if self.mode == "LIVE" and is_bithumb:
-            try:
-                coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
-                buy_res = broker_manager.bithumb_client.place_market_buy(coin_sym, shares)
-                status_code = buy_res.get("status", "error")
-                msg = buy_res.get("message", "정상 접수")
-                if status_code == "0000":
-                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 매수 성공] {coin_sym} {shares}개 시장가 체결! (주문번호: {buy_res.get('order_id')})")
-                else:
-                    self.add_log("WARNING", f"⚠️ [빗썸 매수 거부] {msg} (API Key 미등록 또는 잔고 부족)")
-            except Exception as e:
-                self.add_log("ERROR", f"빗썸 실전 매수 주문 오류: {str(e)}")
+            if not broker_manager.bithumb_client.connect_key:
+                self.add_log("WARNING", "⚠️ [실전 주문 보류] 빗썸 API Key가 아직 등록되지 않았습니다. 우측 상단 [API 키 등록]을 완료해 주세요.")
+            else:
+                try:
+                    coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
+                    buy_res = broker_manager.bithumb_client.place_market_buy(coin_sym, shares)
+                    status_code = buy_res.get("status", "error")
+                    msg = buy_res.get("message", "정상 접수")
+                    if status_code == "0000":
+                        self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 매수 성공] {coin_sym} {shares}개 시장가 체결! (주문번호: {buy_res.get('order_id')})")
+                    else:
+                        self.add_log("WARNING", f"⚠️ [빗썸 매수 거부] {msg} (잔고 부족 또는 서명 오류)")
+                except Exception as e:
+                    self.add_log("ERROR", f"빗썸 실전 매수 주문 오류: {str(e)}")
         
         curr_unit = "원" if is_bithumb else "$"
         self.add_log("BUY", f"🟢 [스마트 매수] {self.symbol} {shares}개 @ {actual_price:,.0f}{curr_unit} | 사유: {reason}")
@@ -246,17 +249,20 @@ class AutoTradingBot:
         
         # 빗썸 실전 Live 분할 매도 집행
         if self.mode == "LIVE" and is_bithumb:
-            try:
-                coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
-                sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, close_shares)
-                status_code = sell_res.get("status", "error")
-                msg = sell_res.get("message", "정상 접수")
-                if status_code == "0000":
-                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 분할익절 성공] {coin_sym} {close_shares}개 시장가 체결!")
-                else:
-                    self.add_log("WARNING", f"⚠️ [빗썸 매도 거부] {msg}")
-            except Exception as e:
-                self.add_log("ERROR", f"빗썸 실전 매도 주문 오류: {str(e)}")
+            if not broker_manager.bithumb_client.connect_key:
+                self.add_log("WARNING", "⚠️ [실전 매도 보류] 빗썸 API Key가 미등록 상태입니다.")
+            else:
+                try:
+                    coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
+                    sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, close_shares)
+                    status_code = sell_res.get("status", "error")
+                    msg = sell_res.get("message", "정상 접수")
+                    if status_code == "0000":
+                        self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 분할익절 성공] {coin_sym} {close_shares}개 시장가 체결!")
+                    else:
+                        self.add_log("WARNING", f"⚠️ [빗썸 매도 거부] {msg}")
+                except Exception as e:
+                    self.add_log("ERROR", f"빗썸 실전 매도 주문 오류: {str(e)}")
         
         curr_unit = "원" if is_bithumb else "$"
         self.add_log("SELL", f"💰 [분할 익절] {self.symbol} {close_shares}개 @ {price:,.0f}{curr_unit} | 실현손익: {trade_pnl:+,.0f}{curr_unit} ({reason})")
@@ -277,17 +283,20 @@ class AutoTradingBot:
 
         # 빗썸 실전 Live 전량 청산 집행
         if self.mode == "LIVE" and is_bithumb:
-            try:
-                coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
-                sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, self.position)
-                status_code = sell_res.get("status", "error")
-                msg = sell_res.get("message", "정상 접수")
-                if status_code == "0000":
-                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 전량청산 성공] {coin_sym} {self.position}{unit} 시장가 체결 완료!")
-                else:
-                    self.add_log("WARNING", f"⚠️ [빗썸 청산 거부] {msg}")
-            except Exception as e:
-                self.add_log("ERROR", f"빗썸 실전 청산 주문 오류: {str(e)}")
+            if not broker_manager.bithumb_client.connect_key:
+                self.add_log("WARNING", "⚠️ [실전 청산 보류] 빗썸 API Key가 미등록 상태입니다.")
+            else:
+                try:
+                    coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
+                    sell_res = broker_manager.bithumb_client.place_market_sell(coin_sym, self.position)
+                    status_code = sell_res.get("status", "error")
+                    msg = sell_res.get("message", "정상 접수")
+                    if status_code == "0000":
+                        self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 전량청산 성공] {coin_sym} {self.position}{unit} 시장가 체결 완료!")
+                    else:
+                        self.add_log("WARNING", f"⚠️ [빗썸 청산 거부] {msg}")
+                except Exception as e:
+                    self.add_log("ERROR", f"빗썸 실전 청산 주문 오류: {str(e)}")
 
         self.cash = round(self.cash + net, 2)
         self.realized_pnl = round(self.realized_pnl + trade_pnl, 2)
