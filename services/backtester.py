@@ -35,9 +35,11 @@ class QuantBacktester:
             df = ticker.history(period=period, interval="1d")
             if df.empty or len(df) < 30:
                 raise ValueError("Insufficient historical data for backtesting")
+            used_simulated = False
         except Exception as e:
             logger.warning(f"Using simulated backtest history for {symbol}: {e}")
             df = self._generate_simulated_df(250)
+            used_simulated = True
 
         # 지표 계산
         df['SMA_Fast'] = df['Close'].rolling(window=fast_ma).mean()
@@ -179,6 +181,9 @@ class QuantBacktester:
         profit_factor = round(gross_profit / gross_loss, 2) if gross_loss > 0 else 2.5
 
         return {
+            # ⚠️ isSimulatedData=True 면 실제 과거 시세가 아니라 난수로 돌린 결과다.
+            "isSimulatedData": used_simulated,
+            "dataSource": "random-mock" if used_simulated else "yfinance",
             "symbol": symbol,
             "strategyType": strategy_type,
             "initialCapital": self.initial_capital,

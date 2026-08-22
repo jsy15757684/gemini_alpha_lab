@@ -94,9 +94,13 @@ class BithumbClient:
 
     # ================= 하이브리드 자동 감지 API =================
     def get_balance(self, currency: str = "ALL") -> Dict[str, Any]:
-        """빗썸 잔고 조회 (API 2.0 우선 시도 -> 1.0 자동 폴백)"""
+        """빗썸 잔고 조회 (API 2.0 우선 시도 -> 1.0 자동 폴백).
+        두 엔진이 모두 실패하면 각 엔진이 돌려준 실제 사유를 모두 담아 반환한다.
+        (사유를 삼켜버리면 '키가 틀렸는지 / IP 미등록인지'를 사용자가 구분할 수 없다)"""
         if not self.connect_key or not self.secret_key:
             return {"status": "error", "message": "Connect Key와 Secret Key를 먼저 입력해주세요."}
+
+        diag = {}
 
         # 1. API 2.0 (JWT) 잔고 조회 시도
         try:
@@ -125,8 +129,12 @@ class BithumbClient:
                         "total_btc": str(btc_bal)
                     }
                 }
-        except Exception:
-            pass
+            else:
+                # 리스트가 아니면 2.0 이 에러를 돌려준 것 -> 사유 보관
+                err = res_v2.get("error", res_v2) if isinstance(res_v2, dict) else res_v2
+                diag["v2"] = err
+        except Exception as e:
+            diag["v2"] = f"통신/서명 오류: {e}"
 
         # 2. API 1.0 (HMAC) 잔고 조회 시도
         try:
@@ -134,9 +142,29 @@ class BithumbClient:
             if res_v1.get("status") == "0000":
                 res_v1["apiVersion"] = "1.0 (HMAC)"
                 return res_v1
-            return res_v1
+            diag["v1"] = res_v1.get("message") or res_v1
         except Exception as e:
-            return {"status": "error", "message": f"빗썸 통신 오류: {str(e)}"}
+            diag["v1"] = f"통신 오류: {e}"
+
+        return {
+            "status": "error",
+            "message": self._explain(diag),
+            "diagnostics": diag,
+        }
+
+    @staticmethod
+    def _explain(diag: Dict[str, Any]) -> str:
+        """두 엔진의 실패 사유를 사용자가 조치 가능한 문장으로 번역"""
+        blob = f"{diag.get('v2', '')} {diag.get('v1', '')}".lower()
+        if "ip" in blob:
+            return ("빗썸이 요청 IP를 거부했습니다. 모달에 표시된 '서버 공인 IP'를 "
+                    "빗썸 [API 관리 > IP 주소 등록]에 그대로 등록하세요. "
+                    f"(원문: v2={diag.get('v2')}, v1={diag.get('v1')})")
+        if "access key" in blob or "invalid" in blob or "auth data" in blob or "5300" in blob:
+            return ("API 키 인증 실패. Connect Key/Secret Key를 다시 확인하고, "
+                    "키에 '자산조회' 권한이 있는지 확인하세요. "
+                    f"(원문: v2={diag.get('v2')}, v1={diag.get('v1')})")
+        return f"빗썸 인증 실패. API 2.0 응답={diag.get('v2')} / API 1.0 응답={diag.get('v1')}"
 
     def place_market_buy(self, order_currency: str, units: float) -> Dict[str, Any]:
         """빗썸 시장가 매수 (API 2.0 / 1.0 자동 실행)"""

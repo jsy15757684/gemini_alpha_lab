@@ -154,7 +154,8 @@ def get_marketplace_bots() -> List[Dict[str, Any]]:
     return FEATURED_AI_BOTS
 
 def get_bot_by_id(bot_id: str) -> Dict[str, Any]:
+    """없는 id 는 None 을 반환한다 (기존엔 1번 봇을 돌려줬다)."""
     for b in FEATURED_AI_BOTS:
         if b["id"] == bot_id:
             return b
-    return FEATURED_AI_BOTS[0]
+    return None

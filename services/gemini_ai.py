@@ -109,20 +109,28 @@ class GeminiAIService:
 
     def analyze_filing_and_financials(self, symbol: str, quote: dict) -> Dict[str, Any]:
         """재무제표 엑스레이 및 건전성 딥 리서치"""
-        pe = quote.get("trailingPE", 25.0)
-        pb = quote.get("priceToBook", 3.5)
-        
+        # 코인 등 PER/PBR 이 없는 자산은 값이 None 으로 들어온다.
+        # .get(key, default) 는 키가 있고 값이 None 이면 None 을 그대로 돌려주므로
+        # 아래처럼 None 을 명시적으로 걸러야 한다. (이걸 빠뜨려 BTC/ETH 가 500 났다)
+        pe = quote.get("trailingPE")
+        pb = quote.get("priceToBook")
+        has_pe = isinstance(pe, (int, float))
+        has_pb = isinstance(pb, (int, float))
+
         # 알파 건전성 스코어 (0~100)
-        alpha_score = 82 if pe < 30 else 74
+        alpha_score = 74
+        if has_pe:
+            alpha_score = 82 if pe < 30 else 74
         
         return {
             "symbol": symbol,
             "alphaScore": alpha_score,
             "grade": "AAA (우량 성장주)" if alpha_score >= 80 else "AA (안정적 가치주)",
-            "valuationVerdict": "적정 주가 대비 저평가 매력 부각" if pe < 25 else "성장 프리미엄 반영 구간",
+            "valuationVerdict": ("적정 주가 대비 저평가 매력 부각" if (has_pe and pe < 25)
+                                 else ("성장 프리미엄 반영 구간" if has_pe else "PER 산정 불가 자산 (코인/비수익 자산)")),
             "metrics": {
-                "PER": f"{pe}배 (동종업계 평균 대비 15% 양호)",
-                "PBR": f"{pb}배",
+                "PER": f"{pe}배 (동종업계 평균 대비 15% 양호)" if has_pe else "해당 없음 (N/A)",
+                "PBR": f"{pb}배" if has_pb else "해당 없음 (N/A)",
                 "TargetPrice": f"{quote.get('targetHighPrice', quote.get('currentPrice', 100) * 1.18)} {quote.get('currency')}",
                 "UpsidePotential": "+18.4% 상승 여력",
                 "FinancialHealth": "안정 (부채비율 45% 미만, 현금보유율 양호)"

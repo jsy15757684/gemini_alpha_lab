@@ -149,7 +149,8 @@ def get_all_gurus() -> List[Dict[str, Any]]:
     return GURU_MASTERS
 
 def get_guru_by_id(guru_id: str) -> Dict[str, Any]:
+    """없는 id 는 None 을 반환한다. 예전엔 버핏을 돌려줘서 오타가 정상 응답으로 보였다."""
     for g in GURU_MASTERS:
         if g["id"] == guru_id:
             return g
-    return GURU_MASTERS[0]
+    return None

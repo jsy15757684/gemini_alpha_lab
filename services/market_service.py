@@ -170,7 +170,10 @@ def get_asset_quote(symbol: str) -> dict:
                     "targetHighPrice": round(cur_p * 1.22, 0),
                     "targetPrice": round(cur_p * 1.22, 0),
                     "targetUpsidePct": 22.0,
-                    "recommendationKey": "STRONG_BUY"
+                    "recommendationKey": "STRONG_BUY",
+                    "dataSource": "bithumb-public",
+                    "isRealtime": True,
+                    "isFallback": False
                 }
                 _CACHE[cache_key] = {"time": now, "data": res}
                 return res
@@ -183,7 +186,15 @@ def get_asset_quote(symbol: str) -> dict:
         if hist.empty:
             raise ValueError(f"No history for {resolved}")
 
-        info = ticker.info or {}
+        # ticker.info 는 Yahoo 가 데이터센터 IP 를 차단해 클라우드(Render)에서 거의 항상 실패한다.
+        # 예전엔 이 호출이 같은 try 안에 있어서, 정상적으로 받아온 history() 가격까지
+        # 통째로 버려지고 하드코딩된 2024년 가격이 대신 표시됐다. 반드시 분리한다.
+        try:
+            info = ticker.info or {}
+        except Exception as e:
+            logger.warning(f"ticker.info unavailable for {resolved} (가격은 history 로 유지): {e}")
+            info = {}
+
         current_price = safe_float(hist['Close'].iloc[-1], 100.0)
         prev_close = safe_float(hist['Close'].iloc[-2], current_price) if len(hist) > 1 else safe_float(info.get('previousClose'), current_price)
         change = current_price - prev_close
@@ -219,7 +230,10 @@ def get_asset_quote(symbol: str) -> dict:
             "targetHighPrice": mean_target,
             "targetPrice": mean_target,
             "targetUpsidePct": upside_pct,
-            "recommendationKey": str(info.get("recommendationKey", "BUY")).upper()
+            "recommendationKey": str(info.get("recommendationKey", "BUY")).upper(),
+            "dataSource": "yfinance" if info else "yfinance(history-only)",
+            "isRealtime": True,
+            "isFallback": False
         }
         _CACHE[cache_key] = {"time": now, "data": res}
         return res
@@ -251,7 +265,15 @@ def get_asset_quote(symbol: str) -> dict:
             "fiftyTwoWeekHigh": round(p * 1.3, 2),
             "fiftyTwoWeekLow": round(p * 0.7, 2),
             "targetHighPrice": round(p * 1.2, 2),
-            "recommendationKey": "BUY"
+            "targetPrice": round(p * 1.2, 2),
+            "targetUpsidePct": 20.0,
+            "recommendationKey": "BUY",
+            # ⚠️ 이 블록의 숫자는 실제 시세가 아니라 하드코딩된 참고값이다.
+            # 프론트엔드는 isFallback 을 보고 반드시 '시세 조회 실패' 로 표시해야 한다.
+            "dataSource": "hardcoded-fallback",
+            "isRealtime": False,
+            "isFallback": True,
+            "fallbackReason": str(e)[:200]
         }
         _CACHE[cache_key] = {"time": now, "data": fallback_res}
         return fallback_res
@@ -312,7 +334,9 @@ def get_chart_data(symbol: str, timeframe: str = "6mo", interval: str = "1d") ->
             "symbol": resolved,
             "candles": candles,
             "techSignals": tech_signals,
-            "totalCount": len(candles)
+            "totalCount": len(candles),
+            "isFallback": False,
+            "dataSource": "yfinance"
         }
         _CACHE[cache_key] = {"time": now, "data": res}
         return res
@@ -361,6 +385,9 @@ def generate_mock_chart(symbol: str, count: int = 100) -> dict:
         })
 
     return {
+        # ⚠️ 난수로 생성한 가짜 차트다. 실제 시세가 아니다.
+        "isFallback": True,
+        "dataSource": "random-mock",
         "symbol": symbol,
         "candles": candles,
         "techSignals": [
