@@ -6,6 +6,7 @@ let currentSentiment = null;
 let currentBacktest = null;
 let priceChartInstance = null;
 let equityChartInstance = null;
+let cachedBrokers = [];
 
 document.addEventListener("DOMContentLoaded", () => {
     initApp();
@@ -821,7 +822,8 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000,
         
         // 실전 LIVE 모드인데 해당 브로커가 아직 미연동 상태인 경우 친절하게 안내
         if (mode === "LIVE") {
-            const currentBroker = cachedBrokers.find(b => b.code === selectedBroker);
+            const brokerList = Array.isArray(cachedBrokers) ? cachedBrokers : [];
+            const currentBroker = brokerList.find(b => b.code === selectedBroker);
             if (currentBroker && !currentBroker.connected && selectedBroker !== "ALPACA") {
                 if (confirm(`⚠️ [${currentBroker.name}] API 키가 아직 등록되지 않았습니다.\n지금 API 키 등록 창을 열어 연동하시겠습니까?\n(모의투자 Paper 모드는 API 키 없이 즉시 가동 가능합니다)`)) {
                     openBrokerModal(selectedBroker, currentBroker.name);
@@ -1037,7 +1039,8 @@ async function loadBrokers() {
     try {
         const res = await fetch("/api/broker/list");
         const data = await res.json();
-        renderBrokers(data.brokers || []);
+        cachedBrokers = data.brokers || [];
+        renderBrokers(cachedBrokers);
     } catch (e) {
         console.error("Load brokers error:", e);
     }
