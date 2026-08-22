@@ -383,17 +383,48 @@ class BotManager:
     def get_bot(self, bot_id: str) -> Optional[AutoTradingBot]:
         return self.bots.get(bot_id)
 
+import os
+import json
 from services.bithumb_client import BithumbClient
 
+KEYS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "broker_keys.json")
+
 class BrokerKeyManager:
-    """브로커 및 거래소 API 키 연동 매니저"""
+    """브로커 및 거래소 API 키 영구 저장 & 연동 매니저"""
     def __init__(self):
         self.connected_brokers = {
-            "NAMUH": {"name": "🌳 NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": ""},
-            "BITHUMB": {"name": "🪙 빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": ""},
-            "ALPACA": {"name": "🇺🇸 Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY"}
+            "NAMUH": {"name": "🌳 NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": "", "secretKey": "", "accountNo": ""},
+            "BITHUMB": {"name": "🪙 빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": "", "secretKey": "", "accountNo": ""},
+            "ALPACA": {"name": "🇺🇸 Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY", "secretKey": "", "accountNo": ""}
         }
         self.bithumb_client = BithumbClient()
+        self._load_saved_keys()
+
+    def _save_keys_to_disk(self):
+        """API 키를 로컬 보안 파일에 영구 저장"""
+        try:
+            os.makedirs(os.path.dirname(KEYS_FILE), exist_ok=True)
+            with open(KEYS_FILE, "w", encoding="utf-8") as f:
+                json.dump(self.connected_brokers, f, ensure_ascii=False, indent=2)
+        except Exception as e:
+            logger.error(f"Error saving broker keys to disk: {e}")
+
+    def _load_saved_keys(self):
+        """저장된 API 키 자동 복원"""
+        try:
+            if os.path.exists(KEYS_FILE):
+                with open(KEYS_FILE, "r", encoding="utf-8") as f:
+                    saved_data = json.load(f)
+                    for k, v in saved_data.items():
+                        if k in self.connected_brokers and v.get("connected"):
+                            self.connected_brokers[k] = v
+                            if k == "BITHUMB" and v.get("rawApiKey") and v.get("rawSecretKey"):
+                                self.bithumb_client = BithumbClient(
+                                    connect_key=v["rawApiKey"],
+                                    secret_key=v["rawSecretKey"]
+                                )
+        except Exception as e:
+            logger.warning(f"Failed to load saved broker keys: {e}")
 
     def save_key(self, broker_code: str, api_key: str, secret_key: str = "", account_no: str = "") -> bool:
         b = broker_code.upper()
@@ -401,11 +432,14 @@ class BrokerKeyManager:
             masked = api_key[:3] + "******" + api_key[-3:] if len(api_key) > 6 else "******"
             self.connected_brokers[b]["connected"] = True
             self.connected_brokers[b]["apiKey"] = masked
+            self.connected_brokers[b]["rawApiKey"] = api_key
+            self.connected_brokers[b]["rawSecretKey"] = secret_key
             self.connected_brokers[b]["accountNo"] = account_no
 
             if b == "BITHUMB":
                 self.bithumb_client = BithumbClient(connect_key=api_key, secret_key=secret_key)
 
+            self._save_keys_to_disk()
             return True
         return False
 
@@ -418,13 +452,27 @@ class BrokerKeyManager:
         if b in self.connected_brokers:
             self.connected_brokers[b]["connected"] = False
             self.connected_brokers[b]["apiKey"] = ""
+            self.connected_brokers[b].pop("rawApiKey", None)
+            self.connected_brokers[b].pop("rawSecretKey", None)
             if b == "BITHUMB":
                 self.bithumb_client = BithumbClient()
+            self._save_keys_to_disk()
             return True
         return False
 
     def get_status_list(self) -> List[Dict[str, Any]]:
-        return [{"code": k, **v} for k, v in self.connected_brokers.items()]
+        # 클라이언트에는 민감한 원본 키(rawApiKey, rawSecretKey)를 제외하고 마스킹된 정보만 전송
+        result = []
+        for k, v in self.connected_brokers.items():
+            safe_info = {
+                "code": k,
+                "name": v.get("name"),
+                "connected": v.get("connected", False),
+                "mode": v.get("mode", "Live"),
+                "apiKey": v.get("apiKey", "")
+            }
+            result.append(safe_info)
+        return result
 
 bot_manager = BotManager()
 broker_manager = BrokerKeyManager()
