@@ -483,6 +483,14 @@ def test_bithumb_endpoint(req: ConnectBrokerRequest):
     )
     return result
 
+@app.get("/api/ai/status")
+def ai_status_endpoint():
+    """Gemini 연동 진단. 키 값은 노출하지 않고 모델·마지막 오류만 보고한다.
+    예전엔 실패를 전부 삼켜서 '키가 틀림 / 모델명이 틀림 / 쿼터 초과' 를
+    구분할 수 없었다."""
+    return gemini_ai.status()
+
+
 @app.get("/api/system/my_ip")
 def get_my_ip_endpoint():
     """서버의 실제 공인 IP (Outbound Egress IP) 조회.

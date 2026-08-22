@@ -1,41 +1,201 @@
 import os
 import json
+import time
 import logging
-from typing import Dict, Any
+import threading
+from typing import Any, Dict, List, Optional
 import requests
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+GEMINI_BASE = "https://generativelanguage.googleapis.com/v1beta"
+
+# 모델명을 코드에 박아두면 세대가 바뀔 때마다 조용히 404 가 난다.
+# GEMINI_MODEL 이 있으면 그 값을 쓰고, 없으면 Google 모델 목록 API 로 직접 탐색한다.
+GEMINI_MODEL_ENV = "GEMINI_MODEL"
+MODEL_CACHE_TTL = 3600.0
+
+# 자동 탐색 시 선호 순서 (이름에 포함되면 가점). 저렴하고 빠른 flash 계열 우선.
+_PREFER = ("flash-lite", "flash", "pro")
+
 
 class GeminiAIService:
     def __init__(self, api_key: str = None):
         self.api_key = api_key or os.getenv("GEMINI_API_KEY", "")
+        self._lock = threading.Lock()
+        self._model: Optional[str] = None
+        self._model_at = 0.0
+        self._available: List[str] = []
+        # 마지막 실패 사유를 보관한다. 예전엔 전부 삼켜서 '키가 틀림' 과
+        # '모델명이 틀림' 과 '쿼터 초과' 를 화면에서 구분할 수 없었다.
+        self.last_error: Optional[str] = None
+        self.last_error_kind: Optional[str] = None
+
+    # ---------- 모델 해석 ----------
+
+    def list_models(self) -> List[str]:
+        """generateContent 를 지원하는 모델 이름 목록을 실제로 조회한다."""
+        if not self.api_key:
+            return []
+        try:
+            r = requests.get(f"{GEMINI_BASE}/models?key={self.api_key}&pageSize=200", timeout=10)
+            if r.status_code != 200:
+                self._record_error(r.status_code, r.text, context="models.list")
+                return []
+            out = []
+            for m in (r.json().get("models") or []):
+                if "generateContent" in (m.get("supportedGenerationMethods") or []):
+                    out.append(str(m.get("name", "")).replace("models/", ""))
+            self._available = out
+            return out
+        except Exception as e:
+            self.last_error = f"모델 목록 조회 실패: {e}"
+            self.last_error_kind = "network"
+            return []
+
+    def resolve_model(self, force: bool = False) -> Optional[str]:
+        """사용할 모델 이름을 결정한다. 환경변수 > 자동 탐색."""
+        env_model = (os.getenv(GEMINI_MODEL_ENV) or "").strip()
+        if env_model:
+            return env_model
+
+        now = time.time()
+        with self._lock:
+            if not force and self._model and (now - self._model_at) < MODEL_CACHE_TTL:
+                return self._model
+
+        models = self.list_models()
+        if not models:
+            return None
+
+        def rank(name: str) -> tuple:
+            low = name.lower()
+            # 선호 키워드 순위 (없으면 최하위), 그다음 이름이 짧은 쪽(별칭일 가능성)
+            pref = next((i for i, k in enumerate(_PREFER) if k in low), len(_PREFER))
+            # 미리보기/실험 버전은 뒤로
+            unstable = 1 if any(t in low for t in ("preview", "exp", "thinking")) else 0
+            return (unstable, pref, len(low))
+
+        chosen = sorted(models, key=rank)[0]
+        with self._lock:
+            self._model = chosen
+            self._model_at = now
+        logger.info(f"Gemini 모델 자동 선택: {chosen} (후보 {len(models)}개)")
+        return chosen
+
+    # ---------- 오류 분류 ----------
+
+    def _record_error(self, status: int, body: str, context: str = "generateContent") -> None:
+        snippet = (body or "")[:300].replace("\n", " ")
+        if status == 400 and "API key not valid" in body:
+            kind, msg = "bad_key", "API 키가 유효하지 않습니다. GEMINI_API_KEY 값을 확인하세요."
+        elif status in (401, 403):
+            kind, msg = "forbidden", "키 권한이 없거나 Gemini API 가 활성화되지 않았습니다."
+        elif status == 404:
+            kind, msg = "bad_model", "해당 모델을 찾을 수 없습니다. GEMINI_MODEL 값을 확인하거나 비워서 자동 탐색을 쓰세요."
+        elif status == 429:
+            kind, msg = "quota", "요청 한도(쿼터)를 초과했습니다. 잠시 후 다시 시도하세요."
+        elif status >= 500:
+            kind, msg = "upstream", "Gemini 서버 오류입니다."
+        else:
+            kind, msg = "http_error", f"Gemini API 오류 (HTTP {status})."
+        self.last_error_kind = kind
+        self.last_error = f"{msg} [{context} HTTP {status}] {snippet}"
+        logger.warning(self.last_error)
+
+    def status(self) -> Dict[str, Any]:
+        """진단용. 키·모델·마지막 오류를 그대로 보고한다 (키 값은 노출하지 않는다)."""
+        if not self.api_key:
+            return {
+                "configured": False,
+                "model": None,
+                "modelSource": None,
+                "ok": False,
+                "error": "GEMINI_API_KEY 환경변수가 설정되지 않았습니다.",
+                "errorKind": "no_key",
+                "availableModels": [],
+            }
+        env_model = (os.getenv(GEMINI_MODEL_ENV) or "").strip()
+        model = self.resolve_model()
+
+        # 환경변수로 지정한 모델은 그대로 믿으면 안 된다. 실제 목록과 대조한다.
+        # (예전 코드가 존재하지 않는 모델을 조용히 호출하다 404 로 죽었던 문제)
+        if env_model:
+            available = self.list_models()
+            if available:
+                if env_model not in available:
+                    self.last_error_kind = "bad_model"
+                    self.last_error = (
+                        f"GEMINI_MODEL='{env_model}' 은 이 키로 사용할 수 없는 모델입니다. "
+                        f"사용 가능: {', '.join(available[:6])}"
+                        + (" ..." if len(available) > 6 else "")
+                    )
+                elif self.last_error_kind == "bad_model":
+                    self.last_error_kind = None
+                    self.last_error = None
+
+        return {
+            "configured": True,
+            "model": model,
+            "modelSource": "env" if env_model else ("auto" if model else None),
+            "ok": bool(model) and self.last_error_kind in (None, "quota"),
+            "error": self.last_error,
+            "errorKind": self.last_error_kind,
+            "availableModels": self._available[:40],
+        }
+
+    # ---------- 호출 ----------
 
     def _call_gemini_api(self, prompt: str, system_instruction: str = "") -> str:
-        """Gemini API 호출 시도, 키가 없거나 실패 시 fallback 로직 사용"""
+        """Gemini 호출. 실패하면 빈 문자열을 반환하되 사유를 last_error 에 남긴다."""
         if not self.api_key:
+            self.last_error = "GEMINI_API_KEY 환경변수가 설정되지 않았습니다."
+            self.last_error_kind = "no_key"
             return ""
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={self.api_key}"
-        headers = {"Content-Type": "application/json"}
+        model = self.resolve_model()
+        if not model:
+            if not self.last_error:
+                self.last_error = "사용 가능한 Gemini 모델을 찾지 못했습니다."
+                self.last_error_kind = "no_model"
+            return ""
+
         payload = {
             "contents": [{"parts": [{"text": f"{system_instruction}\n\n{prompt}"}]}],
-            "generationConfig": {
-                "temperature": 0.3,
-                "maxOutputTokens": 2048
-            }
+            "generationConfig": {"temperature": 0.3, "maxOutputTokens": 2048},
         }
-        try:
-            resp = requests.post(url, headers=headers, json=payload, timeout=12)
+        for attempt in (1, 2):
+            url = f"{GEMINI_BASE}/models/{model}:generateContent?key={self.api_key}"
+            try:
+                resp = requests.post(url, headers={"Content-Type": "application/json"},
+                                     json=payload, timeout=15)
+            except Exception as e:
+                self.last_error = f"Gemini 통신 오류: {e}"
+                self.last_error_kind = "network"
+                return ""
+
             if resp.status_code == 200:
-                data = resp.json()
-                return data["candidates"][0]["content"]["parts"][0]["text"]
-            else:
-                logger.warning(f"Gemini API returned code {resp.status_code}: {resp.text}")
-        except Exception as e:
-            logger.warning(f"Gemini API call failed: {e}")
+                try:
+                    text = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+                    self.last_error = None
+                    self.last_error_kind = None
+                    return text
+                except Exception as e:
+                    self.last_error = f"Gemini 응답 구조가 예상과 다릅니다: {e}"
+                    self.last_error_kind = "bad_response"
+                    return ""
+
+            self._record_error(resp.status_code, resp.text)
+            # 모델이 사라진 경우 한 번만 목록을 다시 받아 재시도한다
+            if resp.status_code == 404 and attempt == 1 and not (os.getenv(GEMINI_MODEL_ENV) or "").strip():
+                new_model = self.resolve_model(force=True)
+                if new_model and new_model != model:
+                    logger.info(f"모델 {model} -> {new_model} 로 재시도")
+                    model = new_model
+                    continue
+            return ""
         return ""
 
     def analyze_sentiment_and_news(self, symbol: str, quote: dict) -> Dict[str, Any]:
@@ -109,10 +269,11 @@ class GeminiAIService:
             "catalysts": ["다음 분기 실적 어닝 서프라이즈 여부", "업종 내 핵심 경쟁사 대비 시장점유율 확대"],
             # AI 가 실제로 돌지 않았음을 응답에 남긴다. 점수는 60 + 변동률x4 산수 결과이고
             # 호재/리스크 문구는 종목별 하드코딩이다. UI 가 이걸 보고 표기해야 한다.
-            "aiSource": "fallback-heuristic" if not self.api_key else "fallback-parse-failed",
-            "aiNote": ("GEMINI_API_KEY 가 없어 AI 분석 대신 변동률 기반 산식과 고정 문구를 사용했습니다."
-                       if not self.api_key else
-                       "Gemini 응답 파싱에 실패해 대체 문구를 사용했습니다.")
+            "aiSource": "fallback",
+            "aiErrorKind": self.last_error_kind or ("no_key" if not self.api_key else None),
+            "aiNote": (self.last_error or
+                       "AI 분석 대신 변동률 기반 산식과 고정 문구를 사용했습니다."),
+            "aiModel": (os.getenv(GEMINI_MODEL_ENV) or "").strip() or None,
         }
 
     def analyze_filing_and_financials(self, symbol: str, quote: dict) -> Dict[str, Any]:
@@ -211,12 +372,17 @@ class GeminiAIService:
                     logger.warning(f"재무 코멘트 JSON 파싱 실패: {e}")
 
         if not result["coreInsights"]:
-            if not self.api_key:
-                result["coreInsights"] = ["GEMINI_API_KEY 가 설정되지 않아 AI 코멘트를 생성하지 않았습니다. 위 수치는 실제 조회값입니다."]
-            elif not available:
+            if not available:
                 result["coreInsights"] = ["재무 지표를 조회하지 못해 분석을 생성하지 않았습니다."]
+            else:
+                result["coreInsights"] = [
+                    self.last_error or "GEMINI_API_KEY 가 설정되지 않아 AI 코멘트를 생성하지 않았습니다."
+                ]
+                result["coreInsights"].append("위 수치는 실제 조회값입니다.")
             result["aiSource"] = "unavailable"
+            result["aiErrorKind"] = self.last_error_kind or ("no_key" if not self.api_key else None)
 
+        result["aiModel"] = self.resolve_model() if self.api_key else None
         return result
 
     def parse_natural_language_strategy(self, user_prompt: str) -> Dict[str, Any]:

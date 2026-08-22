@@ -168,10 +168,41 @@ async function handleLogout() {
     window.location.reload();
 }
 
+// 배지에 실제로 호출 중인 모델을 표시한다.
+// 예전엔 실재하지 않는 "GEMINI 3.7 PRO" 가 박혀 있었고 실제로는 구형 모델을 불렀다.
+async function loadAiStatus() {
+    const badge = document.getElementById("aiModelBadge");
+    try {
+        const st = await fetchJson("/api/ai/status");
+        if (badge) {
+            if (!st.configured) {
+                badge.textContent = "AI 미연결";
+                badge.title = st.error || "GEMINI_API_KEY 미설정";
+            } else if (st.model) {
+                badge.textContent = st.model.toUpperCase();
+                badge.title = `모델 ${st.model} (${st.modelSource === "env" ? "GEMINI_MODEL 지정" : "자동 선택"})`
+                    + (st.error ? `\n마지막 오류: ${st.error}` : "");
+            } else {
+                badge.textContent = "AI 오류";
+                badge.title = st.error || "모델을 확인할 수 없습니다";
+            }
+        }
+        if (st.configured && !st.ok && st.error) {
+            console.warn("Gemini 상태:", st.errorKind, st.error);
+        }
+        return st;
+    } catch (e) {
+        if (badge) { badge.textContent = "AI 상태 불명"; badge.title = String(e.message || e); }
+        console.error("AI status error:", e);
+        return null;
+    }
+}
+
 async function initApp() {
     if (appStarted) return;
     appStarted = true;
     setupEventListeners();
+    loadAiStatus();
     // ⚡ 초고속 비동기 병렬 로딩 (동시 요청으로 초기 로딩 시간 80% 단축)
     await Promise.allSettled([
         loadSymbolData(currentSymbol),
@@ -522,7 +553,15 @@ function renderFinancialsUI(fin) {
 
     let verdict = fin.valuationVerdict || "";
     if (fin.aiSource && fin.aiSource !== "gemini") {
-        verdict += "  ·  AI 코멘트 미동작";
+        const kindLabel = {
+            no_key: "GEMINI_API_KEY 미설정",
+            bad_key: "API 키 무효",
+            bad_model: "모델명 오류",
+            forbidden: "키 권한 없음",
+            quota: "쿼터 초과",
+            network: "통신 오류",
+        }[fin.aiErrorKind] || "미동작";
+        verdict += `  ·  AI 코멘트 ${kindLabel}`;
     }
     document.getElementById("valuationVerdict").textContent = verdict;
 
