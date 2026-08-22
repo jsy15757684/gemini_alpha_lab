@@ -16,7 +16,7 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=3.0.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=3.1.0">
 </head>
 <body>
 
@@ -460,27 +460,27 @@
 
                     <div class="grid-4" style="margin-bottom: 1rem;">
                         <div>
-                            <div class="stat-label">대상 종목</div>
-                            <input type="text" id="botSymbolInput" value="BTC" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;" placeholder="예: BTC, ETH, NVDA">
+                            <div class="stat-label">대상 코인/종목</div>
+                            <input type="text" id="botSymbolInput" value="BTC" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; font-weight: 700; color: #fff;" placeholder="예: BTC, ETH, SOL, XRP">
                         </div>
                         <div>
                             <div class="stat-label">매매 모드</div>
                             <select id="botModeSelect" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; background: var(--bg-card); color: #fff;">
-                                <option value="PAPER" selected>🛡️ 모의투자 (Paper Mode - 무위험 실시간)</option>
+                                <option value="PAPER" selected>🛡️ 모의투자 (무위험 실시간 호가)</option>
                                 <option value="LIVE">🔥 실전 매매 (Live Real Money)</option>
                             </select>
                         </div>
                         <div>
-                            <div class="stat-label">연동 거래소/증권사</div>
-                            <select id="botBrokerSelect" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; background: var(--bg-card); color: var(--accent-amber); font-weight: 700;">
-                                <option value="BITHUMB">🪙 빗썸 실전 (Bithumb Live)</option>
-                                <option value="NAMUH">🌳 NH투자증권 나무 (NAMUH)</option>
+                            <div class="stat-label">연동 거래소</div>
+                            <select id="botBrokerSelect" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; background: var(--bg-card); color: var(--accent-amber); font-weight: 800; border-color: var(--accent-amber);">
+                                <option value="BITHUMB" selected>🪙 빗썸 (Bithumb KRW)</option>
+                                <option value="NAMUH">🌳 NH투자증권 나무 (국내주식)</option>
                                 <option value="ALPACA">🇺🇸 Alpaca Trading (미국주식)</option>
                             </select>
                         </div>
                         <div>
-                            <div class="stat-label">운용 자본 (KRW / $)</div>
-                            <input type="number" id="botCapitalInput" value="1000000" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;" placeholder="예: 1000000원">
+                            <div class="stat-label">운용 자본 (원화 KRW)</div>
+                            <input type="number" id="botCapitalInput" value="1000000" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; font-weight: 700; color: var(--accent-emerald);" placeholder="예: 1000000 (100만원)">
                         </div>
                     </div>
 
@@ -488,7 +488,7 @@
                     <div style="background-color: var(--bg-card-subtle); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); margin-bottom: 1.25rem;">
                         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
                             <div style="font-size: 0.9rem; font-weight: 700; color: var(--accent-emerald);">🏛️ 기관급 7대 슈퍼 알파 멀티팩터 (승률 95% 극대화)</div>
-                            <span class="badge-win" style="font-size: 0.75rem;">속임수 횡보장 95% 차단</span>
+                            <span class="badge-win" style="font-size: 0.75rem;">빗썸 실시간 호가 감시</span>
                         </div>
 
                         <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-size: 0.85rem;">
@@ -523,8 +523,8 @@
                         </div>
                     </div>
 
-                    <button id="startNewBotBtn" class="btn-primary" style="width: 100%; justify-content: center; background: linear-gradient(135deg, #10B981, #059669); font-weight: 700; font-size: 1rem;">
-                        🚀 7대 슈퍼 알파 자동매매 봇 가동 시작
+                    <button id="startNewBotBtn" class="btn-primary" style="width: 100%; justify-content: center; background: linear-gradient(135deg, #10B981, #059669); font-weight: 800; font-size: 1rem; padding: 0.75rem 1.5rem; box-shadow: 0 4px 15px rgba(16,185,129,0.3);">
+                        🚀 빗썸 7대 슈퍼 알파 봇 가동 시작
                     </button>
                 </div>
 
@@ -650,6 +650,6 @@
     </div>
 
     <!-- App Script -->
-    <script src="/static/js/app.js?v=3.0.0"></script>
+    <script src="/static/js/app.js?v=3.1.0"></script>
 </body>
 </html>
