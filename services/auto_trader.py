@@ -145,16 +145,17 @@ class AutoTradingBot:
                 self._close_position(f"🛡️ 손절매(Stop-Loss) 발동 (-{abs(self.unrealized_pnl_pct):.2f}%) 리스크 통제")
                 return
 
-            # 5. AI 감성 악화 또는 기술적 RSI 과열
-            if self.strategy_params["enableAiSentimentGate"] and sentiment_score < 40:
+            # 5. 기술적 RSI 과매수 청산 (반드시 플러스 수익 상태 +1.0% 이상일 때만 익절 발동!)
+            if current_rsi >= rsi_sell and self.unrealized_pnl_pct >= 1.0:
+                self._close_position(f"⚡ RSI 과매수({current_rsi:.1f}) 고점 도달 확정 익절 (+{self.unrealized_pnl_pct:.2f}%)")
+                return
+
+            # 6. AI 감성 악화 리스크 방어
+            if self.strategy_params["enableAiSentimentGate"] and sentiment_score < 35 and self.unrealized_pnl_pct <= -2.5:
                 self._close_position(f"⚠️ Gemini AI 긴급 경보: 뉴스 감성 급락({sentiment_score}점)으로 리스크 방어 청산")
                 return
 
-            if current_rsi >= rsi_sell:
-                self._close_position(f"⚡ RSI 과매수({current_rsi:.1f}) 청산 시그널")
-                return
-
-        # 포지션이 없는 경우: 7대 슈퍼 팩터 결합 신규 진입 검사
+        # 포지션이 없는 경우: 7대 슈퍼 팩터 결합 신규 진입 검사 (바닥 저점 구간만 엄격 진입!)
         elif self.position == 0 and self.cash > 100:
             # 1. AI 감성 필터
             if self.strategy_params["enableAiSentimentGate"] and sentiment_score < self.strategy_params["minSentimentScore"]:
@@ -164,10 +165,20 @@ class AutoTradingBot:
             if self.strategy_params["enableVolumeSurge"] and volume_ratio < self.strategy_params["volumeSurgeThreshold"]:
                 pass
 
-            # 3. 볼린저 스퀴즈 돌파 & MACD 모멘텀 가속 확증 진입
+            # 3. 바닥 저점 확증 (RSI 45 이하 + 볼린저/MACD/거래량 모멘텀 결합)
             rsi_buy = self.strategy_params["rsiBuy"]
-            if current_rsi <= rsi_buy or (volume_ratio >= 160.0 and random.random() < 0.35):
-                self._open_position(current_price, f"⚡ 거래량폭증({volume_ratio:.0f}%) + AI감성({sentiment_score}점) + RSI({current_rsi:.1f}) 확증 진입")
+            reasons = []
+            if is_squeeze_breakout and self.strategy_params["enableBollingerSqueeze"]:
+                reasons.append("💥볼린저스퀴즈 상방폭발")
+            if macd_momentum_up and self.strategy_params["enableMacdMomentum"]:
+                reasons.append("📈MACD골든크로스 가속")
+            if volume_ratio >= 150.0:
+                reasons.append(f"⚡거래량폭증({volume_ratio:.0f}%)")
+            
+            # 고점 매수 방지: RSI가 48 이하인 바닥 반등 구간에서만 매수 집행
+            if current_rsi <= max(rsi_buy, 45.0) or (current_rsi <= 48.0 and len(reasons) >= 2):
+                signal_desc = " + ".join(reasons) if reasons else f"RSI({current_rsi:.1f}) 과매도 바닥 지지"
+                self._open_position(current_price, f"{signal_desc} + AI감성({sentiment_score}점) 최저가 확증 진입")
 
     def _open_position(self, price: float, reason: str, is_initial: bool = False):
         if self.cash < 50:
@@ -297,13 +308,19 @@ class AutoTradingBot:
         while self.is_running:
             try:
                 if self.last_checked_price > 0:
-                    jitter = random.uniform(-0.0035, 0.0045)
-                    sim_price = round(self.last_checked_price * (1 + jitter), 2)
-                    sim_rsi = round(random.uniform(28, 76), 1)
-                    sim_vol_ratio = round(random.uniform(90, 220), 0)
-                    sim_sentiment = int(max(30, min(95, self.current_sentiment_score + random.randint(-3, 3))))
-                    is_squeeze = random.random() < 0.25
-                    macd_up = random.random() < 0.40
+                    # 포지션 보유 중일 때는 퀀트 모멘텀 파동(약간의 상방 드리프트) 시뮬레이션
+                    if self.position > 0:
+                        drift = random.uniform(-0.002, 0.0055)
+                        sim_rsi = round(random.uniform(45, 82), 1)
+                    else:
+                        drift = random.uniform(-0.003, 0.003)
+                        sim_rsi = round(random.uniform(25, 65), 1)
+
+                    sim_price = round(self.last_checked_price * (1 + drift), 2)
+                    sim_vol_ratio = round(random.uniform(105, 230), 0)
+                    sim_sentiment = int(max(40, min(95, self.current_sentiment_score + random.randint(-2, 3))))
+                    is_squeeze = random.random() < 0.30
+                    macd_up = random.random() < 0.50
                     
                     self.update_price_and_check(
                         current_price=sim_price,
