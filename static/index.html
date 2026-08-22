@@ -16,13 +16,16 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=3.5.0">
+    <link rel="stylesheet" href="/static/css/style.css?v=3.5.1">
 <style>
-      .auth-gate{position:fixed; inset:0; z-index:9999; display:flex; align-items:center;
-        justify-content:center; padding:1.25rem;
+      /* 카드가 뷰포트보다 높을 때(짧은 창·가로모드 휴대폰) align-items:center 는
+         넘치는 위쪽을 잘라내고 스크롤도 막아 비밀번호 칸에 닿을 수 없게 만든다.
+         overflow-y:auto + 자식의 margin:auto 조합이 '중앙정렬 + 넘치면 스크롤' 을 둘 다 만족한다. */
+      .auth-gate{position:fixed; inset:0; z-index:9999; display:flex; overflow-y:auto;
+        padding:1.25rem;
         background:#080a10; background-image:radial-gradient(1200px 600px at 50% -10%, rgba(56,189,248,.10), transparent 60%);}
       .auth-gate.hidden{display:none}
-      .auth-card{width:100%; max-width:380px; display:flex; flex-direction:column; gap:.55rem;
+      .auth-card{margin:auto; width:100%; max-width:380px; display:flex; flex-direction:column; gap:.55rem;
         background:#0f131c; border:1px solid #222a38; border-radius:14px;
         padding:1.9rem 1.6rem; box-shadow:0 24px 70px -30px rgba(0,0,0,.9);}
       .auth-brand{font-size:.66rem; font-weight:800; letter-spacing:.18em;
@@ -43,6 +46,12 @@
       .auth-error.hidden{display:none}
       .auth-foot{margin-top:.3rem; font-size:.72rem; color:#5b6779}
       body.locked{overflow:hidden}
+      @media (max-height:520px){
+        .auth-card{padding:1.15rem 1.2rem; gap:.4rem}
+        .auth-title{font-size:1.15rem}
+        .auth-sub{font-size:.78rem; margin-bottom:.4rem}
+        .auth-foot{display:none}
+      }
     </style>
     </head>
 <body>
@@ -736,6 +745,6 @@
     </div>
 
     <!-- App Script -->
-    <script src="/static/js/app.js?v=3.5.0"></script>
+    <script src="/static/js/app.js?v=3.5.1"></script>
 </body>
 </html>
