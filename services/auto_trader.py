@@ -253,6 +253,10 @@ class AutoTradingBot:
     def _close_position(self, reason: str):
         if self.position <= 0: return
         is_bithumb = "BITHUMB" in self.broker.upper()
+        is_krw = is_bithumb or ("NAMUH" in self.broker.upper()) or (".KS" in self.symbol) or (".KQ" in self.symbol)
+        unit = "개" if (is_bithumb or "BTC" in self.symbol or "ETH" in self.symbol or "SOL" in self.symbol) else "주"
+        curr_unit = "원" if is_krw else "$"
+
         price = self.last_checked_price if self.last_checked_price > 0 else self.entry_price
         gross = self.position * price
         fee = gross * 0.001
@@ -268,7 +272,7 @@ class AutoTradingBot:
                 status_code = sell_res.get("status", "error")
                 msg = sell_res.get("message", "정상 접수")
                 if status_code == "0000":
-                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 전량청산 성공] {coin_sym} {self.position}개 시장가 체결 완료!")
+                    self.add_log("LIVE_ORDER", f"🪙 [빗썸 실전 전량청산 성공] {coin_sym} {self.position}{unit} 시장가 체결 완료!")
                 else:
                     self.add_log("WARNING", f"⚠️ [빗썸 청산 거부] {msg}")
             except Exception as e:
@@ -279,7 +283,7 @@ class AutoTradingBot:
         self.total_trades += 1
         if trade_pnl > 0: self.winning_trades += 1
 
-        self.add_log("SELL", f"🔴 [전량 청산] {self.symbol} {self.position}주 @ ${price:,.2f} | 손익: ${trade_pnl:+,.2f} ({trade_pnl_pct:+.2f}%) | {reason}")
+        self.add_log("SELL", f"🔴 [전량 청산] {self.symbol} {self.position}{unit} @ {price:,.0f}{curr_unit} | 손익: {trade_pnl:+,.0f}{curr_unit} ({trade_pnl_pct:+.2f}%) | {reason}")
         
         self.position = 0.0
         self.entry_price = 0.0
@@ -318,12 +322,16 @@ class AutoTradingBot:
         total_asset = round(self.cash + (self.position * cur_p), 2)
         total_roi_pct = round(((total_asset - self.initial_capital) / self.initial_capital) * 100, 2)
         win_rate = round((self.winning_trades / self.total_trades * 100), 2) if self.total_trades > 0 else 0.0
+        is_krw = ("BITHUMB" in self.broker.upper()) or ("NAMUH" in self.broker.upper()) or (".KS" in self.symbol) or (".KQ" in self.symbol)
+        unit = "개" if ("BITHUMB" in self.broker.upper() or "BTC" in self.symbol or "ETH" in self.symbol or "SOL" in self.symbol) else "주"
 
         return {
             "botId": self.bot_id,
             "symbol": self.symbol,
             "mode": self.mode,
             "broker": self.broker,
+            "currency": "KRW" if is_krw else "USD",
+            "unit": unit,
             "isRunning": self.is_running,
             "createdAt": self.created_at,
             "initialCapital": self.initial_capital,

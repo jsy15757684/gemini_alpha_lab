@@ -906,6 +906,9 @@ function renderActiveBots(bots) {
         const isRunning = bot.isRunning;
         const isProfit = (bot.unrealizedPnl || 0) >= 0;
         const p = bot.strategyParams || {};
+        const isKrw = bot.currency === 'KRW' || (bot.broker && (bot.broker.includes('BITHUMB') || bot.broker.includes('NAMUH')));
+        const unit = bot.unit || (isKrw ? '개' : '주');
+        const currSym = isKrw ? '원' : '$';
         
         // 기관급 7대 슈퍼 알파 팩터 뱃지
         const badges = [];
@@ -916,8 +919,18 @@ function renderActiveBots(bots) {
         if (p.enableTrailingStop) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(16,185,129,0.15); color:var(--accent-emerald); border-color:var(--accent-emerald);">🛡️ ATR 트레일링 스탑</span>`);
         if (p.enableScaleInOut) badges.push(`<span class="btn-chip" style="font-size:0.7rem; padding:0.15rem 0.5rem; background:rgba(245,158,11,0.15); color:var(--accent-amber); border-color:var(--accent-amber);">💰 50% 분할 익절</span>`);
 
-        const totalAssetStr = (bot.currentTotalAsset != null ? Number(bot.currentTotalAsset) : 0).toLocaleString();
-        const unrealizedPnlStr = (bot.unrealizedPnl != null ? Number(bot.unrealizedPnl) : 0).toLocaleString();
+        const totalAssetStr = isKrw 
+            ? `${Number(bot.currentTotalAsset || 0).toLocaleString()}원` 
+            : `$${Number(bot.currentTotalAsset || 0).toLocaleString()}`;
+        const unrealizedPnlStr = isKrw 
+            ? `${isProfit ? '+' : ''}${Number(bot.unrealizedPnl || 0).toLocaleString()}원` 
+            : `${isProfit ? '+' : ''}$${Number(bot.unrealizedPnl || 0).toLocaleString()}`;
+        const entryPriceStr = isKrw 
+            ? `${Number(bot.entryPrice || 0).toLocaleString()}원` 
+            : `$${Number(bot.entryPrice || 0).toLocaleString()}`;
+        const curPriceStr = isKrw 
+            ? `${Number(bot.currentPrice || 0).toLocaleString()}원` 
+            : `$${Number(bot.currentPrice || 0).toLocaleString()}`;
 
         const card = document.createElement("div");
         card.style.backgroundColor = "var(--bg-card-subtle)";
@@ -936,7 +949,7 @@ function renderActiveBots(bots) {
                 </div>
                 <div style="display: flex; align-items: center; gap: 0.5rem;">
                     <span style="font-size: 0.85rem; color: ${isRunning ? 'var(--accent-emerald)' : 'var(--text-muted)'}; font-weight: 600;">
-                        ● ${isRunning ? '5대 멀티팩터 실시간 감시 중' : '정지됨 (전량 청산)'}
+                        ● ${isRunning ? '7대 슈퍼 알파 실시간 감시 중' : '정지됨 (전량 청산)'}
                     </span>
                     ${isRunning 
                         ? `<button class="btn-chip" style="color: var(--accent-rose); border-color: var(--accent-rose); font-size:0.75rem; font-weight:700;" onclick="stopTradingBot('${bot.botId}')">🛑 즉시 청산 & 중지</button>` 
@@ -952,21 +965,21 @@ function renderActiveBots(bots) {
 
             <div class="grid-4" style="margin-bottom: 1rem;">
                 <div class="stat-box">
-                    <div class="stat-label">총 자산 가치</div>
-                    <div class="stat-value">$${totalAssetStr}</div>
+                    <div class="stat-label">총 운용 자산</div>
+                    <div class="stat-value" style="font-size: 1.2rem; font-weight: 800;">${totalAssetStr}</div>
                     <div class="stat-sub ${(bot.totalRoiPct || 0) >= 0 ? 'text-emerald' : 'text-rose'}">
                         수익률: ${(bot.totalRoiPct || 0) >= 0 ? '+' : ''}${bot.totalRoiPct || 0}%
                     </div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">보유 포지션</div>
-                    <div class="stat-value">${bot.position || 0}주/개</div>
-                    <div class="stat-sub text-muted">진입가: $${bot.entryPrice || 0} (현재가: $${bot.currentPrice || 0})</div>
+                    <div class="stat-value" style="font-size: 1.2rem;">${bot.position || 0} ${unit}</div>
+                    <div class="stat-sub text-muted">진입가: ${entryPriceStr} (현재가: ${curPriceStr})</div>
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">미실현 평가손익</div>
-                    <div class="stat-value ${isProfit ? 'text-emerald' : 'text-rose'}">
-                        ${isProfit ? '+' : ''}$${unrealizedPnlStr}
+                    <div class="stat-value ${isProfit ? 'text-emerald' : 'text-rose'}" style="font-size: 1.2rem; font-weight: 800;">
+                        ${unrealizedPnlStr}
                     </div>
                     <div class="stat-sub ${isProfit ? 'text-emerald' : 'text-rose'}">
                         (${isProfit ? '+' : ''}${bot.unrealizedPnlPct || 0}%)
@@ -974,7 +987,7 @@ function renderActiveBots(bots) {
                 </div>
                 <div class="stat-box">
                     <div class="stat-label">실시간 수급 & 승률</div>
-                    <div class="stat-value">${bot.volumeRatio || 120}%</div>
+                    <div class="stat-value" style="font-size: 1.2rem;">${bot.volumeRatio || 120}%</div>
                     <div class="stat-sub text-cyan">거래량 폭증 지수 | 승률: ${bot.winRate || 0}%</div>
                 </div>
             </div>

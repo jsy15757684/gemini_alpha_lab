@@ -223,11 +223,21 @@ def generate_report_endpoint(req: GenerateReportRequest):
 def deploy_bot_endpoint(req: DeployBotRequest):
     try:
         resolved_sym = resolve_symbol(req.symbol)
-        # Initial quote check
+        
+        # 빗썸 브로커인 경우 빗썸 실시간 원화 현재가 직통 연동
+        init_price = 0.0
+        if req.broker and "BITHUMB" in req.broker.upper():
+            coin_clean = resolved_sym.upper().replace("-USD", "").replace("KRW-", "")
+            t_res = broker_manager.bithumb_client.get_ticker(coin_clean, "KRW")
+            if t_res.get("status") == "0000":
+                init_price = float(t_res.get("data", {}).get("closing_price", 0.0))
+        
+        # 빗썸 조회가 아니거나 실패 시 일반 quote 조회
         q = get_asset_quote(resolved_sym)
-        init_price = float(q.get("currentPrice", 0.0))
         if init_price <= 0:
-            init_price = 100.0
+            init_price = float(q.get("currentPrice", 0.0))
+            if init_price <= 0:
+                init_price = 100.0
         
         # Get AI sentiment
         sentiment = gemini_ai.analyze_sentiment_and_news(resolved_sym, q)
