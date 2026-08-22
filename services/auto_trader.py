@@ -1,5 +1,7 @@
 import asyncio
+import os
 import time
+import uuid
 from datetime import datetime
 import logging
 from typing import Dict, Any, List, Optional
@@ -10,6 +12,15 @@ logger = logging.getLogger(__name__)
 
 # 일봉 기반 지표(RSI/MACD/볼린저)는 하루 한 번만 바뀌므로 5분 주기로 갱신한다.
 INDICATOR_REFRESH_SEC = 300.0
+
+# 실제 주문 API 가 구현된 브로커. 여기 없는 브로커는 LIVE 로 띄워도 주문이 나가지 않는다.
+# 예전에는 NH나무·Alpaca 도 LIVE 로 띄울 수 있었고 화면에 "🔥 실전" 으로 표시됐지만
+# place_market_buy/sell 구현체가 빗썸에만 있어서, 사용자는 실전이라 믿고 페이퍼를 돌렸다.
+LIVE_ORDER_BROKERS = {"BITHUMB"}
+
+
+def supports_live_orders(broker: str) -> bool:
+    return (broker or "").upper() in LIVE_ORDER_BROKERS
 
 class AutoTradingBot:
     def __init__(self, 
@@ -442,6 +453,7 @@ class AutoTradingBot:
             "symbol": self.symbol,
             "mode": self.mode,
             "broker": self.broker,
+            "liveOrdersSupported": supports_live_orders(self.broker),
             "currency": "KRW" if is_krw else "USD",
             "unit": unit,
             "isRunning": self.is_running,
@@ -465,12 +477,37 @@ class AutoTradingBot:
             "recentLogs": self.logs[:15]
         }
 
+class BotTooManyError(Exception):
+    """동시 가동 봇 상한 초과."""
+
+
 class BotManager:
+    # 봇마다 데몬 스레드 1개 + 주기적 외부 API 호출이 붙는다. 무제한이면 인스턴스가 죽는다.
+    MAX_ACTIVE_BOTS = int(os.getenv("APP_MAX_ACTIVE_BOTS", "20"))
+
     def __init__(self):
         self.bots: Dict[str, AutoTradingBot] = {}
+        self._id_lock = threading.Lock()
+
+    def _new_bot_id(self, symbol: str) -> str:
+        """초 단위 타임스탬프만 쓰면 같은 초의 배포가 서로 덮어썼다.
+        덮인 봇의 스레드는 살아 있는데 목록에서 사라져 정지시킬 수단이 없었다."""
+        with self._id_lock:
+            while True:
+                bot_id = f"BOT-{symbol}-{int(time.time())}-{uuid.uuid4().hex[:6]}"
+                if bot_id not in self.bots:
+                    return bot_id
+
+    def active_count(self) -> int:
+        return sum(1 for b in self.bots.values() if b.is_running)
 
     def deploy_bot(self, symbol: str, mode: str, broker: str, capital: float, strategy_params: dict, initial_price: float = 100.0, sentiment_score: int = 75) -> AutoTradingBot:
-        bot_id = f"BOT-{symbol}-{int(time.time())}"
+        if self.active_count() >= self.MAX_ACTIVE_BOTS:
+            raise BotTooManyError(
+                f"동시 가동 봇 상한({self.MAX_ACTIVE_BOTS}개)에 도달했습니다. "
+                f"기존 봇을 정지한 뒤 다시 시도하세요."
+            )
+        bot_id = self._new_bot_id(symbol)
         bot = AutoTradingBot(bot_id, symbol, mode, broker, capital, strategy_params)
         self.bots[bot_id] = bot
         bot.start(initial_price=initial_price, sentiment_score=sentiment_score)
@@ -503,22 +540,62 @@ class BotManager:
     def get_bot(self, bot_id: str) -> Optional[AutoTradingBot]:
         return self.bots.get(bot_id)
 
-import os
 import json
 from services.bithumb_client import BithumbClient
 
 KEYS_FILE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "broker_keys.json")
 
+# 환경변수로 주입할 수 있는 브로커 키.
+# data/ 는 gitignore 대상이고 Render 디스크는 휘발성이라 재배포마다 키가 사라졌다.
+# 환경변수로 넣으면 재배포·스핀다운에도 살아남고, 디스크에 평문으로 남지도 않는다.
+ENV_KEY_MAP = {
+    "BITHUMB": ("BITHUMB_API_KEY", "BITHUMB_SECRET_KEY"),
+}
+
+
 class BrokerKeyManager:
-    """브로커 및 거래소 API 키 영구 저장 & 연동 매니저"""
+    """브로커 및 거래소 API 키 저장 & 연동 매니저.
+
+    키 우선순위: 환경변수 > 디스크 파일(data/broker_keys.json).
+    환경변수로 들어온 키는 UI 에서 해제할 수 없다 (환경변수를 지워야 한다).
+    디스크 저장은 평문이다 — UI 문구도 그렇게 표기한다.
+    """
     def __init__(self):
         self.connected_brokers = {
             "NAMUH": {"name": "🌳 NH투자증권 나무 (NAMUH)", "connected": False, "mode": "Live", "apiKey": "", "secretKey": "", "accountNo": ""},
             "BITHUMB": {"name": "🪙 빗썸 (Bithumb)", "connected": False, "mode": "Live", "apiKey": "", "secretKey": "", "accountNo": ""},
-            "ALPACA": {"name": "🇺🇸 Alpaca Trading (미국주식)", "connected": True, "mode": "Paper/Live", "apiKey": "PK***DEMO***KEY", "secretKey": "", "accountNo": ""}
+            # 예전엔 connected=True 와 "PK***DEMO***KEY" 가 하드코딩돼 '연동됨' 으로 보였다.
+            "ALPACA": {"name": "🇺🇸 Alpaca Trading (미국주식)", "connected": False, "mode": "Paper", "apiKey": "", "secretKey": "", "accountNo": ""}
         }
         self.bithumb_client = BithumbClient()
         self._load_saved_keys()
+        self._load_env_keys()
+
+    def _load_env_keys(self):
+        """환경변수 키를 디스크 값보다 우선 적용한다."""
+        for code, (k_env, s_env) in ENV_KEY_MAP.items():
+            api_key = (os.getenv(k_env) or "").strip()
+            secret = (os.getenv(s_env) or "").strip()
+            if not api_key or not secret:
+                continue
+            slot = self.connected_brokers.get(code)
+            if slot is None:
+                continue
+            slot["connected"] = True
+            slot["apiKey"] = self._mask(api_key)
+            slot["rawApiKey"] = api_key
+            slot["rawSecretKey"] = secret
+            slot["keySource"] = "env"
+            if code == "BITHUMB":
+                self.bithumb_client = BithumbClient(connect_key=api_key, secret_key=secret)
+            logger.info(f"{code} API 키를 환경변수({k_env})에서 로드했습니다.")
+
+    @staticmethod
+    def _mask(api_key: str) -> str:
+        return api_key[:3] + "******" + api_key[-3:] if len(api_key) > 6 else "******"
+
+    def key_source(self, broker_code: str) -> str:
+        return self.connected_brokers.get(broker_code.upper(), {}).get("keySource", "none")
 
     def _save_keys_to_disk(self):
         """API 키를 로컬 보안 파일에 영구 저장"""
@@ -536,9 +613,13 @@ class BrokerKeyManager:
                 with open(KEYS_FILE, "r", encoding="utf-8") as f:
                     saved_data = json.load(f)
                     for k, v in saved_data.items():
-                        if k in self.connected_brokers and v.get("connected"):
+                        # 실제 키가 없는데 connected=True 로 남아 있는 항목은 복원하지 않는다.
+                        # Alpaca 가 이 상태로 디스크에 굳어 있어서 기본값을 고쳐도
+                        # 계속 '연동됨' 으로 되살아났다.
+                        has_keys = bool(v.get("rawApiKey")) and bool(v.get("rawSecretKey"))
+                        if k in self.connected_brokers and v.get("connected") and has_keys:
                             self.connected_brokers[k] = v
-                            if k == "BITHUMB" and v.get("rawApiKey") and v.get("rawSecretKey"):
+                            if k == "BITHUMB":
                                 self.bithumb_client = BithumbClient(
                                     connect_key=v["rawApiKey"],
                                     secret_key=v["rawSecretKey"]
@@ -549,12 +630,12 @@ class BrokerKeyManager:
     def save_key(self, broker_code: str, api_key: str, secret_key: str = "", account_no: str = "") -> bool:
         b = broker_code.upper()
         if b in self.connected_brokers:
-            masked = api_key[:3] + "******" + api_key[-3:] if len(api_key) > 6 else "******"
             self.connected_brokers[b]["connected"] = True
-            self.connected_brokers[b]["apiKey"] = masked
+            self.connected_brokers[b]["apiKey"] = self._mask(api_key)
             self.connected_brokers[b]["rawApiKey"] = api_key
             self.connected_brokers[b]["rawSecretKey"] = secret_key
             self.connected_brokers[b]["accountNo"] = account_no
+            self.connected_brokers[b]["keySource"] = "disk"
 
             if b == "BITHUMB":
                 self.bithumb_client = BithumbClient(connect_key=api_key, secret_key=secret_key)
@@ -569,6 +650,9 @@ class BrokerKeyManager:
 
     def disconnect(self, broker_code: str) -> bool:
         b = broker_code.upper()
+        if self.key_source(b) == "env":
+            # 지워도 다음 재시작에 환경변수에서 다시 살아난다. 거짓 성공을 반환하지 않는다.
+            return False
         if b in self.connected_brokers:
             self.connected_brokers[b]["connected"] = False
             self.connected_brokers[b]["apiKey"] = ""
@@ -584,12 +668,15 @@ class BrokerKeyManager:
         # 클라이언트에는 민감한 원본 키(rawApiKey, rawSecretKey)를 제외하고 마스킹된 정보만 전송
         result = []
         for k, v in self.connected_brokers.items():
+            live_ok = supports_live_orders(k)
             safe_info = {
                 "code": k,
                 "name": v.get("name"),
                 "connected": v.get("connected", False),
-                "mode": v.get("mode", "Live"),
-                "apiKey": v.get("apiKey", "")
+                "mode": "Live" if live_ok else "Paper only",
+                "liveOrdersSupported": live_ok,
+                "apiKey": v.get("apiKey", ""),
+                "keySource": v.get("keySource", "none"),
             }
             result.append(safe_info)
         return result

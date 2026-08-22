@@ -396,3 +396,67 @@ def generate_mock_chart(symbol: str, count: int = 100) -> dict:
         ],
         "totalCount": len(candles)
     }
+
+def get_fundamentals(symbol: str) -> dict:
+    """실제 재무 지표만 반환한다. 받지 못한 항목은 None 으로 남긴다.
+
+    기존 재무 엑스레이는 어떤 API 도 호출하지 않고 "매출 성장률 연평균 24.5%",
+    "부채비율 45% 미만" 같은 문구를 모든 종목에 동일하게 내보냈다.
+    받지 못한 값을 만들어내지 않는 것이 이 함수의 목적이다.
+    """
+    resolved = resolve_symbol(symbol)
+    cache_key = f"fund_{resolved}"
+    now = time.time()
+    if cache_key in _CACHE and (now - _CACHE[cache_key]['time']) < 900:
+        return _CACHE[cache_key]['data']
+
+    empty = {
+        "symbol": resolved,
+        "available": False,
+        "trailingPE": None, "forwardPE": None, "priceToBook": None,
+        "revenueGrowth": None, "earningsGrowth": None,
+        "profitMargin": None, "returnOnEquity": None,
+        "debtToEquity": None, "currentRatio": None,
+        "freeCashflow": None, "marketCap": None,
+        "dataSource": "unavailable",
+    }
+
+    # 코인은 기업 재무제표가 존재하지 않는다. 없는 것을 만들지 않는다.
+    clean_coin = resolved.upper().replace("-USD", "").replace("KRW-", "")
+    if clean_coin in ["BTC", "ETH", "SOL", "XRP", "DOGE"]:
+        res = dict(empty, dataSource="not-applicable", assetClass="crypto")
+        _CACHE[cache_key] = {"time": now, "data": res}
+        return res
+
+    try:
+        info = yf.Ticker(resolved).info or {}
+        if not info:
+            raise ValueError("empty info")
+
+        def pct(v):
+            return round(float(v) * 100, 2) if isinstance(v, (int, float)) else None
+
+        res = {
+            "symbol": resolved,
+            "available": True,
+            "trailingPE": safe_float(info.get("trailingPE")),
+            "forwardPE": safe_float(info.get("forwardPE")),
+            "priceToBook": safe_float(info.get("priceToBook")),
+            "revenueGrowth": pct(info.get("revenueGrowth")),
+            "earningsGrowth": pct(info.get("earningsQuarterlyGrowth")),
+            "profitMargin": pct(info.get("profitMargins")),
+            "returnOnEquity": pct(info.get("returnOnEquity")),
+            "debtToEquity": safe_float(info.get("debtToEquity")),
+            "currentRatio": safe_float(info.get("currentRatio")),
+            "freeCashflow": info.get("freeCashflow"),
+            "marketCap": info.get("marketCap"),
+            "dataSource": "yfinance",
+            "assetClass": "equity",
+        }
+        _CACHE[cache_key] = {"time": now, "data": res}
+        return res
+    except Exception as e:
+        logger.warning(f"재무 지표 조회 실패 {resolved}: {e}")
+        res = dict(empty, fallbackReason=str(e)[:160])
+        _CACHE[cache_key] = {"time": now, "data": res}
+        return res

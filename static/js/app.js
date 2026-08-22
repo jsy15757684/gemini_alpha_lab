@@ -356,6 +356,12 @@ async function loadPopularAssets() {
             });
         }
 
+        // 티커 값을 실제로 채운다. 예전엔 채우는 코드가 없어 7칸이 영구히 "--" 였다.
+        refreshTickerPrices();
+        if (!window.__tickerTimer) {
+            window.__tickerTimer = setInterval(refreshTickerPrices, 60000);
+        }
+
         if (data.assets && chipsContainer) {
             chipsContainer.innerHTML = "";
             data.assets.slice(0, 7).forEach(asset => {
@@ -372,6 +378,30 @@ async function loadPopularAssets() {
         }
     } catch (e) {
         console.error("Failed to load popular assets:", e);
+    }
+}
+
+async function refreshTickerPrices() {
+    const marquee = document.getElementById("tickerMarquee");
+    if (!marquee) return;
+    try {
+        const data = await fetchJson("/api/quotes");
+        (data.quotes || []).forEach(q => {
+            const el = document.getElementById(`marq-${q.requested}`) || document.getElementById(`marq-${q.symbol}`);
+            if (!el) return;
+            if (q.error || q.currentPrice == null) {
+                el.textContent = "조회 실패";
+                el.title = q.error || "시세를 받지 못했습니다";
+                return;
+            }
+            const isUp = (q.changePercent || 0) >= 0;
+            const stale = q.isFallback ? ' <span class="pct" title="실제 시세가 아닙니다">⚠</span>' : '';
+            el.innerHTML = `${Number(q.currentPrice).toLocaleString()} `
+                + `<span class="pct ${isUp ? 'up' : 'down'}">(${isUp ? '+' : ''}${q.changePercent}%)</span>${stale}`;
+            el.title = `${q.shortName || q.symbol} · ${q.currency} · 출처 ${q.dataSource || '-'}`;
+        });
+    } catch (e) {
+        console.error("Ticker refresh error:", e);
     }
 }
 
@@ -486,13 +516,31 @@ function renderSentimentUI(s) {
 
 function renderFinancialsUI(fin) {
     if (!fin) return;
-    document.getElementById("alphaScoreBadge").textContent = `${fin.alphaScore}점 (${fin.grade})`;
-    document.getElementById("valuationVerdict").textContent = fin.valuationVerdict;
+    // alphaScore 가 null 이면 지표를 조회하지 못한 것이다. 임의 점수를 만들어 보여주지 않는다.
+    document.getElementById("alphaScoreBadge").textContent =
+        (fin.alphaScore == null) ? (fin.grade || "산정 불가") : `${fin.alphaScore}점 (${fin.grade})`;
+
+    let verdict = fin.valuationVerdict || "";
+    if (fin.aiSource && fin.aiSource !== "gemini") {
+        verdict += "  ·  AI 코멘트 미동작";
+    }
+    document.getElementById("valuationVerdict").textContent = verdict;
+
+    const metricsHost = document.getElementById("financialMetrics");
+    if (metricsHost && fin.metrics) {
+        metricsHost.innerHTML = Object.entries(fin.metrics).map(([k, v]) => {
+            const missing = (v === "데이터 없음" || v === "해당 없음 (N/A)");
+            return `<div style="display:flex; justify-content:space-between; gap:.75rem; padding:.3rem 0; border-bottom:1px solid rgba(255,255,255,.06);">
+                      <span style="font-size:.8rem; color:var(--text-muted);">${k}</span>
+                      <span style="font-size:.85rem; font-weight:700; color:${missing ? 'var(--text-muted)' : 'inherit'};">${v}</span>
+                    </div>`;
+        }).join("");
+    }
     
     const finInsights = document.getElementById("financialInsights");
     if (finInsights) {
         finInsights.innerHTML = "";
-        fin.coreInsights.forEach(item => {
+        (fin.coreInsights || []).forEach(item => {
             const li = document.createElement("li");
             li.textContent = item;
             finInsights.appendChild(li);
@@ -502,7 +550,7 @@ function renderFinancialsUI(fin) {
     const riskList = document.getElementById("financialRisks");
     if (riskList) {
         riskList.innerHTML = "";
-        fin.riskWatchlist.forEach(item => {
+        (fin.riskWatchlist || []).forEach(item => {
             const li = document.createElement("li");
             li.textContent = item;
             riskList.appendChild(li);
@@ -704,7 +752,7 @@ async function loadFinancials(symbol) {
         
         const finInsights = document.getElementById("financialInsights");
         finInsights.innerHTML = "";
-        fin.coreInsights.forEach(item => {
+        (fin.coreInsights || []).forEach(item => {
             const li = document.createElement("li");
             li.textContent = item;
             finInsights.appendChild(li);
@@ -712,7 +760,7 @@ async function loadFinancials(symbol) {
 
         const riskList = document.getElementById("financialRisks");
         riskList.innerHTML = "";
-        fin.riskWatchlist.forEach(item => {
+        (fin.riskWatchlist || []).forEach(item => {
             const li = document.createElement("li");
             li.textContent = item;
             riskList.appendChild(li);
@@ -993,7 +1041,7 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000,
         if (mode === "LIVE") {
             const brokerList = Array.isArray(cachedBrokers) ? cachedBrokers : [];
             const currentBroker = brokerList.find(b => b.code === selectedBroker);
-            if (currentBroker && !currentBroker.connected && selectedBroker !== "ALPACA") {
+            if (currentBroker && !currentBroker.connected) {
                 if (confirm(`⚠️ [${currentBroker.name}] API 키가 아직 등록되지 않았습니다.\n지금 API 키 등록 창을 열어 연동하시겠습니까?\n(모의투자 Paper 모드는 API 키 없이 즉시 가동 가능합니다)`)) {
                     openBrokerModal(selectedBroker, currentBroker.name);
                     return;
@@ -1029,7 +1077,10 @@ async function deployTradingBot(symbol, params, mode = "PAPER", capital = 10000,
         }
 
         const capDisplay = (botData.initialCapital != null ? Number(botData.initialCapital) : Number(capital)).toLocaleString();
-        alert(`🚀 [${botData.mode || mode}] ${botData.symbol || symbol} 자동매매 봇이 [${selectedBroker}] 실전 거래소와 연동되어 가동되었습니다!\n• 봇 ID: ${botData.botId}\n• 운용자본: ${capDisplay}`);
+        const routeNote = botData.liveOrdersSupported && botData.mode === "LIVE"
+            ? `[${selectedBroker}] 실계좌로 주문이 전송됩니다.`
+            : `주문은 전송되지 않는 모의투자입니다.`;
+        alert(`🚀 [${botData.mode || mode}] ${botData.symbol || symbol} 자동매매 봇이 가동되었습니다.\n• ${routeNote}\n• 봇 ID: ${botData.botId}\n• 운용자본: ${capDisplay}`);
 
         // Switch to Bot Hub Tab
         document.querySelectorAll(".tab-btn").forEach(b => b.classList.remove("active"));
@@ -1156,7 +1207,9 @@ function renderActiveBots(bots) {
                 <div style="display: flex; align-items: center; gap: 0.75rem;">
                     <span style="font-size: 1.25rem; font-weight: 800;">${bot.symbol}</span>
                     <span class="${bot.mode === 'LIVE' ? 'badge-loss' : 'badge-win'}" style="font-size: 0.75rem;">
-                        ${bot.mode === 'LIVE' ? `🔥 실전 [${bot.broker || 'Live'}]` : '🛡️ 모의투자 Paper'}
+                        ${bot.mode === 'LIVE' && bot.liveOrdersSupported ? `🔥 실전 [${bot.broker || 'Live'}]`
+                          : bot.mode === 'LIVE' ? `🛡️ 모의투자 [${bot.broker}] · 실주문 미구현`
+                          : '🛡️ 모의투자 Paper'}
                     </span>
                     <span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">${bot.botId}</span>
                 </div>
@@ -1284,7 +1337,8 @@ function renderBrokers(brokers) {
         item.innerHTML = `
             <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem;">
                 <span style="font-weight: 700;">${b.name}</span>
-                ${b.connected ? `<span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">${b.apiKey}</span>` : ''}
+                ${b.connected ? `<span style="font-size: 0.75rem; color: var(--text-muted); font-family: var(--font-mono);">${b.apiKey}${b.keySource === 'env' ? ' · 환경변수' : ''}</span>` : ''}
+                ${b.liveOrdersSupported ? '' : '<span style="font-size:0.7rem; color:var(--text-muted);">모의투자 전용 · 실주문 미구현</span>'}
             </div>
             <div>
                 ${b.connected 
@@ -1404,7 +1458,7 @@ async function handleSaveBrokerKey(e) {
         const result = await res.json();
         if (result.success) {
             closeBrokerModal();
-            alert(`🔒 [${code}] 거래소/브로커 API 키가 안전하게 암호화 연동되었습니다!`);
+            alert(`✅ [${code}] API 키가 서버에 저장되었습니다.\n\n· 저장 위치는 서버 파일이며 평문입니다(암호화 아님).\n· 재배포·재시작 시 사라집니다. 영구 보관은 Render 환경변수를 사용하세요\n  (BITHUMB_API_KEY / BITHUMB_SECRET_KEY).`);
             await loadBrokers();
         }
     } catch (err) {

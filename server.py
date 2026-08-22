@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 from services.market_service import get_asset_quote, get_chart_data, resolve_symbol, POPULAR_ASSETS, SYMBOL_DICTIONARY
 from services.backtester import QuantBacktester
 from services.gemini_ai import GeminiAIService
-from services.auto_trader import bot_manager, broker_manager
+from services.auto_trader import bot_manager, broker_manager, supports_live_orders, BotTooManyError
 from services.market_feed import get_live_price
 from services import auth
 from services.guru_service import get_all_gurus, get_guru_by_id
@@ -189,6 +189,7 @@ class DisconnectBrokerRequest(BaseModel):
 
 class BacktestRequest(BaseModel):
     symbol: str = "NVDA"
+    initialCapital: Optional[float] = None
     strategyType: str = "custom"
     fastMa: int = 5
     slowMa: int = 20
@@ -225,6 +226,33 @@ def search_symbols(q: str = Query("", description="Search query")):
                     break
 
     return {"results": results}
+
+# 티커 바 일괄 시세 (F-10). 예전엔 채우는 코드가 아예 없어 8칸 중 7칸이 영구히 "--" 였다.
+@app.get("/api/quotes")
+def batch_quotes(symbols: str = Query("", description="콤마로 구분한 심볼 목록 (최대 12개)")):
+    reqs = [x.strip() for x in symbols.split(",") if x.strip()][:12]
+    if not reqs:
+        reqs = [a["symbol"] for a in POPULAR_ASSETS]
+
+    out = []
+    for sym in reqs:
+        try:
+            q = get_asset_quote(sym)
+            out.append({
+                "symbol": q.get("symbol", sym),
+                "requested": sym,
+                "shortName": q.get("shortName"),
+                "currentPrice": q.get("currentPrice"),
+                "changePercent": q.get("changePercent"),
+                "currency": q.get("currency"),
+                "isFallback": bool(q.get("isFallback")),
+                "dataSource": q.get("dataSource"),
+            })
+        except Exception as e:
+            logger.warning(f"batch quote 실패 {sym}: {e}")
+            out.append({"symbol": sym, "requested": sym, "error": str(e)[:120]})
+    return {"quotes": out}
+
 
 # Instant All-In-One Bundle API
 @app.get("/api/symbol/bundle")
@@ -313,7 +341,17 @@ def financials_endpoint(symbol: str = Query(...)):
 @app.post("/api/backtest")
 def run_backtest_endpoint(req: BacktestRequest):
     try:
-        result = backtester.run_backtest(
+        # 초기자본이 10000 USD 로 고정돼 있어서, 원화 종목도 화면엔 원화 라벨로
+        # "10,000" 이 찍혔다. 통화에 맞춰 기본값을 잡고 통화를 응답에 넣는다.
+        resolved = resolve_symbol(req.symbol)
+        quote = get_asset_quote(resolved)
+        currency = quote.get("currency", "USD")
+        capital = req.initialCapital
+        if not capital or capital <= 0:
+            capital = 10_000_000.0 if currency == "KRW" else 10_000.0
+
+        engine = QuantBacktester(initial_capital=float(capital))
+        result = engine.run_backtest(
             symbol=req.symbol.upper(),
             strategy_type=req.strategyType,
             fast_ma=req.fastMa,
@@ -324,6 +362,7 @@ def run_backtest_endpoint(req: BacktestRequest):
             stop_loss_pct=req.stopLossPct,
             period=req.period
         )
+        result["currency"] = currency
         return result
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
@@ -355,6 +394,16 @@ def deploy_bot_endpoint(req: DeployBotRequest):
     try:
         resolved_sym = resolve_symbol(req.symbol)
 
+        # 실주문 구현체가 없는 브로커를 LIVE 로 띄우면 주문이 나가지 않는데
+        # 화면에는 "🔥 실전" 으로 표시됐다. 아예 막는다.
+        if req.mode.upper() == "LIVE" and not supports_live_orders(req.broker):
+            raise HTTPException(
+                status_code=400,
+                detail=(f"[{req.broker}] 는 아직 실주문 연동이 구현되지 않았습니다. "
+                        f"모의투자(PAPER) 로만 가동할 수 있습니다. "
+                        f"현재 실전 주문이 가능한 거래소: 빗썸(BITHUMB)"),
+            )
+
         # 실측 시세만 사용한다. 예전엔 조회가 실패하면 100.0 을 대입해
         # 존재하지 않는 가격으로 봇을 띄웠다.
         tick = get_live_price(resolved_sym, req.broker or "")
@@ -383,6 +432,8 @@ def deploy_bot_endpoint(req: DeployBotRequest):
             sentiment_score=sentiment_score
         )
         return bot.get_status()
+    except BotTooManyError as e:
+        raise HTTPException(status_code=429, detail=str(e))
     except HTTPException:
         # 503(시세 없음) 같은 의도된 상태코드를 500 으로 덮어쓰지 않는다.
         raise
@@ -465,6 +516,12 @@ def get_my_ip_endpoint():
 
 @app.post("/api/broker/disconnect")
 def disconnect_broker_endpoint(req: DisconnectBrokerRequest):
+    if broker_manager.key_source(req.brokerCode) == "env":
+        raise HTTPException(
+            status_code=409,
+            detail=(f"[{req.brokerCode}] 키는 환경변수로 주입되어 화면에서 해제할 수 없습니다. "
+                    f"Render 대시보드 → Environment 에서 해당 변수를 삭제하세요."),
+        )
     success = broker_manager.disconnect(req.brokerCode)
     return {"success": success, "broker": req.brokerCode}
 

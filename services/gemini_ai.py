@@ -67,7 +67,9 @@ class GeminiAIService:
                     clean_json = clean_json[7:-3].strip()
                 elif clean_json.startswith("```"):
                     clean_json = clean_json[3:-3].strip()
-                return json.loads(clean_json)
+                parsed = json.loads(clean_json)
+                parsed["aiSource"] = "gemini"
+                return parsed
             except Exception as e:
                 logger.warning(f"Failed to parse Gemini JSON: {e}")
 
@@ -104,47 +106,118 @@ class GeminiAIService:
             "bearishFactors": bear_list,
             "aiSummary": f"{quote.get('shortName', symbol)}는 최근 글로벌 수급 개선과 강력한 펀더멘털을 바탕으로 견고한 흐름을 유지하고 있습니다. 단기 지지선 방어 여부와 기관 수급 추이를 동반 확인하며 분할 접근하는 퀀트 전략이 유리합니다.",
             "institutionalFlow": "기관 및 스마트 머니의 점진적 비중 확대 시그널 포착",
-            "catalysts": ["다음 분기 실적 어닝 서프라이즈 여부", "업종 내 핵심 경쟁사 대비 시장점유율 확대"]
+            "catalysts": ["다음 분기 실적 어닝 서프라이즈 여부", "업종 내 핵심 경쟁사 대비 시장점유율 확대"],
+            # AI 가 실제로 돌지 않았음을 응답에 남긴다. 점수는 60 + 변동률x4 산수 결과이고
+            # 호재/리스크 문구는 종목별 하드코딩이다. UI 가 이걸 보고 표기해야 한다.
+            "aiSource": "fallback-heuristic" if not self.api_key else "fallback-parse-failed",
+            "aiNote": ("GEMINI_API_KEY 가 없어 AI 분석 대신 변동률 기반 산식과 고정 문구를 사용했습니다."
+                       if not self.api_key else
+                       "Gemini 응답 파싱에 실패해 대체 문구를 사용했습니다.")
         }
 
     def analyze_filing_and_financials(self, symbol: str, quote: dict) -> Dict[str, Any]:
-        """재무제표 엑스레이 및 건전성 딥 리서치"""
-        # 코인 등 PER/PBR 이 없는 자산은 값이 None 으로 들어온다.
-        # .get(key, default) 는 키가 있고 값이 None 이면 None 을 그대로 돌려주므로
-        # 아래처럼 None 을 명시적으로 걸러야 한다. (이걸 빠뜨려 BTC/ETH 가 500 났다)
-        pe = quote.get("trailingPE")
-        pb = quote.get("priceToBook")
-        has_pe = isinstance(pe, (int, float))
-        has_pb = isinstance(pb, (int, float))
+        """재무 엑스레이. 실제로 조회된 지표만 쓰고, 없는 값은 만들지 않는다.
 
-        # 알파 건전성 스코어 (0~100)
-        alpha_score = 74
-        if has_pe:
-            alpha_score = 82 if pe < 30 else 74
-        
-        return {
+        기존 구현은 어떤 API 도 호출하지 않고 "매출 성장률 연평균 24.5%",
+        "부채비율 45% 미만", "+18.4% 상승 여력", "AAA (우량 성장주)" 를
+        모든 종목에 동일하게 내보냈다. 그 문구들을 전부 제거한다.
+        """
+        from services.market_service import get_fundamentals
+
+        f = get_fundamentals(symbol)
+        available = bool(f.get("available"))
+        asset_class = f.get("assetClass", "equity")
+
+        def fmt(v, unit="", nd=2):
+            if v is None:
+                return "데이터 없음"
+            return f"{round(float(v), nd):,}{unit}"
+
+        # 점수는 '조회된 지표' 만으로 계산한다. 지표가 없으면 점수도 내지 않는다.
+        score = None
+        graded_on = []
+        if available:
+            pts, total = 0, 0
+            pe, roe, d2e, pm = f.get("trailingPE"), f.get("returnOnEquity"), f.get("debtToEquity"), f.get("profitMargin")
+            if isinstance(pe, (int, float)):
+                total += 1; graded_on.append("PER")
+                if pe < 30: pts += 1
+            if isinstance(roe, (int, float)):
+                total += 1; graded_on.append("ROE")
+                if roe >= 15: pts += 1
+            if isinstance(d2e, (int, float)):
+                total += 1; graded_on.append("부채비율")
+                if d2e < 100: pts += 1
+            if isinstance(pm, (int, float)):
+                total += 1; graded_on.append("영업이익률")
+                if pm >= 10: pts += 1
+            if total:
+                score = int(round(pts / total * 100))
+
+        if asset_class == "crypto":
+            verdict = "기업 재무제표가 존재하지 않는 자산입니다 (코인)."
+        elif not available:
+            verdict = "재무 지표를 조회하지 못했습니다. 추정값을 표시하지 않습니다."
+        elif score is None:
+            verdict = "조회된 지표가 없어 등급을 산정할 수 없습니다."
+        else:
+            verdict = f"조회된 {len(graded_on)}개 지표({', '.join(graded_on)}) 기준 산정"
+
+        result = {
             "symbol": symbol,
-            "alphaScore": alpha_score,
-            "grade": "AAA (우량 성장주)" if alpha_score >= 80 else "AA (안정적 가치주)",
-            "valuationVerdict": ("적정 주가 대비 저평가 매력 부각" if (has_pe and pe < 25)
-                                 else ("성장 프리미엄 반영 구간" if has_pe else "PER 산정 불가 자산 (코인/비수익 자산)")),
+            "available": available,
+            "assetClass": asset_class,
+            "dataSource": f.get("dataSource", "unavailable"),
+            "alphaScore": score,
+            # 점수는 alphaScore 로 따로 나가므로 여기서 반복하지 않는다 ("75점 (75/100 ...)" 중복 방지)
+            "grade": (f"지표 {len(graded_on)}개 기준" if score is not None else "산정 불가"),
+            "valuationVerdict": verdict,
             "metrics": {
-                "PER": f"{pe}배 (동종업계 평균 대비 15% 양호)" if has_pe else "해당 없음 (N/A)",
-                "PBR": f"{pb}배" if has_pb else "해당 없음 (N/A)",
-                "TargetPrice": f"{quote.get('targetHighPrice', quote.get('currentPrice', 100) * 1.18)} {quote.get('currency')}",
-                "UpsidePotential": "+18.4% 상승 여력",
-                "FinancialHealth": "안정 (부채비율 45% 미만, 현금보유율 양호)"
+                "PER": fmt(f.get("trailingPE"), "배"),
+                "PBR": fmt(f.get("priceToBook"), "배"),
+                "매출성장률": fmt(f.get("revenueGrowth"), "%"),
+                "영업이익률": fmt(f.get("profitMargin"), "%"),
+                "ROE": fmt(f.get("returnOnEquity"), "%"),
+                "부채비율": fmt(f.get("debtToEquity"), "%"),
+                "유동비율": fmt(f.get("currentRatio")),
             },
-            "coreInsights": [
-                "매출 성장률 연평균 24.5% 유지로 견고한 영업 레버리지 효과 창출",
-                "잉여현금흐름(FCF)이 매 분기 증가하여 자사주 매입 및 R&D 재투자 여력 충분",
-                "경쟁사 대비 높은 ROE(자기자본이익률)를 바탕으로 지속 가능한 경쟁 우위(Moat) 확보"
-            ],
-            "riskWatchlist": [
-                "환율 및 원자재 가격 변동에 따른 단기 매출원가율 소폭 상승 가능성",
-                "경쟁사 신제품 출시에 따른 판촉 마케팅 비용 증가 여부 모니터링 필요"
-            ]
+            "coreInsights": [],
+            "riskWatchlist": [],
+            "aiSource": "none",
         }
+
+        # 서술형 코멘트는 조회된 수치를 근거로 Gemini 에게 맡긴다. 키가 없으면 비워 둔다.
+        if available and self.api_key:
+            prompt = f"""아래는 {symbol} 의 실제 조회된 재무 지표다. 이 수치만 근거로 평가하라.
+숫자를 새로 만들지 말고, 주어지지 않은 항목은 언급하지 마라.
+
+{json.dumps(result['metrics'], ensure_ascii=False, indent=1)}
+
+다음 JSON 으로만 응답하라:
+{{"coreInsights": ["근거 있는 강점 1", "강점 2"], "riskWatchlist": ["리스크 1", "리스크 2"]}}"""
+            raw = self._call_gemini_api(prompt, "You are an equity analyst. Use only the given numbers. Respond in valid JSON.")
+            if raw:
+                try:
+                    clean = raw.strip()
+                    if clean.startswith("```json"):
+                        clean = clean[7:-3].strip()
+                    elif clean.startswith("```"):
+                        clean = clean[3:-3].strip()
+                    parsed = json.loads(clean)
+                    result["coreInsights"] = parsed.get("coreInsights", [])[:3]
+                    result["riskWatchlist"] = parsed.get("riskWatchlist", [])[:3]
+                    result["aiSource"] = "gemini"
+                except Exception as e:
+                    logger.warning(f"재무 코멘트 JSON 파싱 실패: {e}")
+
+        if not result["coreInsights"]:
+            if not self.api_key:
+                result["coreInsights"] = ["GEMINI_API_KEY 가 설정되지 않아 AI 코멘트를 생성하지 않았습니다. 위 수치는 실제 조회값입니다."]
+            elif not available:
+                result["coreInsights"] = ["재무 지표를 조회하지 못해 분석을 생성하지 않았습니다."]
+            result["aiSource"] = "unavailable"
+
+        return result
 
     def parse_natural_language_strategy(self, user_prompt: str) -> Dict[str, Any]:
         """자연어 매매 아이디어를 퀀트 전략 파라미터로 자동 변환"""

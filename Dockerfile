@@ -16,8 +16,9 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 소스코드 전체 복사
 COPY . .
 
-# 8888 포트 오픈
+# 포트는 플랫폼이 주입한다 (Render 는 $PORT 를 넘긴다). 없으면 8888.
 EXPOSE 8888
+ENV PORT=8888
 
-# 24시간 무중단 uvicorn 서버 실행
-CMD ["uvicorn", "server:app", "--host", "0.0.0.0", "--port", "8888"]
+# 24시간 무중단 uvicorn 서버 실행 ($PORT 를 반영하려면 shell form 이 필요하다)
+CMD uvicorn server:app --host 0.0.0.0 --port ${PORT:-8888}
