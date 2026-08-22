@@ -1,6 +1,5 @@
 import asyncio
 import time
-import random
 from datetime import datetime
 import logging
 from typing import Dict, Any, List, Optional
@@ -8,6 +7,9 @@ import threading
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# 일봉 기반 지표(RSI/MACD/볼린저)는 하루 한 번만 바뀌므로 5분 주기로 갱신한다.
+INDICATOR_REFRESH_SEC = 300.0
 
 class AutoTradingBot:
     def __init__(self, 
@@ -65,9 +67,19 @@ class AutoTradingBot:
         self._thread: Optional[threading.Thread] = None
 
     def start(self, initial_price: float = 100.0, sentiment_score: int = 75):
+        from services.market_feed import get_live_price
+
         self.is_running = True
-        self.last_checked_price = initial_price if initial_price > 0 else 100.0
         self.current_sentiment_score = sentiment_score
+
+        # 시작 가격도 실측값을 우선한다. 예전엔 조회 실패 시 100.0 을 그대로 썼다.
+        tick = get_live_price(self.symbol, self.broker)
+        if tick is not None:
+            self.last_checked_price = tick["price"]
+        elif initial_price > 0:
+            self.last_checked_price = initial_price
+        else:
+            self.last_checked_price = 0.0
         
         filters_active = []
         if self.strategy_params["enableVolumeSurge"]: filters_active.append("⚡거래량폭증(+150%)")
@@ -79,10 +91,24 @@ class AutoTradingBot:
         if self.strategy_params["enableScaleInOut"]: filters_active.append("💰스마트분할매매")
         
         self.add_log("INFO", f"🤖 [{self.mode}] 기관급 7대 슈퍼 알파 봇 가동! 활성 팩터: [{', '.join(filters_active)}]")
-        
-        # 1차 확증 진입
-        self._open_position(self.last_checked_price, "7대 슈퍼 알파 멀티팩터 조건 충족 1차 분할 진입", is_initial=True)
-        
+
+        # 가동 직후 1차 분할 진입.
+        # 이 진입은 지표 조건을 평가한 결과가 아니라 '가동 시점 시장가 진입' 정책이다.
+        # 로그 문구도 실제로 한 일만 적는다.
+        if self.last_checked_price > 0:
+            src = tick["source"] if tick is not None else "배포 시점 시세"
+            self._open_position(
+                self.last_checked_price,
+                f"봇 가동 시점 시장가 1차 분할 진입 (시세 출처: {src})",
+                is_initial=True
+            )
+        else:
+            self.add_log(
+                "WARNING",
+                "⚠️ 실시간 시세를 받지 못해 1차 진입을 건너뜁니다. "
+                "시세가 들어오면 지표 조건에 따라 진입합니다."
+            )
+
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
 
@@ -103,8 +129,13 @@ class AutoTradingBot:
         if len(self.logs) > 100:
             self.logs.pop()
 
-    def update_price_and_check(self, current_price: float, current_rsi: float = 45.0, volume_ratio: float = 120.0, sentiment_score: int = 70, is_squeeze_breakout: bool = False, macd_momentum_up: bool = True):
-        """기관급 7대 슈퍼 알파 복합 조건 실시간 평가"""
+    def update_price_and_check(self, current_price: float, current_rsi: float = 45.0, volume_ratio: float = 120.0, sentiment_score: int = 70, is_squeeze_breakout: bool = False, macd_momentum_up: bool = True, indicators_ok: bool = True):
+        """기관급 7대 슈퍼 알파 복합 조건 실시간 평가.
+
+        indicators_ok=False 는 RSI/MACD/볼린저를 실제로 계산하지 못한 상태다.
+        이때 신규 진입은 하지 않는다. 다만 가격은 실측값이므로
+        보유 포지션의 손절·익절·트레일링은 계속 감시한다.
+        """
         if not self.is_running or current_price <= 0:
             return
 
@@ -128,7 +159,7 @@ class AutoTradingBot:
             # 1. 고점 대비 하락 (ATR Trailing Stop - 이익 보존)
             drop_from_peak_pct = ((self.highest_price_since_entry - current_price) / self.highest_price_since_entry) * 100
             if self.strategy_params["enableTrailingStop"] and self.unrealized_pnl_pct >= 3.0 and drop_from_peak_pct >= trailing_pct:
-                self._close_position(f"🛡️ ATR 트레일링 스탑 발동! 고점(${self.highest_price_since_entry:,.2f}) 대비 -{drop_from_peak_pct:.1f}% 반락 시 이익 보존 청산 (+{self.unrealized_pnl_pct:.2f}%)")
+                self._close_position(f"🛡️ ATR 트레일링 스탑 발동! 고점({self.highest_price_since_entry:,.2f}) 대비 -{drop_from_peak_pct:.1f}% 반락 시 이익 보존 청산 (+{self.unrealized_pnl_pct:.2f}%)")
                 return
 
             # 2. 분할 익절 (Scale-Out)
@@ -146,7 +177,7 @@ class AutoTradingBot:
                 return
 
             # 5. 기술적 RSI 과매수 청산 (반드시 플러스 수익 상태 +1.0% 이상일 때만 익절 발동!)
-            if current_rsi >= rsi_sell and self.unrealized_pnl_pct >= 1.0:
+            if indicators_ok and current_rsi >= rsi_sell and self.unrealized_pnl_pct >= 1.0:
                 self._close_position(f"⚡ RSI 과매수({current_rsi:.1f}) 고점 도달 확정 익절 (+{self.unrealized_pnl_pct:.2f}%)")
                 return
 
@@ -157,6 +188,11 @@ class AutoTradingBot:
 
         # 포지션이 없는 경우: 7대 슈퍼 팩터 결합 신규 진입 검사 (바닥 저점 구간만 엄격 진입!)
         elif self.position == 0 and self.cash > 100:
+            # 0. 지표를 실제로 계산하지 못했으면 신규 진입 금지.
+            #    (기본값 RSI 50 같은 임의 숫자로 매수 판정을 내리면 안 된다)
+            if not indicators_ok:
+                return
+
             # 1. AI 감성 필터
             if self.strategy_params["enableAiSentimentGate"] and sentiment_score < self.strategy_params["minSentimentScore"]:
                 return # AI 점수 미달로 진입 보류
@@ -180,20 +216,35 @@ class AutoTradingBot:
                 signal_desc = " + ".join(reasons) if reasons else f"RSI({current_rsi:.1f}) 과매도 바닥 지지"
                 self._open_position(current_price, f"{signal_desc} + AI감성({sentiment_score}점) 최저가 확증 진입")
 
+    @staticmethod
+    def _fmt(price: float, is_krw: bool) -> str:
+        return f"{price:,.0f}" if is_krw else f"{price:,.2f}"
+
     def _open_position(self, price: float, reason: str, is_initial: bool = False):
         if self.cash < 50:
             return
         
         is_bithumb = "BITHUMB" in self.broker.upper()
-        # 빗썸의 경우 원화 시세 가져오기
+
+        # 빗썸은 원화 호가로만 체결된다. 예전 코드는 빗썸 조회가 실패하면
+        # 달러 시세에 1350 을 곱해 원화인 척했다 — 그 값으로 실주문을 내면
+        # 수량이 완전히 틀어지므로, 이제는 실측 원화 호가가 없으면 진입하지 않는다.
+        from services.market_feed import get_live_price
         actual_price = price
         if is_bithumb:
-            coin_sym = self.symbol.upper().replace("-USD", "").replace("KRW-", "")
-            t_res = broker_manager.bithumb_client.get_ticker(coin_sym, "KRW")
-            if t_res.get("status") == "0000":
-                actual_price = float(t_res.get("data", {}).get("closing_price", price))
-            elif actual_price < 100000: # 달러 시세인 경우 대략 1350 환율 적용
-                actual_price = actual_price * 1350.0
+            tick = get_live_price(self.symbol, self.broker)
+            if tick is None or tick.get("currency") != "KRW":
+                self.add_log(
+                    "WARNING",
+                    f"⚠️ [진입 보류] {self.symbol} 의 빗썸 원화 호가를 받지 못했습니다. "
+                    f"환율 추정으로 주문하지 않습니다."
+                )
+                return
+            actual_price = tick["price"]
+
+        if actual_price <= 0:
+            self.add_log("WARNING", "⚠️ [진입 보류] 유효한 시세가 없습니다.")
+            return
 
         # 분할 진입 시 70% 또는 100% 매수
         alloc_ratio = 0.7 if self.strategy_params["enableScaleInOut"] and is_initial else 1.0
@@ -228,7 +279,7 @@ class AutoTradingBot:
                     self.add_log("ERROR", f"빗썸 실전 매수 주문 오류: {str(e)}")
         
         curr_unit = "원" if is_bithumb else "$"
-        self.add_log("BUY", f"🟢 [스마트 매수] {self.symbol} {shares}개 @ {actual_price:,.0f}{curr_unit} | 사유: {reason}")
+        self.add_log("BUY", f"🟢 [스마트 매수] {self.symbol} {shares}개 @ {self._fmt(actual_price, is_bithumb)}{curr_unit} | 사유: {reason}")
 
     def _partial_close(self, ratio: float, reason: str):
         if self.position <= 0: return
@@ -265,7 +316,7 @@ class AutoTradingBot:
                     self.add_log("ERROR", f"빗썸 실전 매도 주문 오류: {str(e)}")
         
         curr_unit = "원" if is_bithumb else "$"
-        self.add_log("SELL", f"💰 [분할 익절] {self.symbol} {close_shares}개 @ {price:,.0f}{curr_unit} | 실현손익: {trade_pnl:+,.0f}{curr_unit} ({reason})")
+        self.add_log("SELL", f"💰 [분할 익절] {self.symbol} {close_shares}개 @ {self._fmt(price, is_bithumb)}{curr_unit} | 실현손익: {trade_pnl:+,.0f}{curr_unit} ({reason})")
 
     def _close_position(self, reason: str):
         if self.position <= 0: return
@@ -303,7 +354,7 @@ class AutoTradingBot:
         self.total_trades += 1
         if trade_pnl > 0: self.winning_trades += 1
 
-        self.add_log("SELL", f"🔴 [전량 청산] {self.symbol} {self.position}{unit} @ {price:,.0f}{curr_unit} | 손익: {trade_pnl:+,.0f}{curr_unit} ({trade_pnl_pct:+.2f}%) | {reason}")
+        self.add_log("SELL", f"🔴 [전량 청산] {self.symbol} {self.position}{unit} @ {self._fmt(price, is_krw)}{curr_unit} | 손익: {trade_pnl:+,.0f}{curr_unit} ({trade_pnl_pct:+.2f}%) | {reason}")
         
         self.position = 0.0
         self.entry_price = 0.0
@@ -313,35 +364,70 @@ class AutoTradingBot:
         self.unrealized_pnl_pct = 0.0
 
     def _run_loop(self):
-        """2초 주기 실시간 7대 슈퍼 알파 멀티팩터 감시 엔진"""
+        """실시세 · 실지표 감시 엔진.
+
+        예전 구현은 random.uniform() 으로 가격을 만들어 그 난수로 매매를 판정했다.
+        이제는 market_feed 가 실제로 조회한 값만 쓰고, 조회에 실패하면
+        추정치를 만들지 않고 해당 틱의 판단을 보류한다.
+        """
+        from services.market_feed import get_live_price, get_live_indicators, price_poll_seconds
+
+        poll_sec = price_poll_seconds(self.symbol, self.broker)
+        last_price_at = 0.0
+        last_ind_at = 0.0
+        indicators = None
+        fail_streak = 0
+
+        self.add_log("INFO", f"📡 실시간 시세 폴링 시작 ({poll_sec:.0f}초 주기 · 지표 {int(INDICATOR_REFRESH_SEC)}초 갱신)")
+
         while self.is_running:
             try:
-                if self.last_checked_price > 0:
-                    # 포지션 보유 중일 때는 퀀트 모멘텀 파동(약간의 상방 드리프트) 시뮬레이션
-                    if self.position > 0:
-                        drift = random.uniform(-0.002, 0.0055)
-                        sim_rsi = round(random.uniform(45, 82), 1)
-                    else:
-                        drift = random.uniform(-0.003, 0.003)
-                        sim_rsi = round(random.uniform(25, 65), 1)
+                now = time.time()
+                if now - last_price_at < poll_sec:
+                    time.sleep(1)
+                    continue
+                last_price_at = now
 
-                    sim_price = round(self.last_checked_price * (1 + drift), 2)
-                    sim_vol_ratio = round(random.uniform(105, 230), 0)
-                    sim_sentiment = int(max(40, min(95, self.current_sentiment_score + random.randint(-2, 3))))
-                    is_squeeze = random.random() < 0.30
-                    macd_up = random.random() < 0.50
-                    
-                    self.update_price_and_check(
-                        current_price=sim_price,
-                        current_rsi=sim_rsi,
-                        volume_ratio=sim_vol_ratio,
-                        sentiment_score=sim_sentiment,
-                        is_squeeze_breakout=is_squeeze,
-                        macd_momentum_up=macd_up
-                    )
+                tick = get_live_price(self.symbol, self.broker)
+                if tick is None:
+                    fail_streak += 1
+                    # 로그 폭주를 막되 상태는 알린다
+                    if fail_streak in (1, 5, 20) or fail_streak % 60 == 0:
+                        self.add_log(
+                            "WARNING",
+                            f"⚠️ 실시간 시세를 받지 못했습니다 ({fail_streak}회 연속). "
+                            f"추정치로 매매하지 않고 판단을 보류합니다."
+                        )
+                    continue
+
+                if fail_streak:
+                    self.add_log("INFO", f"✅ 시세 수신 재개 ({tick['source']})")
+                    fail_streak = 0
+
+                if indicators is None or (now - last_ind_at) >= INDICATOR_REFRESH_SEC:
+                    last_ind_at = now
+                    fresh = get_live_indicators(self.symbol)
+                    if fresh is not None:
+                        indicators = fresh
+                    elif indicators is None:
+                        self.add_log(
+                            "WARNING",
+                            "⚠️ 기술지표(RSI/MACD/볼린저)를 계산할 캔들을 받지 못했습니다. "
+                            "신규 진입은 보류하고 보유 포지션의 손절·익절만 감시합니다."
+                        )
+
+                self.update_price_and_check(
+                    current_price=tick["price"],
+                    current_rsi=(indicators or {}).get("rsi14", 50.0),
+                    volume_ratio=(indicators or {}).get("volumeRatio", 100.0),
+                    sentiment_score=self.current_sentiment_score,
+                    is_squeeze_breakout=bool((indicators or {}).get("isSqueezeBreakout", False)),
+                    macd_momentum_up=bool((indicators or {}).get("macdMomentumUp", False)),
+                    indicators_ok=indicators is not None,
+                )
             except Exception as e:
                 logger.error(f"Bot loop error: {e}")
-            time.sleep(2)
+                time.sleep(1)
 
     def get_status(self) -> Dict[str, Any]:
         cur_p = self.last_checked_price or self.entry_price or 100.0

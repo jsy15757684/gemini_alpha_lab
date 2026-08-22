@@ -7,12 +7,170 @@ let currentBacktest = null;
 let priceChartInstance = null;
 let equityChartInstance = null;
 let cachedBrokers = [];
+let detectedServerIp = null;
+
+// 응답이 4xx/5xx 면 예외를 던진다. 이걸 안 하면 FastAPI 의 {"detail": ...} 를
+// 정상 데이터로 착각해 화면이 "분석 중..." 상태로 멈춰버린다.
+async function fetchJson(url, options) {
+    const res = await fetch(url, options);
+    let body = null;
+    try { body = await res.json(); } catch (e) { body = null; }
+    if (res.status === 401 || (res.status === 503 && body && body.code === "AUTH_NOT_CONFIGURED")) {
+        // 세션이 끊겼거나 서버가 잠긴 상태 — 화면을 잠금으로 되돌린다
+        showAuthGate(body && body.code === "AUTH_NOT_CONFIGURED" ? "not_configured" : "expired");
+        throw new Error((body && body.detail) || "인증이 필요합니다.");
+    }
+    if (!res.ok) {
+        const detail = (body && (body.detail || body.message)) || `HTTP ${res.status}`;
+        throw new Error(typeof detail === "string" ? detail : JSON.stringify(detail));
+    }
+    return body;
+}
+
+// 시세/차트/백테스트가 실전 데이터가 아닐 때 화면에 명시한다.
+function setDataIntegrityBanner(msgList) {
+    let el = document.getElementById("dataIntegrityBanner");
+    if (!el) {
+        el = document.createElement("div");
+        el.id = "dataIntegrityBanner";
+        el.style.cssText = "margin:0.5rem 0;padding:0.6rem 0.9rem;border-radius:8px;font-size:0.82rem;font-weight:700;line-height:1.5;border:1px solid #f59e0b;background:rgba(245,158,11,0.12);color:#fbbf24;";
+        const anchor = document.getElementById("activeSymbolTitle");
+        const host = anchor ? anchor.closest("div").parentElement : document.body;
+        host.insertBefore(el, host.firstChild);
+    }
+    if (!msgList || !msgList.length) { el.style.display = "none"; return; }
+    el.style.display = "block";
+    el.innerHTML = "⚠️ " + msgList.join("<br>⚠️ ");
+}
 
 document.addEventListener("DOMContentLoaded", () => {
-    initApp();
+    bootstrap();
 });
 
+// ===================== 인증 게이트 =====================
+let appStarted = false;
+
+function showAuthGate(reason) {
+    const gate = document.getElementById("authGate");
+    const sub = document.getElementById("authSub");
+    const err = document.getElementById("authError");
+    const submit = document.getElementById("authSubmit");
+    const pw = document.getElementById("authPassword");
+    if (!gate) return;
+
+    gate.classList.remove("hidden");
+    document.body.classList.add("locked");
+    if (submit) submit.disabled = false;
+
+    if (reason === "not_configured") {
+        if (sub) sub.textContent = "서버에 접속 비밀번호가 아직 설정되지 않았습니다.";
+        if (err) {
+            err.classList.remove("hidden");
+            err.innerHTML = "Render 대시보드 → Environment 에서 <b>APP_ACCESS_PASSWORD</b> 를 설정한 뒤 다시 접속하세요. 설정 전까지 모든 데이터 API는 잠겨 있습니다.";
+        }
+        if (submit) submit.disabled = true;
+        if (pw) pw.disabled = true;
+        return;
+    }
+
+    if (pw) { pw.disabled = false; pw.value = ""; }
+    if (reason === "expired") {
+        if (err) { err.classList.remove("hidden"); err.textContent = "세션이 만료되었습니다. 다시 로그인하세요."; }
+    }
+    if (pw) pw.focus();
+}
+
+function hideAuthGate() {
+    const gate = document.getElementById("authGate");
+    if (gate) gate.classList.add("hidden");
+    document.body.classList.remove("locked");
+}
+
+function setAuthError(msg) {
+    const err = document.getElementById("authError");
+    if (!err) return;
+    if (!msg) { err.classList.add("hidden"); err.textContent = ""; return; }
+    err.classList.remove("hidden");
+    err.textContent = msg;
+}
+
+async function bootstrap() {
+    setupAuthListeners();
+    try {
+        const res = await fetch("/api/auth/status");
+        const st = await res.json();
+        if (!st.configured) { showAuthGate("not_configured"); return; }
+        if (st.authenticated) { hideAuthGate(); await initApp(); return; }
+        if (st.lockedForSeconds > 0) {
+            showAuthGate();
+            setAuthError(`로그인 시도가 너무 많습니다. ${Math.ceil(st.lockedForSeconds / 60)}분 후 다시 시도하세요.`);
+            return;
+        }
+        showAuthGate();
+    } catch (e) {
+        console.error("Auth status error:", e);
+        showAuthGate();
+        setAuthError("서버에 연결할 수 없습니다.");
+    }
+}
+
+function setupAuthListeners() {
+    const form = document.getElementById("authForm");
+    if (form) form.addEventListener("submit", handleLogin);
+    // 비밀번호 칸에서 Enter 로도 확실히 제출되게 한다
+    const pwField = document.getElementById("authPassword");
+    if (pwField) {
+        pwField.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter") { ev.preventDefault(); handleLogin(ev); }
+        });
+    }
+    const out = document.getElementById("logoutBtn");
+    if (out) out.addEventListener("click", handleLogout);
+}
+
+async function handleLogin(e) {
+    e.preventDefault();
+    const pw = document.getElementById("authPassword");
+    const submit = document.getElementById("authSubmit");
+    if (!pw || !pw.value) { setAuthError("비밀번호를 입력하세요."); return; }
+
+    setAuthError(null);
+    if (submit) { submit.disabled = true; submit.textContent = "확인 중..."; }
+    try {
+        const res = await fetch("/api/auth/login", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ password: pw.value })
+        });
+        const body = await res.json().catch(() => null);
+        if (!res.ok) {
+            setAuthError((body && body.detail) || `로그인 실패 (HTTP ${res.status})`);
+            return;
+        }
+        pw.value = "";
+        hideAuthGate();
+        await initApp();
+    } catch (err) {
+        console.error("Login error:", err);
+        setAuthError("로그인 요청이 실패했습니다.");
+    } finally {
+        if (submit) { submit.disabled = false; submit.textContent = "잠금 해제"; }
+    }
+}
+
+async function handleLogout() {
+    try {
+        await fetch("/api/auth/logout", { method: "POST" });
+    } catch (e) {
+        console.error("Logout error:", e);
+    }
+    // 화면에 남은 계좌·봇 데이터를 그대로 두지 않고 새로 띄운다
+    window.location.reload();
+}
+
 async function initApp() {
+    if (appStarted) return;
+    appStarted = true;
     setupEventListeners();
     // ⚡ 초고속 비동기 병렬 로딩 (동시 요청으로 초기 로딩 시간 80% 단축)
     await Promise.allSettled([
@@ -224,8 +382,19 @@ async function loadSymbolData(symbolQuery) {
         document.getElementById("activeSymbolTitle").textContent = symbolQuery;
         document.getElementById("activeSymbolName").textContent = "초고속 데이터 분석 중...";
 
-        const res = await fetch(`/api/symbol/bundle?symbol=${encodeURIComponent(symbolQuery)}`);
-        const bundle = await res.json();
+        const bundle = await fetchJson(`/api/symbol/bundle?symbol=${encodeURIComponent(symbolQuery)}`);
+
+        const warnings = [];
+        if (bundle.quote && bundle.quote.isFallback) {
+            warnings.push(`시세 조회 실패 — 화면의 가격/PER/시가총액은 <b>실제 시세가 아닌 하드코딩된 참고값</b>입니다. 매매 판단에 쓰지 마세요.`);
+        }
+        if (bundle.chart && bundle.chart.isFallback) {
+            warnings.push(`차트 데이터 조회 실패 — 표시된 캔들은 <b>난수로 생성된 가짜 데이터</b>입니다.`);
+        }
+        if (bundle.backtest && bundle.backtest.isSimulatedData) {
+            warnings.push(`백테스트가 과거 실제 시세를 못 받아 <b>난수 데이터로 계산</b>되었습니다. 수익률·승률·샤프 지수는 무의미합니다.`);
+        }
+        setDataIntegrityBanner(warnings);
 
         currentSymbol = bundle.symbol;
         currentQuote = bundle.quote;
@@ -250,6 +419,9 @@ async function loadSymbolData(symbolQuery) {
 
     } catch (e) {
         console.error("Bundle load error:", e);
+        const nameEl = document.getElementById("activeSymbolName");
+        if (nameEl) nameEl.textContent = "데이터 조회 실패";
+        setDataIntegrityBanner([`<b>${symbolQuery}</b> 데이터를 불러오지 못했습니다 (${e.message}). 화면에 남아 있는 숫자는 이전 종목의 값입니다.`]);
     }
 }
 
@@ -354,8 +526,7 @@ function renderBacktestUI(result) {
 
 async function loadChart(symbol, timeframe) {
     try {
-        const res = await fetch(`/api/chart?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`);
-        const data = await res.json();
+        const data = await fetchJson(`/api/chart?symbol=${encodeURIComponent(symbol)}&timeframe=${timeframe}`);
         
         renderPriceChart(data.candles);
         renderTechSignals(data.techSignals);
@@ -488,8 +659,7 @@ function renderTechSignals(signals) {
 
 async function loadSentiment(symbol) {
     try {
-        const res = await fetch(`/api/sentiment?symbol=${encodeURIComponent(symbol)}`);
-        const data = await res.json();
+        const data = await fetchJson(`/api/sentiment?symbol=${encodeURIComponent(symbol)}`);
         currentSentiment = data.sentiment;
 
         const s = data.sentiment;
@@ -527,8 +697,7 @@ async function loadSentiment(symbol) {
 
 async function loadFinancials(symbol) {
     try {
-        const res = await fetch(`/api/financials?symbol=${encodeURIComponent(symbol)}`);
-        const fin = await res.json();
+        const fin = await fetchJson(`/api/financials?symbol=${encodeURIComponent(symbol)}`);
         
         document.getElementById("alphaScoreBadge").textContent = `${fin.alphaScore}점 (${fin.grade})`;
         document.getElementById("valuationVerdict").textContent = fin.valuationVerdict;
@@ -1140,14 +1309,22 @@ async function openBrokerModal(code, name) {
         document.getElementById("modalSecretKey").value = "";
         document.getElementById("modalAccountNo").value = "";
 
-        // 서버의 최신 공인 IP 가져와서 표시
+        // 서버의 최신 공인 IP 가져와서 표시 (감지 실패 시 임의 IP 를 보여주지 않는다)
+        const ipEl = document.getElementById("displayServerIp");
+        if (ipEl) ipEl.textContent = "확인 중...";
+        detectedServerIp = null;
         try {
             const ipRes = await fetch("/api/system/my_ip");
             const ipData = await ipRes.json();
-            const ipEl = document.getElementById("displayServerIp");
-            if (ipEl && ipData.ip) ipEl.textContent = ipData.ip;
+            if (ipData && ipData.ip) {
+                detectedServerIp = ipData.ip;
+                if (ipEl) ipEl.textContent = ipData.ip;
+            } else {
+                if (ipEl) ipEl.textContent = "자동 감지 실패 (배포 대시보드의 Outbound IP 확인)";
+            }
         } catch (e) {
-            console.log("Fetch IP error:", e);
+            console.error("Fetch IP error:", e);
+            if (ipEl) ipEl.textContent = "자동 감지 실패 (배포 대시보드의 Outbound IP 확인)";
         }
 
         modal.classList.remove("hidden");
@@ -1157,7 +1334,11 @@ async function openBrokerModal(code, name) {
 function copyServerIp() {
     const ipEl = document.getElementById("displayServerIp");
     if (ipEl) {
-        const ip = ipEl.textContent.trim();
+        const ip = (detectedServerIp || "").trim();
+        if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) {
+            alert("서버 공인 IP 를 아직 감지하지 못했습니다.\n배포 플랫폼(Render 등) 대시보드의 Outbound IP 를 직접 확인해 빗썸에 등록하세요.");
+            return;
+        }
         navigator.clipboard.writeText(ip).then(() => {
             alert(`📋 공인 IP [${ip}] 복사 완료!\n빗썸 [IP 주소 등록] 칸에 붙여넣기(Cmd+V) 해주세요.`);
         }).catch(() => {
@@ -1179,22 +1360,34 @@ async function handleSaveBrokerKey(e) {
     const accountNo = document.getElementById("modalAccountNo").value.trim();
 
     try {
-        if (code === "BITHUMB" && secretKey) {
-            // Test Bithumb connection directly
+        let bithumbVerified = false;
+        if (code === "BITHUMB") {
+            if (!apiKey || !secretKey) {
+                alert("빗썸은 Connect Key 와 Secret Key 를 모두 입력해야 연동됩니다.");
+                return;
+            }
+            // 실계좌 인증을 먼저 통과해야만 '연동됨' 으로 저장한다
+            let testData = null;
             try {
                 const testRes = await fetch("/api/broker/test_bithumb", {
                     method: "POST",
                     headers: { "Content-Type": "application/json" },
                     body: JSON.stringify({ brokerCode: "BITHUMB", apiKey: apiKey, secretKey: secretKey })
                 });
-                const testData = await testRes.json();
-                if (testData.success) {
-                    alert(`✅ [빗썸 연동 성공!]\n• 보유 원화(KRW): ${testData.totalKrw.toLocaleString()}원\n• 출금/주문가능: ${testData.availableKrw.toLocaleString()}원\n• BTC 보유량: ${testData.btcBalance} BTC`);
-                } else {
-                    alert(`⚠️ [빗썸 연동 안내]\n${testData.message || '인증 오류가 발생했습니다.'}\n\n* 빗썸 [IP 주소 등록]란에 1.232.202.142 가 등록되어 있는지 확인해주세요.`);
-                }
+                testData = await testRes.json();
             } catch (e) {
-                console.log("Bithumb test log:", e);
+                console.error("Bithumb test error:", e);
+            }
+
+            if (testData && testData.success) {
+                bithumbVerified = true;
+                alert(`✅ [빗썸 연동 성공!]\n• 보유 원화(KRW): ${(testData.totalKrw || 0).toLocaleString()}원\n• 출금/주문가능: ${(testData.availableKrw || 0).toLocaleString()}원\n• BTC 보유량: ${testData.btcBalance} BTC`);
+            } else {
+                const ipHint = detectedServerIp
+                    ? `이 서버의 공인 IP [${detectedServerIp}] 가 빗썸 [API 관리 > IP 주소 등록]에 등록되어 있는지 확인하세요.`
+                    : `서버 공인 IP 자동 감지에 실패했습니다. 배포 대시보드의 Outbound IP 를 빗썸에 등록하세요.`;
+                alert(`❌ [빗썸 연동 실패 — 저장하지 않았습니다]\n${(testData && testData.message) || '서버 응답을 받지 못했습니다.'}\n\n· ${ipHint}\n· API 키에 '자산조회' 권한이 있는지 확인하세요.`);
+                return;
             }
         }
 

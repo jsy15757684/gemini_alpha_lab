@@ -1,6 +1,39 @@
 import urllib.request
+import urllib.error
+import http.cookiejar
 import json
+import os
 import time
+
+FAILURES = []
+
+# 인증이 붙었으므로 세션 쿠키를 유지하는 opener 를 쓴다.
+_JAR = http.cookiejar.CookieJar()
+_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_JAR))
+
+
+def login():
+    """APP_ACCESS_PASSWORD 로 로그인해 세션 쿠키를 확보한다."""
+    pw = (os.getenv("APP_ACCESS_PASSWORD") or "").strip()
+    if not pw:
+        print("❌ APP_ACCESS_PASSWORD 환경변수가 없어 점검을 진행할 수 없습니다.")
+        print("   실행 예: APP_ACCESS_PASSWORD='...' python3 test_system_health.py")
+        return False
+    try:
+        req = urllib.request.Request(
+            f"{BASE_URL}/api/auth/login",
+            data=json.dumps({"password": pw}).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        _OPENER.open(req, timeout=10)
+        print("🔐 인증 성공 — 세션으로 점검을 진행합니다.\n")
+        return True
+    except urllib.error.HTTPError as e:
+        print(f"❌ 로그인 실패 (HTTP {e.code}): 비밀번호가 서버 설정과 일치하는지 확인하세요.\n")
+        return False
+    except Exception as e:
+        print(f"❌ 서버에 연결할 수 없습니다: {e}\n")
+        return False
 
 BASE_URL = 'http://localhost:8888'
 
@@ -12,18 +45,22 @@ def test_api(name, url, method='GET', data=None):
             headers={'Content-Type': 'application/json'} if data else {}
         )
         req.get_method = lambda: method
-        res = urllib.request.urlopen(req, timeout=10)
+        res = _OPENER.open(req, timeout=10)
         body = json.loads(res.read())
         print(f'✅ [{name}] 정상 응답 (HTTP {res.getcode()})')
         return body
     except Exception as e:
         print(f'❌ [{name}] 오류: {e}')
+        FAILURES.append(f'{name}: {e}')
         return None
 
 def run_diagnostics():
     print('===========================================================')
     print('  🔍 GEMINI ALPHA LAB 전체 시스템 무결성 & 연동 종합 점검')
     print('===========================================================\n')
+
+    if not login():
+        return 2
 
     # 1. 인기 자산 목록
     pop = test_api('1. 인기 자산 목록 API', '/api/popular')
@@ -93,10 +130,19 @@ def run_diagnostics():
         print(f'✅ [10. 빗썸 공식 REST API 실시간 호가 통신] 정상 (BTC 실시간 시세: {closing_p:,}원)')
     else:
         print(f'❌ [10. 빗썸 공식 REST API] 오류')
+        FAILURES.append('10. 빗썸 공식 REST API')
 
     print('\n===========================================================')
-    print('  🎉 모든 10대 핵심 모듈이 100% 무결하게 정상 연동 중입니다!')
+    if FAILURES:
+        # 예전엔 실패해도 무조건 '100% 무결' 을 출력해서 장애가 묻혔다.
+        print(f'  ❌ {len(FAILURES)}개 모듈 실패 — 아래 항목을 확인하세요')
+        for f in FAILURES:
+            print(f'     · {f}')
+    else:
+        print('  🎉 10대 핵심 모듈 전부 정상 응답')
     print('===========================================================')
+    return 1 if FAILURES else 0
 
 if __name__ == '__main__':
-    run_diagnostics()
+    import sys
+    sys.exit(run_diagnostics())

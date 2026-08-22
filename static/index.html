@@ -16,9 +16,54 @@
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
 
     <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=3.3.0">
-</head>
+    <link rel="stylesheet" href="/static/css/style.css?v=3.5.0">
+<style>
+      .auth-gate{position:fixed; inset:0; z-index:9999; display:flex; align-items:center;
+        justify-content:center; padding:1.25rem;
+        background:#080a10; background-image:radial-gradient(1200px 600px at 50% -10%, rgba(56,189,248,.10), transparent 60%);}
+      .auth-gate.hidden{display:none}
+      .auth-card{width:100%; max-width:380px; display:flex; flex-direction:column; gap:.55rem;
+        background:#0f131c; border:1px solid #222a38; border-radius:14px;
+        padding:1.9rem 1.6rem; box-shadow:0 24px 70px -30px rgba(0,0,0,.9);}
+      .auth-brand{font-size:.66rem; font-weight:800; letter-spacing:.18em;
+        color:#64748b; text-transform:uppercase}
+      .auth-title{margin:.15rem 0 0; font-size:1.4rem; font-weight:800; color:#e8ecf4; letter-spacing:-.02em}
+      .auth-sub{margin:0 0 .7rem; font-size:.84rem; line-height:1.55; color:#8b96a8}
+      .auth-label{font-size:.7rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:#7c8798}
+      .auth-input{width:100%; padding:.68rem .8rem; border-radius:8px; border:1px solid #2a3444;
+        background:#080b12; color:#e8ecf4; font-size:1rem; font-family:inherit;}
+      .auth-input:focus{outline:none; border-color:#38bdf8; box-shadow:0 0 0 3px rgba(56,189,248,.16)}
+      .auth-btn{margin-top:.55rem; padding:.7rem 1rem; border:none; border-radius:8px; cursor:pointer;
+        background:#2563eb; color:#fff; font-size:.95rem; font-weight:700; font-family:inherit;}
+      .auth-btn:hover{background:#1d4ed8}
+      .auth-btn:disabled{opacity:.55; cursor:not-allowed}
+      .auth-btn:focus-visible{outline:2px solid #38bdf8; outline-offset:2px}
+      .auth-error{padding:.6rem .75rem; border-radius:8px; font-size:.82rem; line-height:1.5;
+        border:1px solid #7f1d1d; background:rgba(239,68,68,.12); color:#fca5a5}
+      .auth-error.hidden{display:none}
+      .auth-foot{margin-top:.3rem; font-size:.72rem; color:#5b6779}
+      body.locked{overflow:hidden}
+    </style>
+    </head>
 <body>
+
+    <!-- 인증 게이트: 로그인 전에는 이 화면만 보인다 -->
+    <div id="authGate" class="auth-gate">
+      <form class="auth-card" id="authForm" autocomplete="on">
+        <div class="auth-brand">GEMINI ALPHA LAB</div>
+        <h2 class="auth-title">잠긴 트레이딩 콘솔</h2>
+        <p class="auth-sub" id="authSub">이 콘솔은 실계좌 API 키와 주문 권한을 다룹니다. 접속 비밀번호를 입력하세요.</p>
+
+        <label class="auth-label" for="authPassword">접속 비밀번호</label>
+        <input class="auth-input" type="password" id="authPassword" name="password"
+               autocomplete="current-password" spellcheck="false" required>
+
+        <div class="auth-error hidden" id="authError"></div>
+
+        <button class="auth-btn" type="submit" id="authSubmit">잠금 해제</button>
+        <div class="auth-foot" id="authFoot">세션은 12시간 후 만료됩니다.</div>
+      </form>
+    </div>
 
     <!-- Top Navigation -->
     <header class="top-nav">
@@ -32,6 +77,8 @@
                 <span style="width: 8px; height: 8px; background-color: var(--accent-emerald); border-radius: 50%; display: inline-block;"></span>
                 24H 실시간 퀀트 트레이딩 엔진 가동 중
             </div>
+            <button type="button" class="btn-chip" id="logoutBtn"
+                    style="font-size: 0.75rem; padding: 0.2rem 0.6rem;">로그아웃</button>
         </div>
     </header>
 
@@ -605,7 +652,7 @@
             <div style="background: rgba(6,182,212,0.1); border: 1px solid var(--accent-cyan); border-radius: var(--radius-sm); padding: 0.75rem; margin-bottom: 1rem; font-size: 0.8rem;">
                 <div style="color: var(--accent-cyan); font-weight: 700; margin-bottom: 0.25rem;">🌐 빗썸 API 등록용 공인 IP 주소</div>
                 <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="displayServerIp" style="font-family: var(--font-mono); font-weight: 800; color: #fff; font-size: 0.95rem;">1.232.202.142</span>
+                    <span id="displayServerIp" style="font-family: var(--font-mono); font-weight: 800; color: #fff; font-size: 0.95rem;">확인 중...</span>
                     <button type="button" class="btn-chip" style="font-size: 0.75rem; color: var(--accent-cyan); border-color: var(--accent-cyan);" onclick="copyServerIp()">📋 IP 복사</button>
                 </div>
                 <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.35rem;">
@@ -689,6 +736,6 @@
     </div>
 
     <!-- App Script -->
-    <script src="/static/js/app.js?v=3.3.0"></script>
+    <script src="/static/js/app.js?v=3.5.0"></script>
 </body>
 </html>
