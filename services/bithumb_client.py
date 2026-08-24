@@ -1,3 +1,4 @@
+import os
 import time
 import base64
 import hmac
@@ -19,9 +20,26 @@ class BithumbClient:
     BASE_URL_V1 = "https://api.bithumb.com"
     BASE_URL_V2 = "https://api.bithumb.com/v1"
 
+    # 빗썸은 API 키에 IP 등록을 요구한다. Render 같은 PaaS 는 아웃바운드 IP 가
+    # 공용 대역이라 등록이 불가능할 수 있다. 그 경우 고정 IP 를 가진 프록시를
+    # 경유하게 하고, 그 프록시의 IP 하나만 빗썸에 등록한다.
+    #   예) BITHUMB_PROXY_URL=http://user:pass@203.0.113.10:3128
+    # 공개(Public) 시세 조회는 IP 등록이 필요 없으므로 프록시를 타지 않는다.
+    PROXY_ENV = "BITHUMB_PROXY_URL"
+
     def __init__(self, connect_key: str = "", secret_key: str = ""):
         self.connect_key = str(connect_key).strip()
         self.secret_key = str(secret_key).strip()
+
+    @classmethod
+    def proxy_url(cls) -> str:
+        return (os.getenv(cls.PROXY_ENV) or "").strip()
+
+    @classmethod
+    def _proxies(cls):
+        """인증 요청에만 적용할 프록시 설정. 미설정이면 None."""
+        url = cls.proxy_url()
+        return {"http": url, "https": url} if url else None
 
     # ================= Public API (공통) =================
     def get_ticker(self, order_currency: str = "BTC", payment_currency: str = "KRW") -> Dict[str, Any]:
@@ -60,12 +78,14 @@ class BithumbClient:
     def _get_v2(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Any:
         url = f"{self.BASE_URL_V2}{endpoint}"
         headers = self._get_v2_headers(params)
-        return requests.get(url, headers=headers, params=params, timeout=4).json()
+        return requests.get(url, headers=headers, params=params, timeout=8,
+                            proxies=self._proxies()).json()
 
     def _post_v2(self, endpoint: str, body: Optional[Dict[str, Any]] = None) -> Any:
         url = f"{self.BASE_URL_V2}{endpoint}"
         headers = self._get_v2_headers(body)
-        return requests.post(url, headers=headers, json=body, timeout=4).json()
+        return requests.post(url, headers=headers, json=body, timeout=8,
+                             proxies=self._proxies()).json()
 
     # ================= API 1.0 (HMAC 방식) =================
     def _post_v1(self, endpoint: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -90,7 +110,8 @@ class BithumbClient:
         }
 
         url = f"{self.BASE_URL_V1}{endpoint}"
-        return requests.post(url, headers=headers, data=request_params, timeout=4).json()
+        return requests.post(url, headers=headers, data=request_params, timeout=8,
+                             proxies=self._proxies()).json()
 
     # ================= 하이브리드 자동 감지 API =================
     def get_balance(self, currency: str = "ALL") -> Dict[str, Any]:
@@ -157,8 +178,13 @@ class BithumbClient:
         """두 엔진의 실패 사유를 사용자가 조치 가능한 문장으로 번역"""
         blob = f"{diag.get('v2', '')} {diag.get('v1', '')}".lower()
         if "ip" in blob:
-            return ("빗썸이 요청 IP를 거부했습니다. 모달에 표시된 '서버 공인 IP'를 "
-                    "빗썸 [API 관리 > IP 주소 등록]에 그대로 등록하세요. "
+            hint = ("프록시(BITHUMB_PROXY_URL)를 경유하고 있습니다. 프록시 서버의 IP 를 "
+                    "빗썸에 등록했는지 확인하세요."
+                    if BithumbClient.proxy_url() else
+                    "모달에 표시된 '서버 공인 IP'를 빗썸 [API 관리 > IP 주소 등록]에 등록하세요. "
+                    "PaaS 의 아웃바운드 IP 가 공용 대역이면 등록이 불가능하므로, "
+                    "고정 IP 프록시(BITHUMB_PROXY_URL)를 쓰는 방법이 있습니다.")
+            return (f"빗썸이 요청 IP를 거부했습니다. {hint} "
                     f"(원문: v2={diag.get('v2')}, v1={diag.get('v1')})")
         if "access key" in blob or "invalid" in blob or "auth data" in blob or "5300" in blob:
             return ("API 키 인증 실패. Connect Key/Secret Key를 다시 확인하고, "
@@ -221,6 +247,35 @@ class BithumbClient:
             "payment_currency": "KRW",
             "units": str(units)
         })
+
+    @classmethod
+    def egress_ip(cls) -> dict:
+        """인증 요청이 실제로 나가는 공인 IP. 이 값이 빗썸에 등록해야 하는 IP 다.
+        프록시가 설정돼 있으면 프록시를 경유한 IP 를 돌려준다."""
+        proxies = cls._proxies()
+        info = {
+            "proxyConfigured": bool(proxies),
+            "proxyHost": None,
+            "ip": None,
+            "error": None,
+        }
+        if proxies:
+            # 자격증명이 로그·화면에 새지 않도록 호스트만 남긴다
+            try:
+                from urllib.parse import urlparse
+                pr = urlparse(cls.proxy_url())
+                info["proxyHost"] = f"{pr.hostname}:{pr.port}" if pr.port else pr.hostname
+            except Exception:
+                info["proxyHost"] = "(파싱 불가)"
+        try:
+            r = requests.get("https://api.ipify.org?format=json", timeout=8, proxies=proxies)
+            if r.status_code == 200:
+                info["ip"] = r.json().get("ip")
+            else:
+                info["error"] = f"IP 조회 실패 (HTTP {r.status_code})"
+        except Exception as e:
+            info["error"] = f"{'프록시 경유 ' if proxies else ''}IP 조회 실패: {e}"
+        return info
 
     def test_connection(self) -> Dict[str, Any]:
         """API Key 유효성 및 잔고 연동 테스트 (2.0 & 1.0 통합 검증)"""

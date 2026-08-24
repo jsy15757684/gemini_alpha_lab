@@ -1409,9 +1409,22 @@ async function openBrokerModal(code, name) {
         try {
             const ipRes = await fetch("/api/system/my_ip");
             const ipData = await ipRes.json();
-            if (ipData && ipData.ip) {
-                detectedServerIp = ipData.ip;
-                if (ipEl) ipEl.textContent = ipData.ip;
+            if (ipData && (ipData.registerThisIp || ipData.ip)) {
+                // 프록시를 쓰면 서버 IP 와 거래소로 나가는 IP 가 다르다.
+                // 빗썸에 등록해야 하는 건 '거래소로 나가는 IP' 다.
+                detectedServerIp = ipData.registerThisIp || ipData.ip;
+                if (ipEl) {
+                    ipEl.textContent = detectedServerIp;
+                    if (ipData.proxyConfigured) {
+                        ipEl.textContent += `  (프록시 ${ipData.proxyHost || ''} 경유)`;
+                        ipEl.title = "빗썸에는 이 프록시 IP 를 등록하세요";
+                    } else if (ipData.exchangeEgressError) {
+                        ipEl.title = ipData.exchangeEgressError;
+                    }
+                }
+            } else if (ipData && ipData.registerHint) {
+                detectedServerIp = null;
+                if (ipEl) { ipEl.textContent = "프록시 IP 확인 불가"; ipEl.title = ipData.registerHint; }
             } else {
                 if (ipEl) ipEl.textContent = "자동 감지 실패 (배포 대시보드의 Outbound IP 확인)";
             }

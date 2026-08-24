@@ -496,6 +496,12 @@ def get_my_ip_endpoint():
     """서버의 실제 공인 IP (Outbound Egress IP) 조회.
     빗썸 API 키의 [IP 주소 등록]란에는 반드시 '이 서버'가 실제로 나가는 IP를 넣어야 한다.
     조회에 실패하면 절대 임의의 IP를 반환하지 않는다 (잘못된 IP 등록을 유발하므로)."""
+    from services.bithumb_client import BithumbClient
+
+    # 빗썸 인증 요청이 실제로 나가는 IP (프록시 설정 시 프록시 IP).
+    # 빗썸에 등록해야 하는 값은 이것이다.
+    exchange = BithumbClient.egress_ip()
+
     providers = [
         ("https://api.ipify.org?format=json", "ip"),
         ("https://ifconfig.co/json", "ip"),
@@ -507,7 +513,25 @@ def get_my_ip_endpoint():
             data = requests.get(url, timeout=4).json()
             ip = str(data.get(field, "")).strip()
             if ip:
-                return {"ip": ip, "source": url, "detected": True}
+                return {
+                    "ip": ip,
+                    "source": url,
+                    "detected": True,
+                    # 프록시를 쓰면 서버 IP 와 거래소로 나가는 IP 가 다르다
+                    "exchangeEgressIp": exchange.get("ip"),
+                    "proxyConfigured": exchange.get("proxyConfigured"),
+                    "proxyHost": exchange.get("proxyHost"),
+                    "exchangeEgressError": exchange.get("error"),
+                    # 프록시가 설정됐는데 IP 를 못 알아냈으면 서버 IP 를 등록하라고
+                    # 안내하면 안 된다 (빗썸에 등록해야 하는 건 프록시 IP 다).
+                    "registerThisIp": (
+                        exchange.get("ip") if exchange.get("proxyConfigured") else (exchange.get("ip") or ip)
+                    ),
+                    "registerHint": (
+                        "프록시 IP 를 확인할 수 없습니다. 프록시가 살아 있는지 먼저 점검하세요."
+                        if exchange.get("proxyConfigured") and not exchange.get("ip") else None
+                    ),
+                }
         except Exception as e:
             errors.append(f"{url}: {e}")
             continue
