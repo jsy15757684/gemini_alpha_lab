@@ -23,20 +23,66 @@
 
 ---
 
-## ⚡ 빠른 시작 (실행 방법)
+## ⚡ 실행 방법
 
-터미널에서 아래 스크립트를 실행합니다:
+### 로컬 PC 에서 실행
 
 ```bash
-cd /Users/jay_mac/gemini_alpha_lab
+git clone https://github.com/jsy15757684/gemini_alpha_lab.git
+cd gemini_alpha_lab
+cp .env.example .env      # 값을 채운다 (최소 APP_ACCESS_PASSWORD)
 ./run.sh
 ```
 
-또는 직접 실행:
+`run.sh` 가 알아서 처리합니다 — 가상환경이 없으면 만들고, 의존성을 설치하고,
+`.env` 를 읽어 기동한 뒤 브라우저를 엽니다. 접속은 `http://localhost:8888`.
+
+`APP_ACCESS_PASSWORD` 를 넣지 않으면 서버는 뜨지만 **모든 데이터 API 가 503 으로
+잠깁니다.** 열린 상태로 떨어지지 않게 의도한 동작입니다.
+
+### 환경변수
+
+전체 목록과 설명은 [.env.example](.env.example) 에 있습니다. 요약:
+
+| 변수 | 필수 | 설명 |
+| :--- | :--- | :--- |
+| `APP_ACCESS_PASSWORD` | ✅ | 콘솔 접속 비밀번호. 없으면 전체 잠금 |
+| `GEMINI_API_KEY` | | 없으면 AI 코멘트 미동작 (화면에 표시됨) |
+| `GEMINI_MODEL` | | 비워두면 사용 가능한 모델을 자동 탐색 |
+| `BITHUMB_API_KEY` / `BITHUMB_SECRET_KEY` | | 실계좌 연동. 환경변수로 넣으면 재시작에도 유지 |
+| `BITHUMB_PROXY_URL` | | 고정 IP 프록시 경유 (PaaS 아웃바운드 IP 등록 불가 시) |
+
+---
+
+## ⚠️ 실전 매매 전 반드시 확인할 것
+
+- **빗썸은 API 키에 IP 등록이 필수입니다.** 로그인 후
+  `내 활성 봇 관제 센터 > 브로커/거래소 API 연동 센터 > 빗썸 [API 키 등록]` 모달이
+  등록해야 할 IP 를 알려줍니다. 프록시를 쓰면 프록시 IP 를 알려줍니다.
+- **실주문이 구현된 거래소는 빗썸뿐입니다.** NH나무·Alpaca 는 모의투자 전용이며,
+  LIVE 로 가동하려 하면 400 으로 거부됩니다.
+- **봇은 실측 시세로만 판단합니다.** 시세나 지표를 받지 못하면 추정치를 만들지 않고
+  판단을 보류합니다. 실시세가 없으면 LIVE 봇 가동 자체가 503 으로 거부됩니다.
+- **유동 IP 회선(집·사무실)은 운영에 부적합합니다.** IP 가 바뀌면 빗썸 인증이
+  끊깁니다. 24시간 운영은 고정 IP 환경에서 하세요.
+- **화면의 마켓플레이스 성과 수치(APY·승률·누적 운용액)는 하드코딩된 예시값이며
+  실제 운용 실적이 아닙니다.** 대외 공개 전 반드시 정리하세요.
+
+## 🔍 진단 엔드포인트
+
+로그인 후 사용합니다.
+
+| 경로 | 용도 |
+| :--- | :--- |
+| `GET /api/health` | 서버 생존 (인증 불필요) |
+| `GET /api/auth/status` | 비밀번호 설정 여부 (인증 불필요) |
+| `GET /api/ai/status` | Gemini 모델·마지막 오류·사용 가능 모델 목록 |
+| `GET /api/system/my_ip` | 빗썸에 등록해야 하는 IP (`registerThisIp`) |
+
+전체 점검은 아래로 실행합니다.
 
 ```bash
-cd /Users/jay_mac/gemini_alpha_lab
-/Users/jay_mac/my_ai_system/ai_env/bin/python3 -m uvicorn server:app --host 0.0.0.0 --port 8888 --reload
+APP_ACCESS_PASSWORD='...' python3 test_system_health.py
 ```
 
-실행 후 웹 브라우저에서 **`http://localhost:8888`** 에 자동으로 연결되며 즉시 모든 기능을 사용하실 수 있습니다.
+실패한 모듈이 있으면 목록과 함께 0 이 아닌 종료 코드를 반환합니다.
