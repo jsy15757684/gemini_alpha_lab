@@ -66,8 +66,10 @@ def verify_password(candidate: str) -> bool:
     expected = _password()
     if not expected:
         return False
+    # 붙여넣기로 앞뒤 공백이 섞여 들어오는 경우가 흔하다.
+    # 저장된 값(_password())은 이미 strip 되어 있으므로 입력도 같게 맞춘다.
     return hmac.compare_digest(
-        hashlib.sha256((candidate or "").encode("utf-8")).digest(),
+        hashlib.sha256((candidate or "").strip().encode("utf-8")).digest(),
         hashlib.sha256(expected.encode("utf-8")).digest(),
     )
 

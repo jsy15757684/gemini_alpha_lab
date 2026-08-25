@@ -139,7 +139,10 @@ async function handleLogin(e) {
     e.preventDefault();
     const pw = document.getElementById("authPassword");
     const submit = document.getElementById("authSubmit");
-    if (!pw || !pw.value) { setAuthError("비밀번호를 입력하세요."); return; }
+    // 붙여넣기할 때 앞뒤 공백·줄바꿈이 딸려오는 일이 흔하다.
+    // 서버 쪽 값(.env / 환경변수)도 앞뒤 공백을 제거해 보관하므로 여기서도 맞춘다.
+    const password = (pw ? pw.value : "").trim();
+    if (!password) { setAuthError("비밀번호를 입력하세요."); return; }
 
     setAuthError(null);
     if (submit) { submit.disabled = true; submit.textContent = "확인 중..."; }
@@ -147,7 +150,7 @@ async function handleLogin(e) {
         const res = await fetch("/api/auth/login", {
             method: "POST",
             headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({ password: pw.value })
+            body: JSON.stringify({ password })
         });
         const body = await res.json().catch(() => null);
         if (!res.ok) {
