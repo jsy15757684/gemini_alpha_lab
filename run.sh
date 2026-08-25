@@ -97,6 +97,38 @@ if [ -n "${BITHUMB_API_KEY:-}" ]; then
 fi
 
 PORT="${PORT:-8888}"
+
+# ── 포트 점유 확인 ──────────────────────────────────────────
+# --reload 개발 서버는 종료가 깔끔하지 않으면 프로세스가 남아 포트를 계속 잡는다.
+# 그대로 두면 "[Errno 48] Address already in use" 로 기동이 실패한다.
+if command -v lsof >/dev/null 2>&1; then
+    HOLDER_PIDS="$(lsof -nP -tiTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null || true)"
+    if [ -n "$HOLDER_PIDS" ]; then
+        echo ""
+        echo "⚠️  포트 ${PORT} 을(를) 이미 다른 프로세스가 쓰고 있습니다:"
+        lsof -nP -iTCP:"${PORT}" -sTCP:LISTEN 2>/dev/null | tail -n +2 | sed 's/^/     /'
+        # 이 프로젝트의 서버가 남아 있는 경우에만 자동 정리한다.
+        OURS=""
+        for pid in $HOLDER_PIDS; do
+            if ps -o command= -p "$pid" 2>/dev/null | grep -q "uvicorn server:app"; then
+                OURS="$OURS $pid"
+            fi
+        done
+        if [ -n "$OURS" ]; then
+            echo "   → 이전에 실행된 이 프로젝트의 서버입니다. 정리하고 계속합니다."
+            # shellcheck disable=SC2086
+            kill $OURS 2>/dev/null || true
+            sleep 2
+            for pid in $OURS; do kill -9 "$pid" 2>/dev/null || true; done
+            sleep 1
+        else
+            echo "   → 이 프로젝트의 서버가 아닙니다. 임의로 종료하지 않습니다."
+            echo "   다른 포트로 실행하려면:  PORT=8899 ./run.sh"
+            exit 1
+        fi
+    fi
+fi
+
 echo "Starting server at http://localhost:${PORT} ..."
 
 # 로컬 실행이므로 외부에 열지 않는다 (0.0.0.0 대신 127.0.0.1)
