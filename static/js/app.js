@@ -66,7 +66,14 @@ function showAuthGate(reason) {
         if (sub) sub.textContent = "서버에 접속 비밀번호가 아직 설정되지 않았습니다.";
         if (err) {
             err.classList.remove("hidden");
-            err.innerHTML = "Render 대시보드 → Environment 에서 <b>APP_ACCESS_PASSWORD</b> 를 설정한 뒤 다시 접속하세요. 설정 전까지 모든 데이터 API는 잠겨 있습니다.";
+            // 로컬 실행과 배포 환경의 설정 위치가 다르다.
+            // 예전엔 로컬에서도 "Render 대시보드" 를 안내해서 따라갈 수가 없었다.
+            const isLocal = ["localhost", "127.0.0.1", "[::1]", "0.0.0.0"].includes(location.hostname);
+            err.innerHTML = isLocal
+                ? "프로젝트 폴더의 <b>.env</b> 파일에 <b>APP_ACCESS_PASSWORD</b> 를 넣고 서버를 다시 시작하세요."
+                  + "<br><span style='opacity:.85'>.env 가 없으면 <b>cp .env.example .env</b> 로 만드세요. 값을 바꾼 뒤에는 반드시 재시작해야 반영됩니다.</span>"
+                : "배포 플랫폼의 환경변수(Render → Environment)에 <b>APP_ACCESS_PASSWORD</b> 를 설정한 뒤 다시 접속하세요."
+                  + "<br><span style='opacity:.85'>설정 전까지 모든 데이터 API는 잠겨 있습니다.</span>";
         }
         if (submit) submit.disabled = true;
         if (pw) pw.disabled = true;

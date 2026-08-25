@@ -12,12 +12,41 @@ echo "=========================================================="
 
 # ── 1. .env 로드 ────────────────────────────────────────────
 # 키를 쉘 히스토리에 남기지 않기 위해 파일에서 읽는다.
+#
+# 주의: `. ./.env` 로 source 하면 안 된다.
+#   KEY= value   ← '=' 뒤 공백이 있으면 쉘은 값을 '명령'으로 실행해버리고
+#                   변수는 빈 값이 된다. 붙여넣기할 때 흔히 생기는 형태다.
+#   KEY=a b c    ← 따옴표 없는 공백도 같은 문제
+# 그래서 직접 파싱한다. 값을 실행하지 않으므로 안전하기도 하다.
+load_env_file() {
+    local file="$1" line key val loaded=0 skipped=0
+    while IFS= read -r line || [ -n "$line" ]; do
+        line="${line%$'\r'}"                      # Windows 줄바꿈 제거
+        case "$line" in ''|'#'*) continue;; esac
+        case "$line" in *=*) ;; *) continue;; esac
+
+        key="${line%%=*}"
+        val="${line#*=}"
+
+        key="$(printf '%s' "$key" | tr -d '[:space:]')"
+        val="${val#"${val%%[![:space:]]*}"}"       # 앞 공백
+        val="${val%"${val##*[![:space:]]}"}"       # 뒤 공백
+
+        case "$val" in                              # 감싼 따옴표 제거
+            \"*\") val="${val#\"}"; val="${val%\"}" ;;
+            \'*\') val="${val#\'}"; val="${val%\'}" ;;
+        esac
+
+        [ -z "$key" ] && continue
+        if [ -z "$val" ]; then skipped=$((skipped+1)); continue; fi
+        export "$key=$val"
+        loaded=$((loaded+1))
+    done < "$file"
+    echo "✅ .env 로드 (설정 ${loaded}개, 빈 값 ${skipped}개 건너뜀)"
+}
+
 if [ -f ".env" ]; then
-    set -a
-    # shellcheck disable=SC1091
-    . ./.env
-    set +a
-    echo "✅ .env 로드"
+    load_env_file ".env"
 else
     echo "ℹ️  .env 가 없습니다.  cp .env.example .env  후 값을 채우세요."
 fi
