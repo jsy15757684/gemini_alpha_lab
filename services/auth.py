@@ -61,6 +61,31 @@ def password_strength_warning() -> Optional[str]:
     return None
 
 
+# 지문 계산용 고정 솔트. 평문 sha256 사전 대입을 막기 위한 것이며 비밀은 아니다.
+_FP_SALT = b"gemini-alpha-lab/password-fingerprint/v1"
+
+
+def password_fingerprint() -> Optional[str]:
+    """비밀번호의 짧은 지문. 값 자체는 드러내지 않고 '같은 값인지'만 대조하게 한다.
+
+    로컬 .env 와 배포 환경변수가 같은 값인지 확인할 때 쓴다.
+    HTTP 로 노출하지 않고 서버 기동 로그에만 남긴다.
+    """
+    pw = _password()
+    if not pw:
+        return None
+    return hashlib.sha256(_FP_SALT + pw.encode("utf-8")).hexdigest()[:8]
+
+
+def password_debug_line() -> str:
+    """기동 로그용 한 줄. 길이와 지문만 남기고 값은 남기지 않는다."""
+    pw = _password()
+    if not pw:
+        return "APP_ACCESS_PASSWORD 미설정 — 모든 데이터 API 가 잠깁니다."
+    return (f"APP_ACCESS_PASSWORD 로드됨 · 길이 {len(pw)}자 · 지문 {password_fingerprint()} "
+            f"(값은 기록하지 않습니다. 로컬과 배포의 지문이 같으면 같은 비밀번호입니다)")
+
+
 def verify_password(candidate: str) -> bool:
     """타이밍 공격을 피하기 위해 compare_digest 로 비교한다."""
     expected = _password()

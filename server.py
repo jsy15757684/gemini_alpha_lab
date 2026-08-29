@@ -164,6 +164,17 @@ def auth_logout(request: Request):
     return resp
 
 
+@app.on_event("startup")
+def _log_auth_config():
+    """기동 시 인증 설정 상태를 로그에 남긴다.
+    비밀번호가 안 맞을 때 '서버가 무엇을 갖고 있는지' 확인할 유일한 안전한 수단이다."""
+    logger.info(auth.password_debug_line())
+    if auth.is_configured():
+        w = auth.password_strength_warning()
+        if w:
+            logger.warning(w)
+
+
 gemini_ai = GeminiAIService()
 backtester = QuantBacktester(initial_capital=10000.0)
 
