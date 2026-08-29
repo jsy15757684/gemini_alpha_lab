@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.0.2">
+<link rel="stylesheet" href="/static/css/style.css?v=4.1.0">
 </head>
 <body>
 
@@ -79,6 +79,7 @@
             </div>
           </div>
 
+          <div class="rules" id="botRules"></div>
           <div class="params" id="botParams"></div>
 
           <div class="alert alert-danger hidden" id="liveWarning">
@@ -120,6 +121,7 @@
             <input class="input" type="number" id="btCapital" value="1000000" min="10000" step="10000">
           </div>
         </div>
+        <div class="rules" id="btRules"></div>
         <div class="params" id="btParams"></div>
         <button class="btn btn-primary btn-block" id="runBacktestBtn">백테스트 실행</button>
         <div class="alert alert-error hidden" id="btError"></div>
@@ -186,6 +188,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.0.2"></script>
+<script src="/static/js/app.js?v=4.1.0"></script>
 </body>
 </html>

@@ -95,8 +95,14 @@ class TradingBot:
         mode_label = "실전(LIVE)" if self.mode == "LIVE" else "모의투자(PAPER)"
         self.log("INFO", f"{mode_label} 봇 시작 · {self.coin}/KRW · {self.interval} 캔들 · "
                          f"운용자본 {self.initial_krw:,.0f}원")
-        self.log("INFO", f"전략: RSI({self.params.rsiPeriod}) {self.params.rsiBuy:.0f} 상향돌파 진입 · "
-                         f"익절 +{self.params.takeProfitPct}% · 손절 -{self.params.stopLossPct}%"
+        # 실제로 선택된 진입 규칙을 적는다. 예전엔 규칙과 무관하게 RSI 로 찍혔다.
+        from services.strategy import ENTRY_RULES
+        labels = [ENTRY_RULES[r]["label"] for r in self.params.entryRules if r in ENTRY_RULES]
+        joiner = " AND " if self.params.entryMode == "all" else " 또는 "
+        self.log("INFO", f"진입: {joiner.join(labels) or '없음'}"
+                         + (f" (RSI 기준선 {self.params.rsiBuy:.0f})" if "rsiCrossUp" in self.params.entryRules else ""))
+        self.log("INFO", f"청산: 익절 +{self.params.takeProfitPct}% · 손절 -{self.params.stopLossPct}%"
+                         + f" · RSI {self.params.rsiSell:.0f} 과매수"
                          + (f" · 트레일링 {self.params.trailingStopPct}%" if self.params.trailingStopPct > 0 else "")
                          + (f" · {self.params.slowMa}봉 추세필터" if self.params.useTrendFilter else ""))
         self._thread = threading.Thread(target=self._loop, daemon=True)

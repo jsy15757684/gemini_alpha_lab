@@ -2,7 +2,7 @@
 // 원칙: 서버가 실패를 알려주면 그대로 화면에 보여준다. 임의로 채워 넣지 않는다.
 
 const $ = (id) => document.getElementById(id);
-let COINS = [], INTERVALS = [], started = false, timers = [];
+let COINS = [], INTERVALS = [], ENTRY_RULES = [], started = false, timers = [];
 
 const won = (n) => (n == null || isNaN(n)) ? "-" : Math.round(n).toLocaleString("ko-KR");
 const pct = (n) => (n == null || isNaN(n)) ? "-" : `${n >= 0 ? "+" : ""}${Number(n).toFixed(2)}%`;
@@ -100,12 +100,49 @@ function renderParams(hostId, prefix) {
              value="${DEFAULTS[f.k]}" step="${f.step}" min="${f.min}">
     </div>`).join("");
 }
+function renderEntryRules(hostId, prefix) {
+  const host = $(hostId);
+  if (!host) return;
+  host.innerHTML = `
+    <div class="rules-head">
+      <span class="label" style="margin:0">진입 조건</span>
+      <select class="input input-sm" id="${prefix}entryMode">
+        <option value="any">하나라도 충족 시 진입</option>
+        <option value="all">전부 충족 시 진입</option>
+      </select>
+    </div>
+    <div class="rule-grid">
+      ${ENTRY_RULES.map(r => `
+        <label class="rule" title="${r.desc}">
+          <input type="checkbox" id="${prefix}rule_${r.key}" ${r.key === "rsiCrossUp" ? "checked" : ""}>
+          <span>${r.label}</span>
+        </label>`).join("")}
+    </div>
+    <div class="muted small" id="${prefix}ruleNote"></div>`;
+
+  const update = () => {
+    const on = ENTRY_RULES.filter(r => $(`${prefix}rule_${r.key}`).checked);
+    const note = $(`${prefix}ruleNote`);
+    if (!on.length) {
+      note.innerHTML = `<span class="down">조건을 하나 이상 선택하세요. 선택이 없으면 RSI 상향돌파가 적용됩니다.</span>`;
+    } else {
+      note.textContent = on.map(r => `${r.label}: ${r.desc}`).join(" · ");
+    }
+  };
+  ENTRY_RULES.forEach(r => $(`${prefix}rule_${r.key}`).onchange = update);
+  update();
+}
+
 function readParams(prefix) {
   const p = {};
   PARAM_FIELDS.forEach(f => {
     const v = parseFloat($(prefix + f.k).value);
     if (!isNaN(v)) p[f.k] = v;
   });
+  const rules = ENTRY_RULES.filter(r => $(`${prefix}rule_${r.key}`)?.checked).map(r => r.key);
+  if (rules.length) p.entryRules = rules;
+  const mode = $(`${prefix}entryMode`);
+  if (mode) p.entryMode = mode.value;
   return p;
 }
 
@@ -263,7 +300,10 @@ function renderBacktest(r) {
 
   $("btResult").innerHTML = `<div class="card">
     <div class="card-head">
-      <h2 class="card-title">${r.coin}/KRW · ${r.interval} · 캔들 ${r.candleCount}개</h2>
+      <h2 class="card-title">${r.coin}/KRW · ${r.interval} · 캔들 ${r.candleCount}개
+        <span class="muted small">진입: ${(r.params.entryRules || []).map(k =>
+          (ENTRY_RULES.find(x => x.key === k) || {}).label || k).join(
+            r.params.entryMode === "all" ? " AND " : " 또는 ")}</span></h2>
       <span class="muted small">${when(r.periodFrom)} ~ ${when(r.periodTo)}</span>
     </div>
     <div class="metrics">
@@ -427,6 +467,9 @@ async function boot() {
   ["botCoin", "btCoin", "chartCoin"].forEach(id => $(id).innerHTML = coinOpts);
   ["botInterval", "btInterval", "chartInterval"].forEach(id => $(id).innerHTML = ivOpts);
 
+  ENTRY_RULES = meta.entryRules || [];
+  renderEntryRules("botRules", "bp_");
+  renderEntryRules("btRules", "tp_");
   renderParams("botParams", "bp_");
   renderParams("btParams", "tp_");
 

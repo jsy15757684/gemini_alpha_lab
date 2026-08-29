@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 from services import auth, backtest, bithumb
 from services.keystore import keystore
-from services.strategy import StrategyParams, compute_indicators
+from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, bot_manager
 
 app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0")
@@ -122,8 +122,11 @@ def logout(request: Request):
 
 @app.get("/api/coins")
 def coins():
+    """화면 구성에 필요한 목록. 진입 규칙 카탈로그도 여기서 내려준다."""
     return {"coins": [{"code": c, "name": n} for c, n in bithumb.COINS.items()],
-            "intervals": bithumb.INTERVALS}
+            "intervals": bithumb.INTERVALS,
+            "entryRules": entry_rule_catalog(),
+            "defaults": StrategyParams().to_dict()}
 
 
 @app.get("/api/prices")

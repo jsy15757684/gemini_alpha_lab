@@ -108,6 +108,12 @@ select.input{cursor:pointer}
 .form-grid{display:grid; grid-template-columns:1fr 1fr; gap:0 .8rem}
 @media (max-width:520px){.form-grid{grid-template-columns:1fr}}
 
+.rules{margin-top:.9rem; padding-top:.8rem; border-top:1px solid var(--line)}
+.rules-head{display:flex; justify-content:space-between; align-items:center; gap:.6rem; margin-bottom:.5rem}
+.rule-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:.35rem .7rem}
+.rule{display:flex; align-items:center; gap:.4rem; font-size:.84rem; color:var(--text); cursor:pointer}
+.rule input{accent-color:var(--accent); cursor:pointer}
+.rules .small{margin-top:.5rem; line-height:1.5}
 .params{margin-top:.9rem; padding-top:.8rem; border-top:1px solid var(--line);
   display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr)); gap:0 .7rem}
 .param-check{display:flex; align-items:center; gap:.4rem; margin-top:.9rem; font-size:.82rem; color:var(--muted)}
