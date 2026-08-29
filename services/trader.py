@@ -25,12 +25,16 @@ logger = logging.getLogger(__name__)
 
 MAX_ACTIVE_BOTS = int(os.getenv("APP_MAX_ACTIVE_BOTS", "10"))
 
-# 캔들 간격별 폴링 주기(초). 지표는 캔들이 닫혀야 바뀌므로 자주 볼 필요가 없다.
-# 가격(손절/익절 감시)은 이 주기로 확인한다.
-POLL_SECONDS = {
-    "1m": 15, "3m": 20, "5m": 30, "10m": 30,
-    "30m": 45, "1h": 60, "6h": 120, "12h": 180, "24h": 300,
-}
+# 가격 확인 주기와 캔들 갱신 주기는 분리해야 한다.
+#
+#   · 지표(RSI/MA)는 캔들이 닫혀야 바뀌므로 자주 받을 필요가 없다.
+#   · 그러나 손절·익절·트레일링은 '현재가' 로 판단한다. 캔들 간격이 길다고
+#     가격 확인까지 느리게 하면 24h 봇은 손절을 5분에 한 번만 검사하게 되어
+#     급락 시 손실이 크게 밀린다. (실제로 그렇게 만들어 놨었다)
+#
+# 따라서 가격은 캔들 간격과 무관하게 항상 같은 주기로 확인한다.
+PRICE_POLL_SEC = float(os.getenv("APP_PRICE_POLL_SEC", "10"))
+
 CANDLE_REFRESH_SECONDS = {
     "1m": 30, "3m": 60, "5m": 90, "10m": 150,
     "30m": 300, "1h": 600, "6h": 1800, "12h": 3600, "24h": 3600,
@@ -60,6 +64,7 @@ class TradingBot:
         self.winning_trades = 0
 
         self.last_price = 0.0
+        self.last_price_at = 0.0
         self.last_rsi: Optional[float] = None
         self.last_decision = "가동 대기"
         self.price_failures = 0
@@ -84,6 +89,7 @@ class TradingBot:
         # 루프 첫 틱 전에 상태를 조회하면 현재가가 0 으로 보였다. 시작 시점에 채운다.
         try:
             self.last_price = bithumb.get_price(self.coin)
+            self.last_price_at = time.time()
         except bithumb.BithumbError as e:
             self.log("WARNING", f"시작 시점 시세 조회 실패: {e.message}")
         mode_label = "실전(LIVE)" if self.mode == "LIVE" else "모의투자(PAPER)"
@@ -108,7 +114,7 @@ class TradingBot:
 
     # ── 메인 루프 ──
     def _loop(self):
-        poll = POLL_SECONDS.get(self.interval, 60)
+        poll = PRICE_POLL_SEC
         candle_ttl = CANDLE_REFRESH_SECONDS.get(self.interval, 600)
         bars: List[Dict[str, Any]] = []
         bars_at = 0.0
@@ -144,6 +150,7 @@ class TradingBot:
                     self.price_failures = 0
 
                 self.last_price = price
+                self.last_price_at = time.time()
                 if self.pos.open and price > self.pos.peakPrice:
                     self.pos.peakPrice = price
 
@@ -248,6 +255,8 @@ class TradingBot:
             "winRatePct": round(self.winning_trades / self.total_trades * 100, 2)
                           if self.total_trades else 0.0,
             "rsi": round(self.last_rsi, 1) if self.last_rsi is not None else None,
+            "priceAgeSec": round(time.time() - self.last_price_at, 1) if self.last_price_at else None,
+            "pricePollSec": PRICE_POLL_SEC,
             "lastDecision": self.last_decision,
             "priceFailures": self.price_failures,
             "params": self.params.to_dict(),

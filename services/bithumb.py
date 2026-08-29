@@ -16,6 +16,7 @@ import base64
 import hmac
 import hashlib
 import logging
+import threading
 import urllib.parse
 from typing import Any, Dict, List, Optional
 
@@ -72,11 +73,22 @@ def _proxies() -> Optional[Dict[str, str]]:
 
 # ───────────────────────── 공개 API ─────────────────────────
 
+# 봇 여러 개가 같은 코인을 동시에 볼 때 중복 호출을 줄인다.
+# 손절 판단에 쓰이므로 TTL 은 짧게 둔다 (기본 3초).
+_PRICE_TTL = float(os.getenv("APP_PRICE_CACHE_SEC", "3"))
+_price_cache: Dict[str, tuple] = {}
+_price_lock = threading.Lock()
+
+
 def get_price(coin: str) -> float:
     """현재가(원). 실패하면 BithumbError."""
     c = normalize_coin(coin)
     if not c:
         raise BithumbError(f"빗썸 원화마켓에 없는 코인입니다: {coin}")
+    with _price_lock:
+        hit = _price_cache.get(c)
+        if hit and (time.time() - hit[0]) < _PRICE_TTL:
+            return hit[1]
     try:
         r = requests.get(f"{BASE_V1}/public/ticker/{c}_KRW", timeout=6)
         body = r.json()
@@ -87,6 +99,8 @@ def get_price(coin: str) -> float:
     price = float(body["data"]["closing_price"])
     if price <= 0:
         raise BithumbError("시세가 0 으로 조회되었습니다")
+    with _price_lock:
+        _price_cache[c] = (time.time(), price)
     return price
 
 

@@ -191,7 +191,9 @@ function botCard(b) {
     <div class="bot-stats">
       <div><div class="stat-k">평가자산</div><div class="stat-v">${won(b.equityKrw)}</div></div>
       <div><div class="stat-k">총 수익률</div><div class="stat-v ${cls(b.totalReturnPct)}">${pct(b.totalReturnPct)}</div></div>
-      <div><div class="stat-k">현재가</div><div class="stat-v">${won(b.currentPrice)}</div></div>
+      <div><div class="stat-k">현재가 ${b.priceAgeSec != null
+          ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : 'muted'}">${Math.round(b.priceAgeSec)}초 전</span>`
+          : ""}</div><div class="stat-v">${won(b.currentPrice)}</div></div>
       <div><div class="stat-k">보유</div><div class="stat-v">${b.units > 0 ? b.units.toFixed(6) : "-"}</div></div>
       <div><div class="stat-k">평가손익</div><div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0 ? won(b.unrealizedPnlKrw) : "-"}</div></div>
       <div><div class="stat-k">RSI</div><div class="stat-v">${b.rsi ?? "-"}</div></div>
