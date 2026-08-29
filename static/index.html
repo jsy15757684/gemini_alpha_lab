@@ -1,751 +1,188 @@
 <!DOCTYPE html>
 <html lang="ko">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Gemini Alpha Lab - AI 퀀트 & 스마트 인베스트먼트 리서치 OS</title>
-    <meta name="description" content="Gemini AI 기반 퀀트 백테스팅, 실시간 뉴스 감성 분석, 기업 재무 엑스레이 및 수익화 투자 리포트 자동 생성 플랫폼">
-    
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
-    
-    <!-- Chart.js & Marked.js -->
-    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
-
-    <!-- Custom CSS -->
-    <link rel="stylesheet" href="/static/css/style.css?v=3.6.5">
-<style>
-      /* 카드가 뷰포트보다 높을 때(짧은 창·가로모드 휴대폰) align-items:center 는
-         넘치는 위쪽을 잘라내고 스크롤도 막아 비밀번호 칸에 닿을 수 없게 만든다.
-         overflow-y:auto + 자식의 margin:auto 조합이 '중앙정렬 + 넘치면 스크롤' 을 둘 다 만족한다. */
-      .auth-gate{position:fixed; inset:0; z-index:9999; display:flex; overflow-y:auto;
-        padding:1.25rem;
-        background:#080a10; background-image:radial-gradient(1200px 600px at 50% -10%, rgba(56,189,248,.10), transparent 60%);}
-      .auth-gate.hidden{display:none}
-      .auth-card{margin:auto; width:100%; max-width:380px; display:flex; flex-direction:column; gap:.55rem;
-        background:#0f131c; border:1px solid #222a38; border-radius:14px;
-        padding:1.9rem 1.6rem; box-shadow:0 24px 70px -30px rgba(0,0,0,.9);}
-      .auth-brand{font-size:.66rem; font-weight:800; letter-spacing:.18em;
-        color:#64748b; text-transform:uppercase}
-      .auth-title{margin:.15rem 0 0; font-size:1.4rem; font-weight:800; color:#e8ecf4; letter-spacing:-.02em}
-      .auth-sub{margin:0 0 .7rem; font-size:.84rem; line-height:1.55; color:#8b96a8}
-      .auth-label{font-size:.7rem; font-weight:700; letter-spacing:.09em; text-transform:uppercase; color:#7c8798}
-      .auth-input{width:100%; padding:.68rem .8rem; border-radius:8px; border:1px solid #2a3444;
-        background:#080b12; color:#e8ecf4; font-size:1rem; font-family:inherit;}
-      .auth-input:focus{outline:none; border-color:#38bdf8; box-shadow:0 0 0 3px rgba(56,189,248,.16)}
-      .auth-btn{margin-top:.55rem; padding:.7rem 1rem; border:none; border-radius:8px; cursor:pointer;
-        background:#2563eb; color:#fff; font-size:.95rem; font-weight:700; font-family:inherit;}
-      .auth-btn:hover{background:#1d4ed8}
-      .auth-btn:disabled{opacity:.55; cursor:not-allowed}
-      .auth-btn:focus-visible{outline:2px solid #38bdf8; outline-offset:2px}
-      .auth-error{padding:.6rem .75rem; border-radius:8px; font-size:.82rem; line-height:1.5;
-        border:1px solid #7f1d1d; background:rgba(239,68,68,.12); color:#fca5a5}
-      .auth-error.hidden{display:none}
-      .auth-foot{margin-top:.3rem; font-size:.72rem; color:#5b6779}
-      body.locked{overflow:hidden}
-      @media (max-height:520px){
-        .auth-card{padding:1.15rem 1.2rem; gap:.4rem}
-        .auth-title{font-size:1.15rem}
-        .auth-sub{font-size:.78rem; margin-bottom:.4rem}
-        .auth-foot{display:none}
-      }
-    </style>
-    </head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>빗썸 원화 자동매매 콘솔</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
+<link rel="stylesheet" href="/static/css/style.css?v=4.0.0">
+</head>
 <body>
 
-    <!-- 인증 게이트: 로그인 전에는 이 화면만 보인다 -->
-    <div id="authGate" class="auth-gate">
-      <form class="auth-card" id="authForm" autocomplete="on">
-        <div class="auth-brand">GEMINI ALPHA LAB</div>
-        <h2 class="auth-title">잠긴 트레이딩 콘솔</h2>
-        <p class="auth-sub" id="authSub">이 콘솔은 실계좌 API 키와 주문 권한을 다룹니다. 접속 비밀번호를 입력하세요.</p>
+<!-- 인증 게이트 -->
+<div id="authGate" class="gate">
+  <form class="gate-card" id="authForm">
+    <div class="gate-eyebrow">BITHUMB KRW</div>
+    <h1 class="gate-title">자동매매 콘솔</h1>
+    <p class="gate-sub" id="authSub">실계좌 API 키와 주문 권한을 다룹니다. 접속 비밀번호를 입력하세요.</p>
+    <label class="label" for="authPassword">접속 비밀번호</label>
+    <input class="input" type="password" id="authPassword" autocomplete="current-password" spellcheck="false">
+    <div class="alert alert-error hidden" id="authError"></div>
+    <button class="btn btn-primary" type="submit" id="authSubmit">잠금 해제</button>
+    <div class="gate-foot">세션은 12시간 후 만료됩니다.</div>
+  </form>
+</div>
 
-        <label class="auth-label" for="authPassword">접속 비밀번호</label>
-        <input class="auth-input" type="password" id="authPassword" name="password"
-               autocomplete="current-password" spellcheck="false" required>
-
-        <div class="auth-error hidden" id="authError"></div>
-
-        <button class="auth-btn" type="submit" id="authSubmit">잠금 해제</button>
-        <div class="auth-foot" id="authFoot">세션은 12시간 후 만료됩니다.</div>
-      </form>
+<div id="app" class="hidden">
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">₩</span>
+      <span class="brand-name">빗썸 원화 자동매매</span>
     </div>
-
-    <!-- Top Navigation -->
-    <header class="top-nav">
-        <div class="brand-logo">
-            <span class="logo-badge" id="aiModelBadge" title="실제 호출 중인 Gemini 모델">GEMINI</span>
-            <span>Alpha Lab</span>
-            <span style="font-size: 0.8rem; font-weight: 500; color: var(--text-muted); margin-left: 0.5rem;">AI Auto-Trading OS</span>
-        </div>
-        <div style="display: flex; align-items: center; gap: 1rem;">
-            <div style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.85rem; color: var(--accent-emerald);">
-                <span style="width: 8px; height: 8px; background-color: var(--accent-emerald); border-radius: 50%; display: inline-block;"></span>
-                24H 실시간 퀀트 트레이딩 엔진 가동 중
-            </div>
-            <button type="button" class="btn-chip" id="logoutBtn"
-                    style="font-size: 0.75rem; padding: 0.2rem 0.6rem;">로그아웃</button>
-        </div>
-    </header>
-
-    <!-- Real-time Ticker Marquee -->
-    <div class="ticker-marquee" id="tickerMarquee"></div>
-
-    <!-- Main Container -->
-    <main class="container">
-        
-        <!-- Search & Control Header -->
-        <section class="control-bar">
-            <div style="position: relative;">
-                <form id="searchForm" class="search-box">
-                    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="color: var(--text-muted);"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
-                    <input type="text" id="symbolInput" placeholder="종목명/티커 검색 (예: 삼성전자, 테슬라, NVDA, 비트코인)" autocomplete="off" value="NVDA">
-                    <button type="submit" class="btn-primary" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">조회</button>
-                </form>
-                <!-- Search Suggestions Dropdown -->
-                <div id="searchSuggestions" class="hidden" style="position: absolute; top: 105%; left: 0; right: 0; background: var(--bg-card); border: 1px solid var(--border-focus); border-radius: var(--radius-md); max-height: 250px; overflow-y: auto; z-index: 1000; box-shadow: 0 10px 25px rgba(0,0,0,0.6);"></div>
-            </div>
-            <div class="quick-symbols" id="quickChips">
-                <!-- Chips dynamically rendered -->
-            </div>
-        </section>
-
-        <!-- Active Symbol Snapshot Banner -->
-        <section class="card" style="margin-bottom: 1.5rem; background: linear-gradient(180deg, #18202F 0%, #151A23 100%);">
-            <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
-                <div>
-                    <div style="display: flex; align-items: baseline; gap: 0.75rem;">
-                        <h1 id="activeSymbolTitle" style="font-size: 2rem; font-weight: 800; letter-spacing: -0.03em;">NVDA</h1>
-                        <span id="activeSymbolName" style="color: var(--text-secondary); font-size: 1.1rem;">NVIDIA Corporation</span>
-                    </div>
-                    <div style="display: flex; align-items: baseline; gap: 0.75rem; margin-top: 0.25rem;">
-                        <span id="headerPrice" class="stat-value" style="font-size: 2.2rem; color: #fff;">$130.40</span>
-                        <span id="headerChange" class="stat-sub text-emerald" style="font-size: 1.1rem; font-weight: 600;">+2.45% (+$3.12)</span>
-                    </div>
-                </div>
-                <!-- 4 Key Metrics -->
-                <div class="grid-4" style="flex: 1; max-width: 650px;">
-                    <div class="stat-box">
-                        <div class="stat-label">Trailing PER</div>
-                        <div class="stat-value" id="statPER">48.2x</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">PBR</div>
-                        <div class="stat-value" id="statPBR">32.1x</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">52주 최고가</div>
-                        <div class="stat-value" id="stat52H" style="font-size: 1.1rem; color: var(--accent-emerald);">$140.76</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">52주 최저가</div>
-                        <div class="stat-value" id="stat52L" style="font-size: 1.1rem; color: var(--accent-rose);">$85.20</div>
-                    </div>
-                </div>
-            </div>
-        </section>
-
-        <!-- Navigation Tabs (Commercial Auto-Trading Platform Layout) -->
-        <nav class="tabs-header">
-            <button class="tab-btn active" data-tab="tab-marketplace" style="color: #F59E0B; font-weight: 700;">🔥 AI 봇 마켓플레이스 & 랭킹</button>
-            <button class="tab-btn" data-tab="tab-radar">📊 스마트 마켓 터미널 & 캔들 차트</button>
-            <button class="tab-btn" data-tab="tab-quant">⚡ 자연어 퀀트 백테스터 (Strategy Lab)</button>
-            <button class="tab-btn" data-tab="tab-gurus">🏛️ 월가 전설의 구루 투자관</button>
-            <button class="tab-btn" data-tab="tab-financials">📑 기업 재무 엑스레이</button>
-            <button class="tab-btn" data-tab="tab-monetize">💰 유료 리포트 발행</button>
-            <button class="tab-btn" data-tab="tab-trader" style="color: var(--accent-emerald); font-weight: 700;">🚀 내 활성 봇 관제 센터 (Live Hub)</button>
-        </nav>
-
-        <!-- TAB 0: AI Bot Marketplace & Leaderboard (Commercial Standard) -->
-        <div id="tab-marketplace" class="tab-content">
-            <!-- Hero Banner -->
-            <div class="card" style="margin-bottom: 1.5rem; background: linear-gradient(135deg, rgba(245, 158, 11, 0.12) 0%, rgba(59, 130, 246, 0.08) 50%, rgba(21, 26, 35, 1) 100%); border-color: var(--accent-amber);">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1.5rem;">
-                    <div>
-                        <div style="display: flex; align-items: center; gap: 0.6rem;">
-                            <span style="font-size: 1.6rem;">🔥</span>
-                            <h2 style="font-size: 1.4rem; font-weight: 800; color: #fff;">검증된 상위 1% AI 자동매매 봇 마켓플레이스</h2>
-                        </div>
-                        <p style="font-size: 0.95rem; color: var(--text-secondary); margin-top: 0.4rem; line-height: 1.6;">
-                            복잡한 설정 없이, 글로벌 실전 수익률로 검증된 탑 퍼포머 봇을 <strong>[1-Click 복제 & 가동]</strong>하세요.<br>
-                            그리드(Grid), DCA 마틴게일, Gemini AI 뉴스 스나이퍼 등 시장 표준 봇이 24시간 자산을 운용합니다.
-                        </p>
-                    </div>
-                    <div style="display: flex; gap: 0.75rem; flex-wrap: wrap;">
-                        <div class="stat-box" style="padding: 0.75rem 1.25rem; background: rgba(0,0,0,0.3);">
-                            <div class="stat-label">플랫폼 누적 운용액</div>
-                            <div class="stat-value text-emerald" style="font-size: 1.3rem;">$24.8M+</div>
-                        </div>
-                        <div class="stat-box" style="padding: 0.75rem 1.25rem; background: rgba(0,0,0,0.3);">
-                            <div class="stat-label">평균 봇 승률</div>
-                            <div class="stat-value text-cyan" style="font-size: 1.3rem;">84.2%</div>
-                        </div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Marketplace Filter Chips -->
-            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.25rem; flex-wrap: wrap; gap: 0.75rem;">
-                <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
-                    <button class="btn-chip active" onclick="filterMarketplace('ALL')">전체 봇 (6)</button>
-                    <button class="btn-chip" onclick="filterMarketplace('AI_SIGNAL')">⚡ AI 시그널 스나이퍼</button>
-                    <button class="btn-chip" onclick="filterMarketplace('GRID')">🤖 인피니티 그리드 봇</button>
-                    <button class="btn-chip" onclick="filterMarketplace('DCA')">🛡️ 스마트 DCA 마틴게일</button>
-                    <button class="btn-chip" onclick="filterMarketplace('QUANT')">📈 짐 시몬스 퀀트</button>
-                </div>
-                <div style="font-size: 0.85rem; color: var(--text-muted);">
-                    실시간 랭킹 자동 갱신 중 ●
-                </div>
-            </div>
-
-            <!-- Marketplace Bots Grid Container -->
-            <div class="grid-3" id="marketplaceGrid" style="margin-bottom: 2rem;">
-                <!-- Dynamically rendered via app.js -->
-            </div>
-        </div>
-
-        <!-- TAB 1: Market Radar & Chart & Sentiment -->
-        <div id="tab-radar" class="tab-content hidden">
-            <div class="grid-2">
-                <!-- Left: Chart -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 3v18h18"/><path d="M18 17V9"/><path d="M13 17V5"/><path d="M8 17v-3"/></svg>
-                            가격 동향 & 기술적 보조지표
-                        </div>
-                        <div style="display: flex; gap: 0.3rem;">
-                            <button class="btn-chip tf-btn" data-tf="1mo">1M</button>
-                            <button class="btn-chip tf-btn" data-tf="3mo">3M</button>
-                            <button class="btn-chip tf-btn active" data-tf="6mo">6M</button>
-                            <button class="btn-chip tf-btn" data-tf="1y">1Y</button>
-                        </div>
-                    </div>
-                    <div style="height: 380px; position: relative;">
-                        <canvas id="priceChart"></canvas>
-                    </div>
-                    <!-- Tech Signals -->
-                    <div style="margin-top: 1.25rem;">
-                        <div class="stat-label">AI 기술적 시그널 진단</div>
-                        <div id="techSignalList" style="margin-top: 0.5rem;"></div>
-                    </div>
-                </div>
-
-                <!-- Right: AI Sentiment -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"/><path d="M8 14s1.5 2 4 2 4-2 4-2"/><line x1="9" y1="9" x2="9.01" y2="9"/><line x1="15" y1="9" x2="15.01" y2="9"/></svg>
-                            Gemini 마켓 감성 레이더
-                        </div>
-                        <span id="sentimentLabel" class="badge-win" style="font-size: 0.85rem;">강한 상승 우위</span>
-                    </div>
-                    
-                    <div style="text-align: center; margin: 1rem 0;">
-                        <div class="stat-label">감성 점수 (Sentiment Score)</div>
-                        <div id="sentimentScore" class="stat-value" style="font-size: 2.5rem; color: var(--accent-cyan);">78/100</div>
-                    </div>
-
-                    <div class="sentiment-gauge">
-                        <div class="gauge-pointer" id="sentimentPointer" style="left: 78%;"></div>
-                    </div>
-                    <div style="display: flex; justify-content: space-between; font-size: 0.75rem; color: var(--text-muted);">
-                        <span>극단적 공포 (0)</span>
-                        <span>중립 (50)</span>
-                        <span>극단적 탐욕 (100)</span>
-                    </div>
-
-                    <div style="margin-top: 1.5rem; background-color: var(--bg-card-subtle); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: var(--accent-blue); margin-bottom: 0.25rem;">AI 스마트 요약</div>
-                        <p id="aiSummaryText" style="font-size: 0.85rem; color: var(--text-secondary); line-height: 1.6;">-</p>
-                    </div>
-
-                    <div style="margin-top: 1rem;">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: var(--up-color); margin-bottom: 0.4rem;">주요 호재 요인 (Bullish Factors)</div>
-                        <ul id="bullishList" style="font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.25rem; line-height: 1.6;"></ul>
-                    </div>
-
-                    <div style="margin-top: 1rem;">
-                        <div style="font-size: 0.85rem; font-weight: 700; color: var(--down-color); margin-bottom: 0.4rem;">리스크 요인 (Bearish Factors)</div>
-                        <ul id="bearishList" style="font-size: 0.85rem; color: var(--text-secondary); padding-left: 1.25rem; line-height: 1.6;"></ul>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- TAB: Wall Street Gurus & Recommended Picks -->
-        <div id="tab-gurus" class="tab-content hidden">
-            <!-- Guru Header Banner -->
-            <div class="card" style="margin-bottom: 1.5rem; border-color: var(--accent-amber); background: linear-gradient(180deg, rgba(245, 158, 11, 0.08) 0%, rgba(21, 26, 35, 1) 100%);">
-                <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 1rem;">
-                    <div>
-                        <div style="display: flex; align-items: center; gap: 0.5rem;">
-                            <span style="font-size: 1.5rem;">🏛️</span>
-                            <h2 style="font-size: 1.3rem; font-weight: 800; color: #fff;">월가 전설의 6대 투자 구루 (Wall Street Legends)</h2>
-                        </div>
-                        <p style="font-size: 0.9rem; color: var(--text-secondary); margin-top: 0.25rem;">
-                            워런 버핏, 피터 린치, 짐 시몬스 등 역사상 가장 위대한 대가들의 투자 철학, 핵심 지표 공식 및 실시간 추천 종목 포트폴리오를 제공합니다.
-                        </p>
-                    </div>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <span class="badge-win" style="background: rgba(245, 158, 11, 0.2); color: var(--accent-amber);">1-Click 백테스트 연동</span>
-                        <span class="badge-win">1-Click 자동매매 봇 주입</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Guru Cards Grid -->
-            <div class="grid-3" id="guruCardsGrid" style="margin-bottom: 1.5rem;">
-                <!-- Gurus dynamically populated -->
-            </div>
-        </div>
-
-        <!-- TAB 2: Natural Language Quant Backtester -->
-        <div id="tab-quant" class="tab-content hidden">
-            <!-- Natural Language Strategy Input -->
-            <div class="card" style="margin-bottom: 1.5rem; border-color: var(--accent-blue);">
-                <div class="card-header">
-                    <div class="card-title">
-                        <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon></svg>
-                        자연어 퀀트 전략 빌더 (Natural Language to Quant)
-                    </div>
-                    <span style="font-size: 0.8rem; color: var(--text-muted);">AI가 일상적인 매매 아이디어를 파이썬 백테스팅 알고리즘으로 자동 변환합니다.</span>
-                </div>
-
-                <div>
-                    <textarea id="strategyPromptInput" class="prompt-area" placeholder="예: 최근 5일 이동평균이 20일 이동평균을 상향 돌파하고 RSI가 35 이하일 때 분할 매수하고, 수익률 +12% 도달 시 익절, 손실 -5% 시 손절해줘"></textarea>
-                    
-                    <div style="display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 0.75rem;">
-                        <div>
-                            <span style="font-size: 0.8rem; color: var(--text-muted); margin-right: 0.5rem;">추천 프리셋:</span>
-                            <span class="preset-tag" onclick="applyPreset('골든크로스(5일/20일선) 상향 돌파 매수 후 15% 익절 전략')">📈 골든크로스 추세추종</span>
-                            <span class="preset-tag" onclick="applyPreset('RSI 30 이하 과매도 구간 매수 후 RSI 70 초과 시 전량 익절')">⚡ RSI 역추세 스윙</span>
-                            <span class="preset-tag" onclick="applyPreset('볼린저밴드 하단 터치 시 진입하고 8% 익절, 4% 칼손절 리스크 관리')">🛡️ 볼린저 하단 반등</span>
-                        </div>
-                        <button id="parsePromptBtn" class="btn-primary">
-                            ✨ AI 전략 파싱 & 자동 세팅
-                        </button>
-                    </div>
-                </div>
-
-                <!-- Parameters Controls -->
-                <div class="grid-4" style="margin-top: 1.5rem; padding-top: 1.25rem; border-top: 1px solid var(--border-subtle);">
-                    <div>
-                        <div class="stat-label">단기 이평선 (Fast MA)</div>
-                        <input type="number" id="btFastMa" value="5" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
-                    </div>
-                    <div>
-                        <div class="stat-label">장기 이평선 (Slow MA)</div>
-                        <input type="number" id="btSlowMa" value="20" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
-                    </div>
-                    <div>
-                        <div class="stat-label">RSI 매수 기준선 (과매도)</div>
-                        <input type="number" id="btRsiBuy" value="35" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
-                    </div>
-                    <div>
-                        <div class="stat-label">목표 익절률 (%)</div>
-                        <input type="number" id="btTakeProfit" value="12" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
-                    </div>
-                    <div>
-                        <div class="stat-label">손절매 기준 (%)</div>
-                        <input type="number" id="btStopLoss" value="5" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
-                    </div>
-                    <div>
-                        <div class="stat-label">RSI 매도 기준선 (과매수)</div>
-                        <input type="number" id="btRsiSell" value="70" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem;">
-                    </div>
-                    <div style="grid-column: span 2; display: flex; align-items: flex-end;">
-                        <button id="runBacktestBtn" class="btn-primary" style="width: 100%; justify-content: center; height: 38px;">
-                            ⚡ 퀀트 백테스팅 실행 (시뮬레이션)
-                        </button>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Backtest Results Display -->
-            <div class="card">
-                <div class="card-header">
-                    <div class="card-title">백테스팅 시뮬레이션 성과 지표 (1년 기준)</div>
-                    <button id="deployBotFromQuantBtn" class="btn-primary" style="background: linear-gradient(135deg, #10B981, #059669);">
-                        🚀 이 전략으로 1-Click 자동매매 봇 즉시 가동
-                    </button>
-                </div>
-                
-                <div class="grid-4" style="margin-bottom: 1.5rem;">
-                    <div class="stat-box">
-                        <div class="stat-label">전략 총수익률 (ROI)</div>
-                        <div class="stat-value text-emerald" id="btTotalReturn">+42.8%</div>
-                        <div class="stat-sub text-cyan" id="btAlpha">알파: +18.5%p</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">승률 (Win Rate)</div>
-                        <div class="stat-value" id="btWinRate">68.5%</div>
-                        <div class="stat-sub text-muted">고승률 타점 진입</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">최대 낙폭 (MDD)</div>
-                        <div class="stat-value text-rose" id="btMDD">-7.4%</div>
-                        <div class="stat-sub text-muted">리스크 통제 우수</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">샤프 비율 (Sharpe)</div>
-                        <div class="stat-value" id="btSharpe">2.14</div>
-                        <div class="stat-sub text-emerald">수익 팩터: <span id="btProfitFactor">2.8</span></div>
-                    </div>
-                </div>
-
-                <div style="height: 350px; position: relative;">
-                    <canvas id="equityChart"></canvas>
-                </div>
-
-                <!-- Trades Log -->
-                <div style="margin-top: 2rem;">
-                    <div class="card-title" style="font-size: 0.95rem;">최근 매매 체결 일지 (Trade Log)</div>
-                    <div class="table-container">
-                        <table>
-                            <thead>
-                                <tr>
-                                    <th>보유 기간</th>
-                                    <th>진입가</th>
-                                    <th>청산가</th>
-                                    <th>수익률</th>
-                                    <th>실현 손익</th>
-                                    <th>청산 사유</th>
-                                </tr>
-                            </thead>
-                            <tbody id="tradesTableBody">
-                                <!-- Trades rows -->
-                            </tbody>
-                        </table>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- TAB 3: Financials Deep Dive -->
-        <div id="tab-financials" class="tab-content hidden">
-            <div class="grid-2">
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">기업 재무 건전성 및 밸류에이션 엑스레이</div>
-                        <span id="alphaScoreBadge" class="badge-win">84점 (AAA 우량성장주)</span>
-                    </div>
-
-                    <div style="margin-bottom: 1.5rem; background-color: var(--bg-card-subtle); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
-                        <div class="stat-label">밸류에이션 종합 판정</div>
-                        <div id="valuationVerdict" style="font-size: 1.1rem; font-weight: 700; color: var(--accent-cyan); margin-top: 0.25rem;">
-                            적정 주가 대비 저평가 매력 부각
-                        </div>
-                    </div>
-
-                    <div style="margin-top: 1rem;">
-                        <div class="stat-label" style="font-size: 0.9rem; color: var(--text-primary); margin-bottom: 0.5rem;">핵심 펀더멘털 인사이트</div>
-                        <div id="financialMetrics" style="margin-bottom: 0.9rem;"></div>
-                        <ul id="financialInsights" style="font-size: 0.9rem; color: var(--text-secondary); padding-left: 1.25rem; line-height: 1.8;"></ul>
-                    </div>
-                </div>
-
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">리스크 모니터링 & 수급 체크</div>
-                    </div>
-                    <div style="margin-top: 0.5rem;">
-                        <div class="stat-label" style="font-size: 0.9rem; color: var(--down-color); margin-bottom: 0.5rem;">주의 필요 리스크 요인</div>
-                        <ul id="financialRisks" style="font-size: 0.9rem; color: var(--text-secondary); padding-left: 1.25rem; line-height: 1.8;"></ul>
-                    </div>
-                    <div style="margin-top: 1.5rem; background-color: var(--bg-card-subtle); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
-                        <div class="stat-label">스마트 머니 & 기관 수급 흐름</div>
-                        <div id="institutionalFlowText" style="font-size: 0.9rem; color: var(--text-primary); margin-top: 0.25rem;">
-                            기관 및 외국인 순매수 지속 유입 확인
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-
-        <!-- TAB 4: Monetization Premium Report Publisher -->
-        <div id="tab-monetize" class="tab-content hidden">
-            <div class="card" style="margin-bottom: 1.5rem;">
-                <div class="card-header">
-                    <div>
-                        <div class="card-title">
-                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 2v20M17 5H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
-                            프리미엄 투자 리포트 자동 생성기 (2차 콘텐츠 수익화)
-                        </div>
-                        <div style="font-size: 0.85rem; color: var(--text-secondary); margin-top: 0.25rem;">
-                            분석된 퀀트 백테스트 데이터와 Gemini의 심층 펀더멘털 분석을 결합하여, 유료 뉴스레터/크몽/블로그에 판매할 수 있는 고부가가치 전문 리포트를 10초 만에 작성합니다.
-                        </div>
-                    </div>
-                    <button id="generateReportBtn" class="btn-primary">
-                        💰 프리미엄 유료 분석 리포트 즉시 발행
-                    </button>
-                </div>
-
-                <div id="reportMetaInfo" class="hidden" style="display: flex; justify-content: space-between; align-items: center; background-color: var(--bg-card-subtle); padding: 0.75rem 1.25rem; border-radius: var(--radius-md); margin-bottom: 1rem; border: 1px solid var(--border-subtle);">
-                    <div style="font-size: 0.85rem; color: var(--text-muted);">
-                        콘텐츠 예상 가치: <span id="commercialValueBadge" style="color: var(--accent-emerald); font-weight: 700;">₩25,000 / $20</span>
-                    </div>
-                    <button id="copyReportBtn" class="btn-secondary" style="padding: 0.4rem 0.8rem; font-size: 0.85rem;">
-                        📋 전체 마크다운 복사 (Substack / 블로그용)
-                    </button>
-                </div>
-
-                <div id="reportContent" class="report-view">
-                    <p style="text-align: center; color: var(--text-muted); padding: 3rem 0;">
-                        상단의 <strong>[💰 프리미엄 유료 분석 리포트 즉시 발행]</strong> 버튼을 누르면 기관 수준의 전문 리포트가 생성됩니다.
-                    </p>
-                </div>
-            </div>
-        </div>
-
-        <!-- TAB 5: Live Trading Bot Hub -->
-        <div id="tab-trader" class="tab-content hidden">
-            <!-- Header & Config Grid -->
-            <div class="grid-2" style="margin-bottom: 1.5rem;">
-                <!-- Bot Creator Card -->
-                <div class="card" style="border-color: var(--accent-emerald);">
-                    <div class="card-header">
-                        <div class="card-title">
-                            <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 14 14"></polyline></svg>
-                            실시간 퀀트 트레이딩 봇 생성 (Deploy Bot)
-                        </div>
-                        <span class="badge-win">24H 무중단 감시</span>
-                    </div>
-
-                    <div class="grid-4" style="margin-bottom: 1rem;">
-                        <div>
-                            <div class="stat-label">대상 코인/종목</div>
-                            <input type="text" id="botSymbolInput" value="BTC" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; font-weight: 700; color: #fff;" placeholder="예: BTC, ETH, SOL, XRP">
-                        </div>
-                        <div>
-                            <div class="stat-label">매매 모드</div>
-                            <select id="botModeSelect" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; background: var(--bg-card); color: #fff;">
-                                <option value="PAPER" selected>🛡️ 모의투자 (무위험 실시간 호가)</option>
-                                <option value="LIVE">🔥 실전 매매 (Live Real Money)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <div class="stat-label">연동 거래소</div>
-                            <select id="botBrokerSelect" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; background: var(--bg-card); color: var(--accent-amber); font-weight: 800; border-color: var(--accent-amber);">
-                                <option value="BITHUMB" selected>🪙 빗썸 (Bithumb KRW)</option>
-                                <option value="NAMUH">🌳 NH투자증권 나무 (모의투자 전용)</option>
-                                <option value="ALPACA">🇺🇸 Alpaca Trading (모의투자 전용)</option>
-                            </select>
-                        </div>
-                        <div>
-                            <div class="stat-label">운용 자본 (원화 KRW)</div>
-                            <input type="number" id="botCapitalInput" value="1000000" class="search-box" style="width: 100%; padding: 0.4rem 0.8rem; font-weight: 700; color: var(--accent-emerald);" placeholder="예: 1000000 (100만원)">
-                        </div>
-                    </div>
-
-                    <!-- 7 Super Alpha Multi-Factor Filters Control -->
-                    <div style="background-color: var(--bg-card-subtle); padding: 1.25rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle); margin-bottom: 1.25rem;">
-                        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.75rem;">
-                            <div style="font-size: 0.9rem; font-weight: 700; color: var(--accent-emerald);">🏛️ 기관급 7대 슈퍼 알파 멀티팩터 (승률 95% 극대화)</div>
-                            <span class="badge-win" style="font-size: 0.75rem;">빗썸 실시간 호가 감시</span>
-                        </div>
-
-                        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem; font-size: 0.85rem;">
-                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                <input type="checkbox" id="chkVolumeSurge" checked style="accent-color: var(--accent-emerald);">
-                                <span>⚡ <strong>거래량 폭증 (+150%)</strong> 돌파 확증</span>
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                <input type="checkbox" id="chkAiSentiment" checked style="accent-color: var(--accent-emerald);">
-                                <span>🤖 <strong>Gemini AI 감성 게이트</strong> (≥60점)</span>
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                <input type="checkbox" id="chkBollingerSqueeze" checked style="accent-color: var(--accent-amber);">
-                                <span>💥 <strong>볼린저 스퀴즈 돌파</strong> (변동성 폭발 진입)</span>
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                <input type="checkbox" id="chkMacdMomentum" checked style="accent-color: var(--accent-cyan);">
-                                <span>📈 <strong>MACD 골든크로스</strong> (바닥 반등 가속)</span>
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                <input type="checkbox" id="chkTrailingStop" checked style="accent-color: var(--accent-emerald);">
-                                <span>🛡️ <strong>ATR 트레일링 스탑</strong> (-3.5% 이익 보존)</span>
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer;">
-                                <input type="checkbox" id="chkScaleInOut" checked style="accent-color: var(--accent-emerald);">
-                                <span>💰 <strong>스마트 분할 매매</strong> (1차 50% 분할 익절)</span>
-                            </label>
-                            <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; grid-column: span 2;">
-                                <input type="checkbox" id="chkMarketRegime" checked style="accent-color: var(--accent-emerald);">
-                                <span>🌐 <strong>시장 국면 필터 (200일선)</strong> - 대세 하락장 자동 100% 현금 관망</span>
-                            </label>
-                        </div>
-                    </div>
-
-                    <button id="startNewBotBtn" class="btn-primary" style="width: 100%; justify-content: center; background: linear-gradient(135deg, #10B981, #059669); font-weight: 800; font-size: 1rem; padding: 0.75rem 1.5rem; box-shadow: 0 4px 15px rgba(16,185,129,0.3);">
-                        🚀 빗썸 7대 슈퍼 알파 봇 가동 시작
-                    </button>
-                </div>
-
-                <!-- Broker / API Keys Card -->
-                <div class="card">
-                    <div class="card-header">
-                        <div class="card-title">브로커 / 거래소 API 연동 센터</div>
-                        <span style="font-size: 0.75rem; color: var(--text-muted);">키는 서버에 평문 저장 · 영구 보관은 환경변수 권장</span>
-                    </div>
-
-                    <div style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1rem;">
-                        실전 매매를 위해 계좌 API 키를 연동하거나 모의투자(Paper Trading)를 활용하세요.
-                    </div>
-
-                    <!-- Dynamic Broker List -->
-                    <div id="brokerListContainer" style="display: flex; flex-direction: column; gap: 0.6rem; max-height: 280px; overflow-y: auto;">
-                        <!-- Dynamically populated -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- Active Bots List Container -->
-            <div class="card">
-                <div class="card-header" style="flex-wrap: wrap; gap: 0.75rem;">
-                    <div style="display: flex; align-items: center; gap: 0.75rem;">
-                        <div class="card-title" style="font-size: 1.15rem; font-weight: 800;">🚀 가동 중인 퀀트 봇 실시간 현황 (Active Bots)</div>
-                        <span id="activeBotCountBadge" class="badge-win" style="font-size: 0.75rem;">0대 가동 중</span>
-                    </div>
-                    <div style="display: flex; gap: 0.5rem;">
-                        <button id="stopAllBotsBtn" class="btn-chip" style="color: var(--accent-rose); border-color: var(--accent-rose); font-weight: 800; font-size: 0.8rem;">
-                            🛑 전체 봇 긴급 정지 & 전량 청산
-                        </button>
-                        <button id="refreshBotsBtn" class="btn-chip" style="font-size: 0.8rem; font-weight: 700; color: var(--accent-cyan); border-color: var(--accent-cyan);">🔄 실시간 새로고침</button>
-                    </div>
-                </div>
-
-                <!-- Portfolio Summary Bar -->
-                <div id="botsPortfolioSummary" class="grid-4" style="margin-bottom: 1.25rem; background: var(--bg-card-subtle); padding: 1rem; border-radius: var(--radius-md); border: 1px solid var(--border-subtle);">
-                    <div class="stat-box">
-                        <div class="stat-label">총 운용 자산 합계</div>
-                        <div class="stat-value" id="summaryTotalAsset" style="font-size: 1.2rem; font-weight: 800; color: #fff;">0원</div>
-                        <div class="stat-sub text-muted" id="summaryBotCount">활성 봇: 0개</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">총 평가 손익 (KRW)</div>
-                        <div class="stat-value text-emerald" id="summaryTotalPnl" style="font-size: 1.2rem; font-weight: 800;">+0원</div>
-                        <div class="stat-sub text-emerald" id="summaryTotalRoi">+0.00%</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">평균 승률 (Win Rate)</div>
-                        <div class="stat-value text-cyan" id="summaryWinRate" style="font-size: 1.2rem; font-weight: 800;">0.0%</div>
-                        <div class="stat-sub text-muted" id="summaryTradeCount">총 체결 0건</div>
-                    </div>
-                    <div class="stat-box">
-                        <div class="stat-label">실시간 엔진 상태</div>
-                        <div class="stat-value" style="font-size: 1.1rem; color: var(--accent-emerald);">● 24H LIVE</div>
-                        <div class="stat-sub text-muted">2초 주기 멀티팩터 감시</div>
-                    </div>
-                </div>
-
-                <div id="activeBotsList" style="display: flex; flex-direction: column; gap: 1rem;">
-                    <!-- Bot cards dynamically populated -->
-                </div>
-            </div>
-        </div>
-
-    </main>
-
-    <!-- Broker API Key Modal -->
-    <div id="brokerModal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.75); backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center; z-index: 9999;">
-        <div class="card" style="width: 100%; max-width: 480px; border-color: var(--accent-blue); box-shadow: 0 20px 50px rgba(0,0,0,0.8);">
-            <div class="card-header" style="margin-bottom: 1rem;">
-                <div class="card-title" id="brokerModalTitle">브로커 API 키 등록</div>
-                <button onclick="closeBrokerModal()" class="btn-chip" style="font-size: 0.8rem;">✕ 닫기</button>
-            </div>
-
-            <!-- IP Registration Helper Banner -->
-            <div style="background: rgba(6,182,212,0.1); border: 1px solid var(--accent-cyan); border-radius: var(--radius-sm); padding: 0.75rem; margin-bottom: 1rem; font-size: 0.8rem;">
-                <div style="color: var(--accent-cyan); font-weight: 700; margin-bottom: 0.25rem;">🌐 빗썸 API 등록용 공인 IP 주소</div>
-                <div style="display: flex; justify-content: space-between; align-items: center;">
-                    <span id="displayServerIp" style="font-family: var(--font-mono); font-weight: 800; color: #fff; font-size: 0.95rem;">확인 중...</span>
-                    <button type="button" class="btn-chip" style="font-size: 0.75rem; color: var(--accent-cyan); border-color: var(--accent-cyan);" onclick="copyServerIp()">📋 IP 복사</button>
-                </div>
-                <div style="font-size: 0.72rem; color: var(--text-muted); margin-top: 0.35rem;">
-                    * 빗썸 [IP 주소 등록] 란에 위 IP를 입력하고 <strong>[+]</strong> 버튼을 눌러주세요.
-                </div>
-            </div>
-
-            <form id="brokerKeyForm" onsubmit="handleSaveBrokerKey(event)">
-                <input type="hidden" id="modalBrokerCode" value="">
-                <div style="margin-bottom: 1rem;">
-                    <div class="stat-label">API Key (Connect Key)</div>
-                    <input type="text" id="modalApiKey" required class="search-box" style="width: 100%; padding: 0.5rem 0.8rem;" placeholder="빗썸 Connect Key 입력">
-                </div>
-                <div style="margin-bottom: 1rem;">
-                    <div class="stat-label">Secret Key (보안 키)</div>
-                    <input type="password" id="modalSecretKey" class="search-box" style="width: 100%; padding: 0.5rem 0.8rem;" placeholder="Secret Key 입력">
-                </div>
-                <div style="margin-bottom: 1.25rem;">
-                    <div class="stat-label">계좌번호 (선택사항)</div>
-                    <input type="text" id="modalAccountNo" class="search-box" style="width: 100%; padding: 0.5rem 0.8rem;" placeholder="계좌번호 (증권사의 경우)">
-                </div>
-
-                <div style="display: flex; gap: 0.5rem;">
-                    <button type="button" onclick="closeBrokerModal()" class="btn-secondary" style="flex: 1; justify-content: center;">취소</button>
-                    <button type="submit" class="btn-primary" style="flex: 1.5; justify-content: center;">🔒 보안 저장 & 연결</button>
-                </div>
-            </form>
-        </div>
+    <div class="topbar-right">
+      <span class="pill" id="accountPill">계정 확인 중…</span>
+      <button class="btn btn-ghost" id="logoutBtn">로그아웃</button>
     </div>
+  </header>
 
-    <!-- ⚡ Marketplace 1-Click Copy & Deploy Modal -->
-    <div id="copyBotModal" class="hidden" style="position: fixed; inset: 0; background: rgba(0,0,0,0.8); backdrop-filter: blur(8px); display: flex; justify-content: center; align-items: center; z-index: 9999;">
-        <div class="card" style="width: 100%; max-width: 520px; border-color: var(--accent-amber); box-shadow: 0 20px 60px rgba(0,0,0,0.9);">
-            <div class="card-header" style="margin-bottom: 1rem;">
-                <div class="card-title" id="copyBotModalTitle" style="color: var(--accent-amber);">⚡ AI 봇 복제 & 실전 가동 설정</div>
-                <button onclick="closeCopyBotModal()" class="btn-chip" style="font-size: 0.8rem;">✕ 닫기</button>
+  <div class="ticker" id="tickerBar"></div>
+
+  <nav class="tabs" id="tabs">
+    <button class="tab active" data-panel="panel-bots">자동매매 봇</button>
+    <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
+    <button class="tab" data-panel="panel-chart">시세·지표</button>
+    <button class="tab" data-panel="panel-account">빗썸 계정</button>
+  </nav>
+
+  <main class="container">
+    <div class="alert alert-warn hidden" id="globalNotice"></div>
+
+    <!-- 봇 -->
+    <section id="panel-bots" class="panel">
+      <div class="grid-2">
+        <div class="card">
+          <h2 class="card-title">봇 가동</h2>
+          <div class="form-grid">
+            <div>
+              <label class="label">코인</label>
+              <select class="input" id="botCoin"></select>
             </div>
+            <div>
+              <label class="label">캔들 간격</label>
+              <select class="input" id="botInterval"></select>
+            </div>
+            <div>
+              <label class="label">매매 모드</label>
+              <select class="input" id="botMode">
+                <option value="PAPER" selected>모의투자 (주문 안 나감)</option>
+                <option value="LIVE">실전 (빗썸 실주문)</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">운용 자본 (원)</label>
+              <input class="input" type="number" id="botCapital" value="1000000" min="10000" step="10000">
+            </div>
+          </div>
 
-            <p id="copyBotModalDesc" style="font-size: 0.85rem; color: var(--text-secondary); margin-bottom: 1.25rem; line-height: 1.5;"></p>
+          <div class="params" id="botParams"></div>
 
-            <form id="copyBotForm" onsubmit="handleConfirmCopyDeploy(event)">
-                <input type="hidden" id="copyModalBotId" value="">
-                
-                <div class="grid-2" style="margin-bottom: 1rem; gap: 0.75rem;">
-                    <div>
-                        <div class="stat-label">매매 대상 종목/코인</div>
-                        <input type="text" id="copyModalSymbol" required class="search-box" style="width: 100%; padding: 0.5rem 0.8rem;">
-                    </div>
-                    <div>
-                        <div class="stat-label">매매 모드</div>
-                        <select id="copyModalMode" class="search-box" style="width: 100%; padding: 0.5rem 0.8rem; background: var(--bg-card); color: #fff;">
-                            <option value="PAPER" selected>🛡️ 모의투자 (Paper Mode - 무위험 실시간)</option>
-                            <option value="LIVE">🔥 실전 매매 (Live Real Money)</option>
-                        </select>
-                    </div>
-                </div>
+          <div class="alert alert-danger hidden" id="liveWarning">
+            <b>실전 모드</b>는 빗썸 계좌에서 실제 원화로 주문을 냅니다. 손실이 발생할 수 있습니다.
+            먼저 백테스트와 모의투자로 전략을 확인하세요.
+          </div>
 
-                <div class="grid-2" style="margin-bottom: 1.5rem; gap: 0.75rem;">
-                    <div>
-                        <div class="stat-label">연동 거래소 / 브로커 API</div>
-                        <select id="copyModalBroker" class="search-box" style="width: 100%; padding: 0.5rem 0.8rem; background: var(--bg-card); color: var(--accent-amber); font-weight: 700;">
-                            <option value="BITHUMB">🪙 빗썸 실전 (Bithumb Live)</option>
-                            <option value="NAMUH">🌳 NH투자증권 나무 (모의투자 전용)</option>
-                            <option value="ALPACA">🇺🇸 Alpaca Trading (모의투자 전용)</option>
-                        </select>
-                    </div>
-                    <div>
-                        <div class="stat-label">운용 자본 (원화 / $)</div>
-                        <input type="number" id="copyModalCapital" required value="1000000" class="search-box" style="width: 100%; padding: 0.5rem 0.8rem;">
-                    </div>
-                </div>
-
-                <div style="display: flex; gap: 0.5rem;">
-                    <button type="button" onclick="closeCopyBotModal()" class="btn-secondary" style="flex: 1; justify-content: center;">취소</button>
-                    <button type="submit" class="btn-primary" style="flex: 2; justify-content: center; background: linear-gradient(135deg, #F59E0B, #D97706); font-weight: 700;">
-                        🚀 내 계좌로 즉시 가동 시작
-                    </button>
-                </div>
-            </form>
+          <button class="btn btn-primary btn-block" id="deployBtn">봇 가동</button>
+          <div class="alert alert-error hidden" id="deployError"></div>
         </div>
-    </div>
 
-    <!-- App Script -->
-    <script src="/static/js/app.js?v=3.6.5"></script>
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">가동 중인 봇 <span class="muted" id="botCount"></span></h2>
+            <button class="btn btn-ghost btn-sm" id="stopAllBtn">전체 정지</button>
+          </div>
+          <div id="botList" class="bot-list"><div class="empty">가동 중인 봇이 없습니다.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 백테스트 -->
+    <section id="panel-backtest" class="panel hidden">
+      <div class="card">
+        <h2 class="card-title">전략 백테스트</h2>
+        <p class="muted small">빗썸 실제 과거 캔들로 검증합니다. 봇과 <b>같은 판단 코드</b>를 사용하므로
+          여기 결과가 실제 봇의 행동과 일치합니다.</p>
+        <div class="form-grid">
+          <div>
+            <label class="label">코인</label>
+            <select class="input" id="btCoin"></select>
+          </div>
+          <div>
+            <label class="label">캔들 간격</label>
+            <select class="input" id="btInterval"></select>
+          </div>
+          <div>
+            <label class="label">초기 자본 (원)</label>
+            <input class="input" type="number" id="btCapital" value="1000000" min="10000" step="10000">
+          </div>
+        </div>
+        <div class="params" id="btParams"></div>
+        <button class="btn btn-primary btn-block" id="runBacktestBtn">백테스트 실행</button>
+        <div class="alert alert-error hidden" id="btError"></div>
+      </div>
+      <div id="btResult" class="hidden"></div>
+    </section>
+
+    <!-- 차트 -->
+    <section id="panel-chart" class="panel hidden">
+      <div class="card">
+        <div class="card-head">
+          <h2 class="card-title">시세·지표</h2>
+          <div class="inline">
+            <select class="input input-sm" id="chartCoin"></select>
+            <select class="input input-sm" id="chartInterval"></select>
+          </div>
+        </div>
+        <div id="chartArea"><div class="empty">불러오는 중…</div></div>
+      </div>
+    </section>
+
+    <!-- 계정 -->
+    <section id="panel-account" class="panel hidden">
+      <div class="grid-2">
+        <div class="card">
+          <h2 class="card-title">빗썸 API 키</h2>
+          <div id="accountStatus" class="kv"></div>
+
+          <div class="notice">
+            <b>IP 등록이 필요합니다.</b> 빗썸 [API 관리 &gt; IP 주소 등록] 에 아래 IP 를 넣으세요.
+            <div class="ip-row">
+              <code id="egressIp">확인 중…</code>
+              <button class="btn btn-ghost btn-sm" id="copyIpBtn">복사</button>
+            </div>
+            <div class="muted small" id="egressNote"></div>
+          </div>
+
+          <div id="keyForm">
+            <label class="label">Connect Key</label>
+            <input class="input" id="apiKeyInput" spellcheck="false" autocomplete="off">
+            <label class="label">Secret Key</label>
+            <input class="input" id="secretKeyInput" type="password" spellcheck="false" autocomplete="off">
+            <div class="btn-row">
+              <button class="btn btn-ghost" id="testKeyBtn">연결 테스트</button>
+              <button class="btn btn-primary" id="saveKeyBtn">저장</button>
+            </div>
+            <p class="muted small">인증을 통과한 키만 저장됩니다. 저장 위치는 서버 파일이며
+              <b>평문</b>입니다(암호화 아님). 재배포 시 사라지므로 영구 보관은 환경변수
+              <code>BITHUMB_API_KEY</code> / <code>BITHUMB_SECRET_KEY</code> 를 쓰세요.</p>
+          </div>
+          <div class="alert hidden" id="keyResult"></div>
+        </div>
+
+        <div class="card">
+          <h2 class="card-title">계좌 잔고</h2>
+          <div id="balanceBox"><div class="empty">API 키를 등록하면 표시됩니다.</div></div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <footer class="foot">
+    빗썸 원화마켓 전용 · 실주문은 빗썸만 지원 · 시세를 받지 못하면 봇은 판단을 보류합니다
+  </footer>
+</div>
+
+<script src="/static/js/app.js?v=4.0.0"></script>
 </body>
 </html>

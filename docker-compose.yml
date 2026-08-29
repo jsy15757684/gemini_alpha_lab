@@ -1,14 +1,19 @@
 version: '3.8'
 
 services:
-  gemini-alpha-lab:
+  bithumb-krw-bot:
     build: .
-    container_name: gemini-alpha-lab-bot
+    container_name: bithumb-krw-bot
     restart: always
     ports:
       - "8888:8888"
     environment:
       - PYTHONUNBUFFERED=1
       - PORT=8888
+      # 값은 .env 에서 주입된다 (저장소에 커밋되지 않음)
+      - APP_ACCESS_PASSWORD=${APP_ACCESS_PASSWORD}
+      - BITHUMB_API_KEY=${BITHUMB_API_KEY}
+      - BITHUMB_SECRET_KEY=${BITHUMB_SECRET_KEY}
+      - BITHUMB_PROXY_URL=${BITHUMB_PROXY_URL}
     volumes:
       - ./data:/app/data

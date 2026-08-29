@@ -1,594 +1,325 @@
+"""빗썸 원화 자동매매 콘솔 — API 서버.
+
+범위: 빗썸 원화마켓 5종의 시세 / 전략 백테스트 / 자동매매 봇. 그 외 기능은 없다.
+
+인증: 모든 데이터 API 는 세션 뒤에 있다. APP_ACCESS_PASSWORD 가 없으면
+열린 상태가 아니라 잠긴 상태로 실패한다(fail closed).
+"""
+
 import os
 import sys
 import math
 import logging
-import requests
-from fastapi import FastAPI, Query, HTTPException, Request
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse, JSONResponse, FileResponse
+from typing import Any, Dict, Optional
+
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
 
-# 현재 디렉토리 기준 import
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, CURRENT_DIR)
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services.market_service import get_asset_quote, get_chart_data, resolve_symbol, POPULAR_ASSETS, SYMBOL_DICTIONARY
-from services.backtester import QuantBacktester
-from services.gemini_ai import GeminiAIService
-from services.auto_trader import bot_manager, broker_manager, supports_live_orders, BotTooManyError
-from services.market_feed import get_live_price
-from services import auth
-from services.guru_service import get_all_gurus, get_guru_by_id
-from services.market_trading_bots import get_marketplace_bots, get_bot_by_id
+from services import auth, backtest, bithumb
+from services.keystore import keystore
+from services.strategy import StrategyParams, compute_indicators
+from services.trader import MAX_ACTIVE_BOTS, TooManyBots, bot_manager
 
-app = FastAPI(
-    title="Gemini Alpha Lab",
-    description="AI Quantitative Investment & Auto-Trading Operating System",
-    version="2.0.0"
-)
-
-# Gzip High-Speed Compression (압축 전송)
+app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0")
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
-# 세션 쿠키를 쓰므로 와일드카드 오리진을 허용하면 안 된다.
-# (브라우저도 allow_origins=["*"] + credentials 조합은 거부한다)
-# 기본값은 '동일 오리진만'. 필요하면 APP_ALLOWED_ORIGINS 에 콤마로 나열한다.
-_allowed_origins = [o.strip() for o in os.getenv("APP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=_allowed_origins,
-    allow_credentials=True,
-    allow_methods=["GET", "POST"],
-    allow_headers=["Content-Type"],
-)
+_origins = [o.strip() for o in os.getenv("APP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
+app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=True,
+                   allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
-# ===================== 인증 게이트 =====================
-# 인증 없이 열어두는 경로. 이 목록에 없는 /api/* 는 전부 세션이 있어야 한다.
-# (라우트를 새로 추가할 때 인증을 '깜빡하는' 사고를 막기 위해 화이트리스트 방식)
-PUBLIC_API_PATHS = {
-    "/api/health",
-    "/api/auth/status",
-    "/api/auth/login",
-    "/api/auth/logout",
-}
+PUBLIC_API_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
 
 
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
     path = request.url.path
-
-    # 정적 파일과 index.html 은 열어둔다 — 로그인 화면 자체를 띄워야 하고,
-    # 이 파일들에는 계좌 데이터가 없다. 데이터는 전부 /api/* 뒤에 있다.
-    if not path.startswith("/api/"):
+    if not path.startswith("/api/") or path in PUBLIC_API_PATHS or request.method == "OPTIONS":
         return await call_next(request)
-
-    if path in PUBLIC_API_PATHS:
-        return await call_next(request)
-
-    if request.method == "OPTIONS":
-        return await call_next(request)
-
     if not auth.is_configured():
-        # 비밀번호 미설정 시 '열린 상태' 가 아니라 '잠긴 상태' 로 실패한다.
-        return JSONResponse(
-            status_code=503,
-            content={
-                "detail": "서버에 APP_ACCESS_PASSWORD 환경변수가 설정되지 않아 모든 데이터 API가 잠겨 있습니다.",
-                "code": "AUTH_NOT_CONFIGURED",
-            },
-        )
-
+        return JSONResponse(status_code=503, content={
+            "detail": "서버에 APP_ACCESS_PASSWORD 가 설정되지 않아 모든 데이터 API 가 잠겨 있습니다.",
+            "code": "AUTH_NOT_CONFIGURED"})
     if not auth.validate_session(request.cookies.get(auth.COOKIE_NAME)):
-        return JSONResponse(
-            status_code=401,
-            content={"detail": "로그인이 필요합니다.", "code": "AUTH_REQUIRED"},
-        )
-
+        return JSONResponse(status_code=401,
+                            content={"detail": "로그인이 필요합니다.", "code": "AUTH_REQUIRED"})
     return await call_next(request)
 
+
+@app.on_event("startup")
+def _startup_log():
+    logger.info(auth.password_debug_line())
+    if auth.is_configured() and auth.password_strength_warning():
+        logger.warning(auth.password_strength_warning())
+    ks = keystore.status()
+    logger.info(f"빗썸 키: {'등록됨(' + ks['source'] + ')' if ks['connected'] else '미등록'}")
+
+
+# ───────────────────────── 인증 ─────────────────────────
 
 class LoginRequest(BaseModel):
     password: str
 
 
+@app.get("/api/health")
+def health():
+    return {"status": "ok", "app": "빗썸 원화 자동매매 콘솔", "version": "4.0.0"}
+
+
 @app.get("/api/auth/status")
 def auth_status(request: Request):
-    """로그인 화면이 부팅 시 호출한다. 비밀번호 값은 절대 내보내지 않는다."""
     configured = auth.is_configured()
-    return {
-        "configured": configured,
-        "authenticated": configured and auth.validate_session(request.cookies.get(auth.COOKIE_NAME)),
-        "lockedForSeconds": int(auth.lock_remaining(auth.client_ip(request))),
-        "warning": auth.password_strength_warning(),
-    }
+    return {"configured": configured,
+            "authenticated": configured and auth.validate_session(
+                request.cookies.get(auth.COOKIE_NAME)),
+            "lockedForSeconds": int(auth.lock_remaining(auth.client_ip(request))),
+            "warning": auth.password_strength_warning()}
 
 
 @app.post("/api/auth/login")
-def auth_login(req: LoginRequest, request: Request):
+def login(req: LoginRequest, request: Request):
     ip = auth.client_ip(request)
-
     if not auth.is_configured():
-        raise HTTPException(
-            status_code=503,
-            detail="서버에 APP_ACCESS_PASSWORD 환경변수가 설정되지 않았습니다. Render 대시보드에서 먼저 설정하세요.",
-        )
-
+        raise HTTPException(503, "서버에 APP_ACCESS_PASSWORD 가 설정되지 않았습니다.")
     locked = auth.lock_remaining(ip)
     if locked > 0:
-        raise HTTPException(
-            status_code=429,
-            detail=f"로그인 시도가 너무 많습니다. {math.ceil(locked / 60)}분 후 다시 시도하세요.",
-        )
-
+        raise HTTPException(429, f"로그인 시도가 너무 많습니다. {math.ceil(locked / 60)}분 후 다시 시도하세요.")
     if not auth.verify_password(req.password):
-        remaining_lock = auth.register_failure(ip)
+        remaining = auth.register_failure(ip)
         logger.warning(f"로그인 실패 ip={ip}")
-        if remaining_lock > 0:
-            raise HTTPException(
-                status_code=429,
-                detail=f"로그인 시도 한도를 초과했습니다. {math.ceil(remaining_lock / 60)}분 후 다시 시도하세요.",
-            )
-        raise HTTPException(
-            status_code=401,
-            detail=f"비밀번호가 올바르지 않습니다. (남은 시도 {auth.attempts_left(ip)}회)",
-        )
+        if remaining > 0:
+            raise HTTPException(429, f"로그인 시도 한도를 초과했습니다. {math.ceil(remaining / 60)}분 후 다시 시도하세요.")
+        raise HTTPException(401, f"비밀번호가 올바르지 않습니다. (남은 시도 {auth.attempts_left(ip)}회)")
 
     auth.clear_failures(ip)
-    token, expires_at = auth.create_session()
+    token, expires = auth.create_session()
     logger.info(f"로그인 성공 ip={ip}")
-
-    resp = JSONResponse({"success": True, "expiresAt": int(expires_at)})
-    resp.set_cookie(
-        key=auth.COOKIE_NAME,
-        value=token,
-        max_age=int(auth.SESSION_TTL_SEC),
-        httponly=True,               # JS 가 읽을 수 없다 (XSS 로 탈취 방지)
-        samesite="strict",           # 외부 사이트발 요청에 쿠키가 실리지 않는다 (CSRF 방지)
-        secure=auth.is_https(request),
-        path="/",
-    )
+    resp = JSONResponse({"success": True, "expiresAt": int(expires)})
+    resp.set_cookie(auth.COOKIE_NAME, token, max_age=int(auth.SESSION_TTL_SEC),
+                    httponly=True, samesite="strict",
+                    secure=auth.is_https(request), path="/")
     return resp
 
 
 @app.post("/api/auth/logout")
-def auth_logout(request: Request):
+def logout(request: Request):
     auth.destroy_session(request.cookies.get(auth.COOKIE_NAME))
     resp = JSONResponse({"success": True})
     resp.delete_cookie(auth.COOKIE_NAME, path="/")
     return resp
 
 
-@app.on_event("startup")
-def _log_auth_config():
-    """기동 시 인증 설정 상태를 로그에 남긴다.
-    비밀번호가 안 맞을 때 '서버가 무엇을 갖고 있는지' 확인할 유일한 안전한 수단이다."""
-    logger.info(auth.password_debug_line())
-    if auth.is_configured():
-        w = auth.password_strength_warning()
-        if w:
-            logger.warning(w)
+# ───────────────────────── 시세 ─────────────────────────
+
+@app.get("/api/coins")
+def coins():
+    return {"coins": [{"code": c, "name": n} for c, n in bithumb.COINS.items()],
+            "intervals": bithumb.INTERVALS}
 
 
-gemini_ai = GeminiAIService()
-backtester = QuantBacktester(initial_capital=10000.0)
+@app.get("/api/prices")
+def prices():
+    """5종 현재가. 하나가 실패해도 나머지는 돌려주고, 실패는 실패로 표시한다."""
+    out = []
+    for c in bithumb.COINS:
+        try:
+            out.append(bithumb.get_ticker(c))
+        except bithumb.BithumbError as e:
+            out.append({"coin": c, "name": bithumb.COINS[c], "error": e.message})
+    return {"prices": out}
 
-# Request Models
-class DeployBotRequest(BaseModel):
-    symbol: str = "NVDA"
-    mode: str = "PAPER" # PAPER or LIVE
-    broker: str = "ALPACA_PAPER"
-    capital: float = 10000.0
-    strategyParams: Dict[str, Any]
 
-class StopBotRequest(BaseModel):
-    botId: str
+@app.get("/api/candles")
+def candles(coin: str = Query(...), interval: str = Query("1h"),
+            params: Optional[str] = Query(None)):
+    """캔들 + 지표. 차트와 전략 확인용."""
+    try:
+        p = StrategyParams()
+        rows = bithumb.get_candles(coin, interval, limit=200)
+        bars = compute_indicators(rows, p)
+    except bithumb.BithumbError as e:
+        raise HTTPException(502, e.message)
+    return {"coin": bithumb.normalize_coin(coin), "interval": interval,
+            "candles": bars, "params": p.to_dict(), "dataSource": "bithumb-candles"}
 
-class ConnectBrokerRequest(BaseModel):
-    brokerCode: str
-    apiKey: str
-    secretKey: Optional[str] = ""
-    accountNo: Optional[str] = ""
 
-class DisconnectBrokerRequest(BaseModel):
-    brokerCode: str
+# ───────────────────────── 백테스트 ─────────────────────────
 
 class BacktestRequest(BaseModel):
-    symbol: str = "NVDA"
-    initialCapital: Optional[float] = None
-    strategyType: str = "custom"
-    fastMa: int = 5
-    slowMa: int = 20
-    rsiBuy: float = 35.0
-    rsiSell: float = 70.0
-    takeProfitPct: float = 10.0
-    stopLossPct: float = 5.0
-    period: str = "1y"
+    coin: str = "BTC"
+    interval: str = "1h"
+    initialKrw: float = 1_000_000.0
+    params: Dict[str, Any] = {}
 
-class ParseStrategyRequest(BaseModel):
-    userPrompt: str
-
-class GenerateReportRequest(BaseModel):
-    symbol: str
-    quote: Dict[str, Any]
-    backtest: Dict[str, Any]
-    sentiment: Dict[str, Any]
-
-# Search Autocomplete API
-@app.get("/api/search")
-def search_symbols(q: str = Query("", description="Search query")):
-    query = q.strip().lower()
-    if not query:
-        return {"results": POPULAR_ASSETS}
-
-    results = []
-    seen = set()
-    for name, sym in SYMBOL_DICTIONARY.items():
-        if query in name.lower() or query in sym.lower():
-            if sym not in seen:
-                seen.add(sym)
-                results.append({"name": name, "symbol": sym})
-                if len(results) >= 8:
-                    break
-
-    return {"results": results}
-
-# 티커 바 일괄 시세 (F-10). 예전엔 채우는 코드가 아예 없어 8칸 중 7칸이 영구히 "--" 였다.
-@app.get("/api/quotes")
-def batch_quotes(symbols: str = Query("", description="콤마로 구분한 심볼 목록 (최대 12개)")):
-    reqs = [x.strip() for x in symbols.split(",") if x.strip()][:12]
-    if not reqs:
-        reqs = [a["symbol"] for a in POPULAR_ASSETS]
-
-    out = []
-    for sym in reqs:
-        try:
-            q = get_asset_quote(sym)
-            out.append({
-                "symbol": q.get("symbol", sym),
-                "requested": sym,
-                "shortName": q.get("shortName"),
-                "currentPrice": q.get("currentPrice"),
-                "changePercent": q.get("changePercent"),
-                "currency": q.get("currency"),
-                "isFallback": bool(q.get("isFallback")),
-                "dataSource": q.get("dataSource"),
-            })
-        except Exception as e:
-            logger.warning(f"batch quote 실패 {sym}: {e}")
-            out.append({"symbol": sym, "requested": sym, "error": str(e)[:120]})
-    return {"quotes": out}
-
-
-# Instant All-In-One Bundle API
-@app.get("/api/symbol/bundle")
-def get_symbol_bundle(symbol: str = Query("NVDA")):
-    resolved = resolve_symbol(symbol)
-    quote = get_asset_quote(resolved)
-    chart = get_chart_data(resolved, timeframe="6mo")
-    sentiment = gemini_ai.analyze_sentiment_and_news(resolved, quote)
-    financials = gemini_ai.analyze_filing_and_financials(resolved, quote)
-    backtest = backtester.run_backtest(resolved, fast_ma=5, slow_ma=20, take_profit_pct=12.0, stop_loss_pct=5.0)
-
-    return {
-        "symbol": resolved,
-        "quote": quote,
-        "chart": chart,
-        "sentiment": sentiment,
-        "financials": financials,
-        "backtest": backtest
-    }
-
-# Wall Street Guru Endpoints
-@app.get("/api/gurus")
-def get_gurus_endpoint():
-    return {"gurus": get_all_gurus()}
-
-@app.get("/api/gurus/{guru_id}")
-def get_single_guru_endpoint(guru_id: str):
-    guru = get_guru_by_id(guru_id)
-    if guru is None:
-        raise HTTPException(status_code=404, detail=f"존재하지 않는 구루 id: {guru_id}")
-    return guru
-
-# AI Marketplace & Leaderboard Endpoints
-@app.get("/api/marketplace/bots")
-def get_marketplace_endpoint():
-    return {"bots": get_marketplace_bots()}
-
-# API Endpoints
-@app.get("/api/health")
-def health_check():
-    return {"status": "ok", "app": "Gemini Alpha Lab", "version": "1.0.0"}
-
-@app.get("/api/popular")
-def get_popular_assets():
-    return {"assets": POPULAR_ASSETS}
-
-@app.get("/api/quote")
-def quote_endpoint(symbol: str = Query(..., description="Stock or Crypto Symbol e.g., NVDA, TSLA, BTC-USD, 005930.KS")):
-    try:
-        quote = get_asset_quote(symbol.upper())
-        return quote
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/chart")
-def chart_endpoint(
-    symbol: str = Query(..., description="Symbol"),
-    timeframe: str = Query("6mo", description="1mo, 3mo, 6mo, 1y, 2y")
-):
-    try:
-        chart_data = get_chart_data(symbol.upper(), timeframe=timeframe)
-        return chart_data
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/sentiment")
-def sentiment_endpoint(symbol: str = Query(...)):
-    try:
-        sym = symbol.upper()
-        quote = get_asset_quote(sym)
-        sentiment = gemini_ai.analyze_sentiment_and_news(sym, quote)
-        return {"symbol": sym, "quote": quote, "sentiment": sentiment}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/financials")
-def financials_endpoint(symbol: str = Query(...)):
-    try:
-        sym = symbol.upper()
-        quote = get_asset_quote(sym)
-        analysis = gemini_ai.analyze_filing_and_financials(sym, quote)
-        return analysis
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/api/backtest")
-def run_backtest_endpoint(req: BacktestRequest):
+def run_backtest(req: BacktestRequest):
     try:
-        # 초기자본이 10000 USD 로 고정돼 있어서, 원화 종목도 화면엔 원화 라벨로
-        # "10,000" 이 찍혔다. 통화에 맞춰 기본값을 잡고 통화를 응답에 넣는다.
-        resolved = resolve_symbol(req.symbol)
-        quote = get_asset_quote(resolved)
-        currency = quote.get("currency", "USD")
-        capital = req.initialCapital
-        if not capital or capital <= 0:
-            capital = 10_000_000.0 if currency == "KRW" else 10_000.0
+        return backtest.run(req.coin, req.interval, req.params, req.initialKrw)
+    except bithumb.BithumbError as e:
+        raise HTTPException(502, e.message)
 
-        engine = QuantBacktester(initial_capital=float(capital))
-        result = engine.run_backtest(
-            symbol=req.symbol.upper(),
-            strategy_type=req.strategyType,
-            fast_ma=req.fastMa,
-            slow_ma=req.slowMa,
-            rsi_buy=req.rsiBuy,
-            rsi_sell=req.rsiSell,
-            take_profit_pct=req.takeProfitPct,
-            stop_loss_pct=req.stopLossPct,
-            period=req.period
-        )
-        result["currency"] = currency
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/strategy/parse")
-def parse_strategy_endpoint(req: ParseStrategyRequest):
-    try:
-        parsed = gemini_ai.parse_natural_language_strategy(req.userPrompt)
-        return parsed
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ───────────────────────── 봇 ─────────────────────────
 
-@app.post("/api/report/generate")
-def generate_report_endpoint(req: GenerateReportRequest):
-    try:
-        report = gemini_ai.generate_premium_monetization_report(
-            symbol=req.symbol.upper(),
-            quote=req.quote,
-            backtest=req.backtest,
-            sentiment=req.sentiment
-        )
-        return report
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+class DeployRequest(BaseModel):
+    coin: str = "BTC"
+    interval: str = "1h"
+    mode: str = "PAPER"
+    capitalKrw: float = 1_000_000.0
+    params: Dict[str, Any] = {}
 
-# Bot Endpoints
+
+class BotIdRequest(BaseModel):
+    botId: str
+
+
 @app.post("/api/bot/deploy")
-def deploy_bot_endpoint(req: DeployBotRequest):
+def deploy_bot(req: DeployRequest):
+    coin = bithumb.normalize_coin(req.coin)
+    if not coin:
+        raise HTTPException(400, f"빗썸 원화마켓에 없는 코인입니다: {req.coin}")
+    if req.interval not in bithumb.INTERVALS:
+        raise HTTPException(400, f"지원하지 않는 캔들 간격입니다: {req.interval}")
+    if req.capitalKrw < 10_000:
+        raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
+
+    mode = req.mode.upper()
+    if mode not in ("PAPER", "LIVE"):
+        raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
+
+    # 시세를 못 받으면 봇을 띄우지 않는다.
     try:
-        resolved_sym = resolve_symbol(req.symbol)
+        bithumb.get_price(coin)
+    except bithumb.BithumbError as e:
+        raise HTTPException(503, f"{coin} 시세를 받지 못해 봇을 가동할 수 없습니다: {e.message}")
 
-        # 실주문 구현체가 없는 브로커를 LIVE 로 띄우면 주문이 나가지 않는데
-        # 화면에는 "🔥 실전" 으로 표시됐다. 아예 막는다.
-        if req.mode.upper() == "LIVE" and not supports_live_orders(req.broker):
-            raise HTTPException(
-                status_code=400,
-                detail=(f"[{req.broker}] 는 아직 실주문 연동이 구현되지 않았습니다. "
-                        f"모의투자(PAPER) 로만 가동할 수 있습니다. "
-                        f"현재 실전 주문이 가능한 거래소: 빗썸(BITHUMB)"),
-            )
+    if mode == "LIVE":
+        if not keystore.account.configured:
+            raise HTTPException(400, "실전(LIVE) 가동 전에 빗썸 API 키를 등록해야 합니다.")
+        test = keystore.account.test_connection()
+        if not test.get("success"):
+            raise HTTPException(400, f"빗썸 실계좌 연결에 실패해 실전 가동을 중단했습니다. {test.get('message')}")
+        if test.get("krwAvailable", 0) < req.capitalKrw:
+            raise HTTPException(400,
+                f"빗썸 주문가능 원화({test.get('krwAvailable', 0):,.0f}원)가 "
+                f"운용 자본({req.capitalKrw:,.0f}원)보다 적습니다.")
 
-        # 실측 시세만 사용한다. 예전엔 조회가 실패하면 100.0 을 대입해
-        # 존재하지 않는 가격으로 봇을 띄웠다.
-        tick = get_live_price(resolved_sym, req.broker or "")
-        init_price = float(tick["price"]) if tick else 0.0
+    try:
+        bot = bot_manager.deploy(coin, req.interval, mode, req.capitalKrw,
+                                 req.params, keystore.account)
+    except TooManyBots as e:
+        raise HTTPException(429, str(e))
+    return bot.status()
 
-        if init_price <= 0 and req.mode.upper() == "LIVE":
-            raise HTTPException(
-                status_code=503,
-                detail=(f"{resolved_sym} 의 실시간 시세를 받지 못해 실전(LIVE) 봇을 가동할 수 없습니다. "
-                        f"추정 가격으로 실주문을 내지 않습니다.")
-            )
-
-        q = get_asset_quote(resolved_sym)
-
-        # Get AI sentiment
-        sentiment = gemini_ai.analyze_sentiment_and_news(resolved_sym, q)
-        sentiment_score = int(sentiment.get("sentimentScore", 75))
-
-        bot = bot_manager.deploy_bot(
-            symbol=resolved_sym,
-            mode=req.mode,
-            broker=req.broker,
-            capital=float(req.capital),
-            strategy_params=req.strategyParams,
-            initial_price=init_price,
-            sentiment_score=sentiment_score
-        )
-        return bot.get_status()
-    except BotTooManyError as e:
-        raise HTTPException(status_code=429, detail=str(e))
-    except HTTPException:
-        # 503(시세 없음) 같은 의도된 상태코드를 500 으로 덮어쓰지 않는다.
-        raise
-    except Exception as e:
-        logger.error(f"Error deploying bot: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/bot/list")
-def list_bots_endpoint():
-    return {"bots": bot_manager.get_all_bots()}
+def list_bots():
+    return {"bots": bot_manager.all_status(),
+            "activeCount": bot_manager.active_count(), "maxActive": MAX_ACTIVE_BOTS}
+
 
 @app.post("/api/bot/stop")
-def stop_bot_endpoint(req: StopBotRequest):
-    success = bot_manager.stop_bot(req.botId)
-    return {"success": success, "botId": req.botId}
+def stop_bot(req: BotIdRequest):
+    if not bot_manager.stop(req.botId):
+        raise HTTPException(404, f"봇을 찾을 수 없습니다: {req.botId}")
+    return {"success": True, "botId": req.botId}
 
-@app.post("/api/bot/stop_all")
-def stop_all_bots_endpoint():
-    stopped_count = bot_manager.stop_all_bots()
-    return {"success": True, "stoppedCount": stopped_count}
 
 @app.post("/api/bot/delete")
-def delete_bot_endpoint(req: StopBotRequest):
-    success = bot_manager.delete_bot(req.botId)
-    return {"success": success, "botId": req.botId}
-
-# Broker Management Endpoints
-@app.get("/api/broker/list")
-def list_brokers_endpoint():
-    return {"brokers": broker_manager.get_status_list()}
-
-@app.post("/api/broker/connect")
-def connect_broker_endpoint(req: ConnectBrokerRequest):
-    success = broker_manager.save_key(
-        broker_code=req.brokerCode,
-        api_key=req.apiKey,
-        secret_key=req.secretKey or "",
-        account_no=req.accountNo or ""
-    )
-    return {"success": success, "broker": req.brokerCode}
-
-@app.post("/api/broker/test_bithumb")
-def test_bithumb_endpoint(req: ConnectBrokerRequest):
-    result = broker_manager.test_bithumb_connection(
-        api_key=req.apiKey,
-        secret_key=req.secretKey or ""
-    )
-    return result
-
-@app.get("/api/ai/status")
-def ai_status_endpoint():
-    """Gemini 연동 진단. 키 값은 노출하지 않고 모델·마지막 오류만 보고한다.
-    예전엔 실패를 전부 삼켜서 '키가 틀림 / 모델명이 틀림 / 쿼터 초과' 를
-    구분할 수 없었다."""
-    return gemini_ai.status()
+def delete_bot(req: BotIdRequest):
+    if not bot_manager.delete(req.botId):
+        raise HTTPException(404, f"봇을 찾을 수 없습니다: {req.botId}")
+    return {"success": True, "botId": req.botId}
 
 
-@app.get("/api/system/my_ip")
-def get_my_ip_endpoint():
-    """서버의 실제 공인 IP (Outbound Egress IP) 조회.
-    빗썸 API 키의 [IP 주소 등록]란에는 반드시 '이 서버'가 실제로 나가는 IP를 넣어야 한다.
-    조회에 실패하면 절대 임의의 IP를 반환하지 않는다 (잘못된 IP 등록을 유발하므로)."""
-    from services.bithumb_client import BithumbClient
+@app.post("/api/bot/stop_all")
+def stop_all_bots():
+    return {"success": True, "stoppedCount": bot_manager.stop_all()}
 
-    # 빗썸 인증 요청이 실제로 나가는 IP (프록시 설정 시 프록시 IP).
-    # 빗썸에 등록해야 하는 값은 이것이다.
-    exchange = BithumbClient.egress_ip()
 
-    providers = [
-        ("https://api.ipify.org?format=json", "ip"),
-        ("https://ifconfig.co/json", "ip"),
-        ("https://api.myip.com", "ip"),
-    ]
-    errors = []
-    for url, field in providers:
+# ───────────────────────── 빗썸 계정 ─────────────────────────
+
+class KeyRequest(BaseModel):
+    apiKey: str
+    secretKey: str
+
+
+@app.get("/api/account")
+def account_status():
+    st = keystore.status()
+    if keystore.account.configured:
         try:
-            data = requests.get(url, timeout=4).json()
-            ip = str(data.get(field, "")).strip()
-            if ip:
-                return {
-                    "ip": ip,
-                    "source": url,
-                    "detected": True,
-                    # 프록시를 쓰면 서버 IP 와 거래소로 나가는 IP 가 다르다
-                    "exchangeEgressIp": exchange.get("ip"),
-                    "proxyConfigured": exchange.get("proxyConfigured"),
-                    "proxyHost": exchange.get("proxyHost"),
-                    "exchangeEgressError": exchange.get("error"),
-                    # 프록시가 설정됐는데 IP 를 못 알아냈으면 서버 IP 를 등록하라고
-                    # 안내하면 안 된다 (빗썸에 등록해야 하는 건 프록시 IP 다).
-                    "registerThisIp": (
-                        exchange.get("ip") if exchange.get("proxyConfigured") else (exchange.get("ip") or ip)
-                    ),
-                    "registerHint": (
-                        "프록시 IP 를 확인할 수 없습니다. 프록시가 살아 있는지 먼저 점검하세요."
-                        if exchange.get("proxyConfigured") and not exchange.get("ip") else None
-                    ),
-                }
-        except Exception as e:
-            errors.append(f"{url}: {e}")
-            continue
+            bal = keystore.account.get_balance()
+            st.update({"balanceOk": True, "apiVersion": bal["apiVersion"],
+                       "krwAvailable": bal["krwAvailable"], "krwTotal": bal["krwTotal"],
+                       "coins": bal["coins"]})
+        except bithumb.BithumbError as e:
+            st.update({"balanceOk": False, "error": e.message})
+    return st
 
-    logger.error(f"Outbound IP detection failed: {errors}")
-    return JSONResponse(
-        status_code=503,
-        content={
-            "ip": None,
-            "detected": False,
-            "message": "서버 공인 IP 자동 감지 실패. 배포 플랫폼(Render 등) 대시보드의 Outbound IP 목록을 직접 확인해 빗썸에 등록하세요.",
-        },
-    )
 
-@app.post("/api/broker/disconnect")
-def disconnect_broker_endpoint(req: DisconnectBrokerRequest):
-    if broker_manager.key_source(req.brokerCode) == "env":
-        raise HTTPException(
-            status_code=409,
-            detail=(f"[{req.brokerCode}] 키는 환경변수로 주입되어 화면에서 해제할 수 없습니다. "
-                    f"Render 대시보드 → Environment 에서 해당 변수를 삭제하세요."),
-        )
-    success = broker_manager.disconnect(req.brokerCode)
-    return {"success": success, "broker": req.brokerCode}
+@app.post("/api/account/test")
+def test_account(req: KeyRequest):
+    return bithumb.BithumbAccount(req.apiKey, req.secretKey).test_connection()
 
-# Static Files
+
+@app.post("/api/account/save")
+def save_account(req: KeyRequest):
+    result = bithumb.BithumbAccount(req.apiKey, req.secretKey).test_connection()
+    if not result.get("success"):
+        # 인증을 통과하지 못한 키는 저장하지 않는다.
+        raise HTTPException(400, result.get("message", "빗썸 인증에 실패했습니다."))
+    try:
+        keystore.save(req.apiKey.strip(), req.secretKey.strip())
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    return {"success": True, **keystore.status()}
+
+
+@app.post("/api/account/clear")
+def clear_account():
+    try:
+        keystore.clear()
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    return {"success": True, **keystore.status()}
+
+
+@app.get("/api/system/egress_ip")
+def egress_ip():
+    """빗썸 [API 관리 > IP 주소 등록] 에 넣어야 하는 IP."""
+    info = bithumb.egress_ip()
+    return {**info,
+            "registerThisIp": info.get("ip"),
+            "hint": ("프록시 IP 를 확인할 수 없습니다. 프록시가 살아 있는지 점검하세요."
+                     if info.get("proxyConfigured") and not info.get("ip") else None)}
+
+
+# ───────────────────────── 정적 파일 ─────────────────────────
+
 static_dir = os.path.join(CURRENT_DIR, "static")
-if not os.path.exists(static_dir):
-    os.makedirs(static_dir, exist_ok=True)
-
+os.makedirs(static_dir, exist_ok=True)
 app.mount("/static", StaticFiles(directory=static_dir), name="static")
 
+
 @app.get("/")
-def serve_index():
-    index_file = os.path.join(static_dir, "index.html")
-    if os.path.exists(index_file):
-        return FileResponse(
-            index_file,
-            headers={
-                "Cache-Control": "no-cache, no-store, must-revalidate",
-                "Pragma": "no-cache",
-                "Expires": "0"
-            }
-        )
-    return HTMLResponse("<h1>Gemini Alpha Lab Server Running</h1>")
+def index():
+    f = os.path.join(static_dir, "index.html")
+    if os.path.exists(f):
+        return FileResponse(f, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return HTMLResponse("<h1>빗썸 원화 자동매매 콘솔</h1>")
+
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="0.0.0.0", port=8888, reload=True)
+    uvicorn.run("server:app", host="127.0.0.1", port=int(os.getenv("PORT", "8888")), reload=True)

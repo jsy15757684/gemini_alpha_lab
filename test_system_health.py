@@ -1,148 +1,131 @@
-import urllib.request
-import urllib.error
+"""빗썸 원화 자동매매 콘솔 — 전체 점검.
+
+실행: APP_ACCESS_PASSWORD='...' python3 test_system_health.py
+실패한 항목이 있으면 목록과 함께 0 이 아닌 종료 코드를 반환한다.
+"""
 import http.cookiejar
 import json
 import os
-import time
+import sys
+import urllib.error
+import urllib.request
 
+BASE = os.getenv("BASE_URL", "http://127.0.0.1:8888")
+JAR = http.cookiejar.CookieJar()
+OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(JAR))
 FAILURES = []
 
-# 인증이 붙었으므로 세션 쿠키를 유지하는 opener 를 쓴다.
-_JAR = http.cookiejar.CookieJar()
-_OPENER = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(_JAR))
+
+def call(name, path, method="GET", payload=None, expect=200):
+    req = urllib.request.Request(
+        BASE + path,
+        data=json.dumps(payload).encode() if payload is not None else None,
+        headers={"Content-Type": "application/json"} if payload is not None else {})
+    req.get_method = lambda: method
+    try:
+        res = OPENER.open(req, timeout=30)
+        code, body = res.getcode(), json.loads(res.read() or b"null")
+    except urllib.error.HTTPError as e:
+        code, body = e.code, None
+        try:
+            body = json.loads(e.read())
+        except Exception:
+            pass
+    except Exception as e:
+        print(f"❌ {name}: {e}")
+        FAILURES.append(name)
+        return None
+    if code != expect:
+        detail = (body or {}).get("detail") if isinstance(body, dict) else body
+        print(f"❌ {name}: HTTP {code} (기대 {expect}) {str(detail)[:90]}")
+        FAILURES.append(name)
+        return None
+    print(f"✅ {name}")
+    return body
 
 
-def login():
-    """APP_ACCESS_PASSWORD 로 로그인해 세션 쿠키를 확보한다."""
+def main():
+    print("=" * 58)
+    print("  빗썸 원화 자동매매 콘솔 — 전체 점검")
+    print("=" * 58 + "\n")
+
     pw = (os.getenv("APP_ACCESS_PASSWORD") or "").strip()
     if not pw:
-        print("❌ APP_ACCESS_PASSWORD 환경변수가 없어 점검을 진행할 수 없습니다.")
-        print("   실행 예: APP_ACCESS_PASSWORD='...' python3 test_system_health.py")
-        return False
-    try:
-        req = urllib.request.Request(
-            f"{BASE_URL}/api/auth/login",
-            data=json.dumps({"password": pw}).encode("utf-8"),
-            headers={"Content-Type": "application/json"},
-        )
-        _OPENER.open(req, timeout=10)
-        print("🔐 인증 성공 — 세션으로 점검을 진행합니다.\n")
-        return True
-    except urllib.error.HTTPError as e:
-        print(f"❌ 로그인 실패 (HTTP {e.code}): 비밀번호가 서버 설정과 일치하는지 확인하세요.\n")
-        return False
-    except Exception as e:
-        print(f"❌ 서버에 연결할 수 없습니다: {e}\n")
-        return False
-
-BASE_URL = 'http://localhost:8888'
-
-def test_api(name, url, method='GET', data=None):
-    try:
-        req = urllib.request.Request(
-            f'{BASE_URL}{url}',
-            data=json.dumps(data).encode('utf-8') if data else None,
-            headers={'Content-Type': 'application/json'} if data else {}
-        )
-        req.get_method = lambda: method
-        res = _OPENER.open(req, timeout=10)
-        body = json.loads(res.read())
-        print(f'✅ [{name}] 정상 응답 (HTTP {res.getcode()})')
-        return body
-    except Exception as e:
-        print(f'❌ [{name}] 오류: {e}')
-        FAILURES.append(f'{name}: {e}')
-        return None
-
-def run_diagnostics():
-    print('===========================================================')
-    print('  🔍 GEMINI ALPHA LAB 전체 시스템 무결성 & 연동 종합 점검')
-    print('===========================================================\n')
-
-    if not login():
+        print("❌ APP_ACCESS_PASSWORD 환경변수가 없어 진행할 수 없습니다.")
         return 2
 
-    # 1. 인기 자산 목록
-    pop = test_api('1. 인기 자산 목록 API', '/api/popular')
+    call("00. 헬스체크", "/api/health")
+    call("01. 로그인 전에는 데이터 API 차단", "/api/prices", expect=401)
 
-    # 2. 통합 번들 (BTC)
-    bundle = test_api('2. 종목 데이터 & AI 감성 번들 API (BTC)', '/api/symbol/bundle?symbol=BTC-USD')
-    if bundle:
-        q = bundle.get('quote', {})
-        s = bundle.get('sentiment', {})
-        print(f'   ↳ BTC 실시간 시세: ${q.get("currentPrice", 0):,.2f} | Gemini 감성 점수: {s.get("sentimentScore")}점 ({s.get("sentiment")})')
+    if call("02. 로그인", "/api/auth/login", "POST", {"password": pw}) is None:
+        print("\n로그인 실패로 이후 점검을 중단합니다.")
+        return 2
 
-    # 3. 6대 월가 구루
-    gurus = test_api('3. 월가 전설의 6대 구루 인텔리전스 API', '/api/gurus')
-    if gurus:
-        print(f'   ↳ 등록된 월가 구루: {len(gurus.get("gurus", []))}명 (버핏, 린치, 시몬스, 달리오 등)')
+    meta = call("03. 코인·간격 목록", "/api/coins")
+    if meta:
+        print(f"    코인 {len(meta['coins'])}종 · 간격 {len(meta['intervals'])}종")
 
-    # 4. 상용 봇 마켓플레이스
-    market = test_api('4. 봇 마켓플레이스 & 랭킹 리더보드 API', '/api/marketplace/bots')
-    if market:
-        print(f'   ↳ 등록된 상용 봇: {len(market.get("bots", []))}개 (인피니티 그리드, DCA 마틴게일 등)')
+    prices = call("04. 5종 실시간 시세", "/api/prices")
+    if prices:
+        ok = [p for p in prices["prices"] if "error" not in p]
+        print(f"    수신 {len(ok)}/{len(prices['prices'])}종")
+        for p in ok[:2]:
+            print(f"      {p['coin']} {p['price']:,.0f}원 ({p['changePercent']:+.2f}%)")
+        if len(ok) < len(prices["prices"]):
+            FAILURES.append("04. 일부 종목 시세 실패")
 
-    # 5. 브로커 센터 (정예화된 3대 브로커)
-    brokers = test_api('5. 3대 핵심 브로커 연동 센터 API', '/api/broker/list')
-    if brokers:
-        names = [b['name'] for b in brokers.get('brokers', [])]
-        print(f'   ↳ 현재 브로커: {" | ".join(names)}')
+    c = call("05. 캔들+지표", "/api/candles?coin=BTC&interval=24h")
+    if c:
+        ready = [b for b in c["candles"] if b["ready"]]
+        print(f"    캔들 {len(c['candles'])}개 · 지표 유효 {len(ready)}개")
+        if not ready:
+            FAILURES.append("05. 지표가 하나도 계산되지 않음")
 
-    # 6. 봇 배포 테스트 (Bithumb 연동)
-    bot_payload = {
-        'symbol': 'BTC',
-        'mode': 'PAPER',
-        'broker': 'BITHUMB',
-        'capital': 1000000.0,
-        'strategyParams': {
-            'enableVolumeSurge': True,
-            'enableAiSentimentGate': True,
-            'minSentimentScore': 60,
-            'enableTrailingStop': True,
-            'enableScaleInOut': True,
-            'rsiBuy': 35.0,
-            'rsiSell': 70.0,
-            'fastMa': 5,
-            'slowMa': 20,
-            'takeProfitPct': 10.0,
-            'stopLossPct': 5.0
-        }
-    }
-    new_bot = test_api('6. 봇 신규 배포 & 24H 백그라운드 엔진 가동 API', '/api/bot/deploy', 'POST', bot_payload)
-    bot_id = new_bot.get('botId') if new_bot else None
+    bt = call("06. 백테스트", "/api/backtest", "POST",
+              {"coin": "BTC", "interval": "24h", "initialKrw": 1000000})
+    if bt:
+        print(f"    수익률 {bt['totalReturnPct']:+.2f}% · 벤치마크 {bt['benchmarkReturnPct']:+.2f}%"
+              f" · 거래 {bt['totalTrades']}회")
 
-    # 7. 활성 봇 목록 및 실시간 상태
-    bots_list = test_api('7. 활성 봇 실시간 관제 및 PnL 집계 API', '/api/bot/list')
-    if bots_list:
-        print(f'   ↳ 현재 실시간 가동 중인 봇: {len(bots_list.get("bots", []))}개')
+    bot = call("07. 모의투자 봇 가동", "/api/bot/deploy", "POST",
+               {"coin": "BTC", "interval": "24h", "mode": "PAPER", "capitalKrw": 1000000})
+    bot_id = bot.get("botId") if bot else None
+    if bot:
+        print(f"    {bot['botId']} · 현재가 {bot['currentPrice']:,.0f}원")
 
-    # 8. 봇 정지 테스트
+    call("08. 실시세 없는 코인은 거부", "/api/bot/deploy", "POST",
+         {"coin": "NOTACOIN", "mode": "PAPER", "capitalKrw": 1000000}, expect=400)
+
+    lst = call("09. 봇 목록", "/api/bot/list")
+    if lst:
+        print(f"    가동 {lst['activeCount']}/{lst['maxActive']}")
+
     if bot_id:
-        test_api('8. 봇 개별 즉시 청산 & 비상 정지 API', '/api/bot/stop', 'POST', {'botId': bot_id})
-        test_api('9. 봇 아카이브 데이터 삭제 API', '/api/bot/delete', 'POST', {'botId': bot_id})
+        call("10. 봇 정지", "/api/bot/stop", "POST", {"botId": bot_id})
+        call("11. 봇 삭제", "/api/bot/delete", "POST", {"botId": bot_id})
 
-    # 10. 빗썸 공식 실시간 Public Ticker 직접 점검
-    from services.bithumb_client import BithumbClient
-    bc = BithumbClient()
-    t_res = bc.get_ticker('BTC', 'KRW')
-    if t_res.get('status') == '0000':
-        closing_p = int(float(t_res['data']['closing_price']))
-        print(f'✅ [10. 빗썸 공식 REST API 실시간 호가 통신] 정상 (BTC 실시간 시세: {closing_p:,}원)')
-    else:
-        print(f'❌ [10. 빗썸 공식 REST API] 오류')
-        FAILURES.append('10. 빗썸 공식 REST API')
+    acc = call("12. 빗썸 계정 상태", "/api/account")
+    if acc:
+        print(f"    연동 {acc['connected']} · 보관 {acc['source']}"
+              + (f" · 인증 {'성공' if acc.get('balanceOk') else '실패'}" if acc["connected"] else ""))
 
-    print('\n===========================================================')
+    ip = call("13. 등록용 공인 IP", "/api/system/egress_ip")
+    if ip:
+        print(f"    {ip.get('registerThisIp') or '확인 불가'}")
+
+    call("14. 로그아웃", "/api/auth/logout", "POST")
+    call("15. 로그아웃 후 차단 확인", "/api/prices", expect=401)
+
+    print("\n" + "=" * 58)
     if FAILURES:
-        # 예전엔 실패해도 무조건 '100% 무결' 을 출력해서 장애가 묻혔다.
-        print(f'  ❌ {len(FAILURES)}개 모듈 실패 — 아래 항목을 확인하세요')
+        print(f"  ❌ {len(FAILURES)}개 실패")
         for f in FAILURES:
-            print(f'     · {f}')
+            print(f"     · {f}")
     else:
-        print('  🎉 10대 핵심 모듈 전부 정상 응답')
-    print('===========================================================')
+        print("  ✅ 전체 정상")
+    print("=" * 58)
     return 1 if FAILURES else 0
 
-if __name__ == '__main__':
-    import sys
-    sys.exit(run_diagnostics())
+
+if __name__ == "__main__":
+    sys.exit(main())
