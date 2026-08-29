@@ -21,9 +21,19 @@ logger = logging.getLogger(__name__)
 
 
 def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
-        initial_krw: float = 1_000_000.0) -> Dict[str, Any]:
+        initial_krw: float = 1_000_000.0,
+        candles: List[Dict[str, Any]] = None,
+        start_frac: float = 0.0, end_frac: float = 1.0) -> Dict[str, Any]:
+    """전략을 과거 캔들에 적용한다.
+
+    candles 를 넘기면 조회를 건너뛴다(같은 데이터로 여러 설정을 비교할 때).
+    start_frac/end_frac 로 구간을 잘라 '앞 구간으로 고르고 뒤 구간으로 검증' 할 수 있다.
+    구간을 잘라도 지표는 전체 캔들로 계산한다 — 잘린 지점에서 지표가 끊기면
+    실제 봇과 다른 상황이 되기 때문이다.
+    """
     p = StrategyParams.from_dict(params)
-    candles = bithumb.get_candles(coin, interval, limit=200)
+    if candles is None:
+        candles = bithumb.get_candles(coin, interval, limit=200)
     bars = compute_indicators(candles, p)
 
     warmup = p.warmup()
@@ -31,6 +41,13 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
         raise bithumb.BithumbError(
             f"캔들이 부족합니다 (필요 {warmup + 3}개, 확보 {len(bars)}개). "
             f"이동평균 기간을 줄이거나 더 짧은 간격을 쓰세요.")
+
+    span = len(bars) - warmup
+    lo = warmup + int(span * max(0.0, min(1.0, start_frac)))
+    hi = warmup + int(span * max(0.0, min(1.0, end_frac)))
+    if hi - lo < 3:
+        raise bithumb.BithumbError("지정한 구간의 캔들이 너무 적습니다.")
+    warmup = lo
 
     cash = float(initial_krw)
     pos = Position()
@@ -41,7 +58,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
     entry_time = None
     entry_reason = ""
 
-    for i in range(warmup, len(bars)):
+    for i in range(lo, hi):
         bar = bars[i]
         price = bar["close"]
 
@@ -114,11 +131,11 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
                        "value": round(cash + pos.units * price, 0),
                        "close": round(price, 2)})
 
-    final_price = bars[-1]["close"]
+    final_price = bars[hi - 1]["close"]
     final_value = cash + pos.units * final_price
 
     # 벤치마크: 같은 구간을 그냥 들고 있었을 때 (수수료 1회 왕복 반영)
-    bench_entry = bars[warmup]["close"]
+    bench_entry = bars[lo]["close"]
     bench_units = initial_krw * (1 - fee) / bench_entry
     bench_value = bench_units * final_price * (1 - fee)
 
@@ -154,9 +171,9 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
         "winRatePct": round(len(wins) / len(trades) * 100, 2) if trades else 0.0,
         "profitFactor": round(gross_profit / gross_loss, 2) if gross_loss > 0 else None,
         "openPositionAtEnd": pos.open,
-        "periodFrom": bars[warmup]["time"],
-        "periodTo": bars[-1]["time"],
-        "candleCount": len(bars),
+        "periodFrom": bars[lo]["time"],
+        "periodTo": bars[hi - 1]["time"],
+        "candleCount": hi - lo,
         "trades": trades[-50:],
         "equityCurve": equity,
         "dataSource": "bithumb-candles",
