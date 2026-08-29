@@ -31,6 +31,10 @@ function setAlert(el, message, kind) {
 // ───────── 인증 ─────────
 
 function showGate(reason) {
+  // 세션이 끊겼는데 타이머가 계속 돌면 401 을 반복하며 조용히 실패한다.
+  timers.forEach(clearInterval);
+  timers = [];
+  started = false;
   $("authGate").classList.remove("hidden");
   $("app").classList.add("hidden");
   const pw = $("authPassword"), submit = $("authSubmit");
@@ -107,6 +111,22 @@ function readParams(prefix) {
 
 // ───────── 시세 ─────────
 
+let lastPriceAt = 0;
+
+// 마지막 갱신 시각을 계속 갱신해 '멈춘 건지 살아있는 건지' 를 화면에서 알 수 있게 한다.
+// 예전에는 세션이 끊기거나 탭이 백그라운드로 밀려도 이전 값이 그대로 남아
+// 시세가 살아 있는 것처럼 보였다.
+function renderFreshness() {
+  const el = $("freshness");
+  if (!el) return;
+  if (!lastPriceAt) { el.textContent = "갱신 대기"; el.className = "fresh stale"; return; }
+  const age = Math.round((Date.now() - lastPriceAt) / 1000);
+  const t = new Date(lastPriceAt).toLocaleTimeString("ko-KR");
+  const stale = age > 60;
+  el.textContent = stale ? `${t} · ${age}초 전 (갱신 지연)` : `${t} · ${age}초 전`;
+  el.className = stale ? "fresh stale" : "fresh";
+}
+
 async function loadPrices() {
   try {
     const { prices } = await api("/api/prices");
@@ -118,7 +138,12 @@ async function loadPrices() {
            <div class="tick-price">${won(p.price)}</div>
            <div class="tick-chg ${cls(p.changePercent)}">${pct(p.changePercent)}</div></div>`
     ).join("");
-  } catch (e) { console.error("시세 조회 실패:", e); }
+    lastPriceAt = Date.now();
+  } catch (e) {
+    console.error("시세 조회 실패:", e);
+  } finally {
+    renderFreshness();
+  }
 }
 
 // ───────── 봇 ─────────
@@ -432,7 +457,16 @@ async function boot() {
   });
 
   await Promise.allSettled([loadPrices(), loadBots(), loadAccount()]);
-  timers.push(setInterval(loadPrices, 20000), setInterval(loadBots, 8000));
+  timers.push(
+    setInterval(loadPrices, 10000),
+    setInterval(loadBots, 8000),
+    setInterval(renderFreshness, 1000),   // 경과 시간 표시는 매초 갱신
+  );
+
+  // 브라우저는 백그라운드 탭의 타이머를 조인다. 다시 보이면 즉시 따라잡는다.
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden && started) { loadPrices(); loadBots(); }
+  });
 }
 
 document.addEventListener("DOMContentLoaded", async () => {

@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.0.0">
+<link rel="stylesheet" href="/static/css/style.css?v=4.0.1">
 </head>
 <body>
 
@@ -37,7 +37,10 @@
     </div>
   </header>
 
-  <div class="ticker" id="tickerBar"></div>
+  <div class="ticker-wrap">
+    <div class="ticker" id="tickerBar"></div>
+    <div class="fresh stale" id="freshness">갱신 대기</div>
+  </div>
 
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-bots">자동매매 봇</button>
@@ -183,6 +186,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.0.0"></script>
+<script src="/static/js/app.js?v=4.0.1"></script>
 </body>
 </html>
