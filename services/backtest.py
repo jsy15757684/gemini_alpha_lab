@@ -4,8 +4,9 @@
 실제 봇의 행동을 그대로 예측한다. (예전 구조는 봇과 백테스터의 판단 로직이
 서로 달라서 백테스트가 아무것도 예측하지 못했다.)
 
-체결 가정은 보수적으로 둔다:
-  · 신호가 뜬 캔들의 '종가' 에 체결된다고 본다 (다음 봉 시가가 아님)
+체결 가정:
+  · 익절·손절은 캔들 고가/저가로 캔들 내 도달을 판정 (동시 도달 시 손절 우선)
+  · 진입과 RSI 청산은 신호 캔들의 종가 체결
   · 매수/매도 양쪽에 수수료를 뺀다
   · 슬리피지는 반영하지 않는다 — 실전은 이보다 나쁠 수 있다
 """
@@ -43,6 +44,43 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
     for i in range(warmup, len(bars)):
         bar = bars[i]
         price = bar["close"]
+
+        # 캔들 '안에서' 익절·손절선이 닿았는지 먼저 본다.
+        #
+        # 종가로만 판정하면 24h 봉에서 가격이 익절선을 한참 지나쳐도 종가까지
+        # 기다린 것으로 계산되어 이익도 손실도 과장된다(익절 2% 설정에서
+        # 평균 이익 +4.94% 가 나왔다). 실제 봇은 10초마다 현재가를 보므로
+        # 설정한 선 근처에서 체결된다. 고가/저가로 그 동작을 재현한다.
+        #
+        # 한 캔들에서 손절선과 익절선이 모두 닿았다면 어느 쪽이 먼저인지
+        # 알 수 없다. 보수적으로 '손절이 먼저' 로 본다.
+        intrabar = None
+        if pos.open:
+            stop_price = pos.entryPrice * (1 - p.stopLossPct / 100.0)
+            take_price = pos.entryPrice * (1 + p.takeProfitPct / 100.0)
+            if bar["low"] <= stop_price:
+                intrabar = (stop_price, f"손절 (-{p.stopLossPct:.2f}%, 캔들 내 저가 도달)", "stopLoss")
+            elif bar["high"] >= take_price:
+                intrabar = (take_price, f"익절 (+{p.takeProfitPct:.2f}%, 캔들 내 고가 도달)", "takeProfit")
+
+        if intrabar:
+            fill, reason, rule = intrabar
+            proceeds = pos.units * fill * (1 - fee)
+            pnl = proceeds - (pos.units * pos.entryPrice)
+            trades.append({
+                "entryTime": entry_time, "exitTime": bar["time"],
+                "entryPrice": round(pos.entryPrice, 2), "exitPrice": round(fill, 2),
+                "units": round(pos.units, 8),
+                "returnPct": round((fill - pos.entryPrice) / pos.entryPrice * 100, 2),
+                "pnlKrw": round(pnl, 0),
+                "entryReason": entry_reason, "exitReason": reason, "rule": rule,
+                "result": "WIN" if pnl > 0 else "LOSS",
+            })
+            cash = proceeds
+            pos = Position()
+            equity.append({"time": bar["time"], "value": round(cash, 0),
+                           "close": round(price, 2)})
+            continue
 
         if pos.open and price > pos.peakPrice:
             pos.peakPrice = price
@@ -122,6 +160,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
         "trades": trades[-50:],
         "equityCurve": equity,
         "dataSource": "bithumb-candles",
-        "note": ("신호 발생 캔들의 종가 체결·수수료 반영·슬리피지 미반영 가정입니다. "
-                 "실전 성과는 이보다 나쁠 수 있습니다."),
+        "note": ("익절·손절은 캔들의 고가/저가로 캔들 내 도달을 판정합니다(한 캔들에서 "
+                 "둘 다 닿으면 손절 우선). 진입과 RSI 청산은 종가 체결, 수수료 반영, "
+                 "슬리피지 미반영 가정입니다. 실전 성과는 이보다 나쁠 수 있습니다."),
     }
