@@ -18,35 +18,12 @@ echo "=========================================================="
 #                   변수는 빈 값이 된다. 붙여넣기할 때 흔히 생기는 형태다.
 #   KEY=a b c    ← 따옴표 없는 공백도 같은 문제
 # 그래서 직접 파싱한다. 값을 실행하지 않으므로 안전하기도 하다.
-load_env_file() {
-    local file="$1" line key val loaded=0 skipped=0
-    while IFS= read -r line || [ -n "$line" ]; do
-        line="${line%$'\r'}"                      # Windows 줄바꿈 제거
-        case "$line" in ''|'#'*) continue;; esac
-        case "$line" in *=*) ;; *) continue;; esac
+# 파서는 scripts/load_env.sh 에 있다. systemd 서비스도 같은 파일을 쓴다.
+. "$DIR/scripts/load_env.sh"
 
-        key="${line%%=*}"
-        val="${line#*=}"
 
-        key="$(printf '%s' "$key" | tr -d '[:space:]')"
-        val="${val#"${val%%[![:space:]]*}"}"       # 앞 공백
-        val="${val%"${val##*[![:space:]]}"}"       # 뒤 공백
-
-        case "$val" in                              # 감싼 따옴표 제거
-            \"*\") val="${val#\"}"; val="${val%\"}" ;;
-            \'*\') val="${val#\'}"; val="${val%\'}" ;;
-        esac
-
-        [ -z "$key" ] && continue
-        if [ -z "$val" ]; then skipped=$((skipped+1)); continue; fi
-        export "$key=$val"
-        loaded=$((loaded+1))
-    done < "$file"
-    echo "✅ .env 로드 (설정 ${loaded}개, 빈 값 ${skipped}개 건너뜀)"
-}
-
-if [ -f ".env" ]; then
-    load_env_file ".env"
+if load_env_file ".env"; then
+    echo "✅ .env 로드 (설정 ${ENV_LOADED}개, 빈 값 ${ENV_SKIPPED}개 건너뜀)"
 else
     echo "ℹ️  .env 가 없습니다.  cp .env.example .env  후 값을 채우세요."
 fi
