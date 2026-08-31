@@ -12,3 +12,6 @@ ai_env/
 .DS_Store
 data/
 *.log
+
+# 맥 실행 스크립트의 서버 주소 — 공개 저장소에 올리지 않는다
+deploy/mac/server.conf

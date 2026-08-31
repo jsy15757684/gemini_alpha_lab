@@ -1,0 +1,9 @@
+# 이 파일을 server.conf 로 복사한 뒤 내 서버 값으로 채우세요.
+#   cp server.conf.example server.conf
+#
+# server.conf 는 .gitignore 대상입니다 — 서버 주소가 공개 저장소에
+# 올라가지 않게 하려는 의도입니다.
+
+SERVER_HOST=여기에_서버_공인IP
+SERVER_USER=root
+PORT=8888

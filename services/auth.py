@@ -10,7 +10,7 @@
   3) 세션 토큰만 쿠키로 나가고 비밀번호는 서버 밖으로 나가지 않는다.
   4) 무차별 대입에 대비해 IP 단위 시도 제한을 둔다.
 
-Render 무료 플랜은 컨테이너가 재시작되면 메모리가 비므로 재로그인이 필요하다.
+세션은 메모리에만 둔다. 서버가 재시작되면 재로그인이 필요하다.
 1인 사용 도구에서는 허용 가능한 트레이드오프이고, 대신 세션이 디스크에 남지 않는다.
 """
 
@@ -195,7 +195,7 @@ def active_session_count() -> int:
 
 
 def client_ip(request) -> str:
-    """Render 등 프록시 뒤에서는 X-Forwarded-For 의 첫 항목이 실제 클라이언트다."""
+    """리버스 프록시 뒤에서는 X-Forwarded-For 의 첫 항목이 실제 클라이언트다."""
     fwd = request.headers.get("x-forwarded-for") or ""
     if fwd:
         return fwd.split(",")[0].strip()

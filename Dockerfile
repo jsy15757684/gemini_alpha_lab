@@ -16,7 +16,7 @@ RUN pip install --no-cache-dir -r requirements.txt
 # 소스코드 전체 복사
 COPY . .
 
-# 포트는 플랫폼이 주입한다 (Render 는 $PORT 를 넘긴다). 없으면 8888.
+# 포트는 환경변수 $PORT 로 받는다. 없으면 8888.
 EXPOSE 8888
 ENV PORT=8888
 
