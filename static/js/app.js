@@ -242,10 +242,24 @@ function botCard(b) {
   </div>`;
 }
 
+let restoreNoticeShown = false;
+
 async function loadBots() {
   try {
-    const { bots, activeCount, maxActive } = await api("/api/bot/list");
+    const { bots, activeCount, maxActive, restoreSummary } = await api("/api/bot/list");
     $("botCount").textContent = `(${activeCount}/${maxActive} 가동)`;
+
+    // 재시작 후 대조에 걸려 보류된 봇이 있으면 반드시 눈에 띄게 알린다.
+    if (!restoreNoticeShown && restoreSummary?.held > 0) {
+      restoreNoticeShown = true;
+      const el = $("globalNotice");
+      el.classList.remove("hidden");
+      el.className = "alert alert-danger";
+      el.innerHTML = `<b>재시작 후 ${restoreSummary.held}개 봇이 보류되었습니다.</b> `
+        + `내부 기록과 빗썸 실제 보유량이 맞지 않거나 대조에 실패했습니다. `
+        + `빗썸에서 실제 보유량을 확인하고 정리하세요.<br>`
+        + (restoreSummary.notes || []).map(n => `· ${n}`).join("<br>");
+    }
     $("botList").innerHTML = bots.length
       ? bots.map(botCard).join("")
       : `<div class="empty">가동 중인 봇이 없습니다.</div>`;

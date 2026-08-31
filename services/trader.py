@@ -18,7 +18,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from services import bithumb
+from services import bithumb, botstore
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 
 logger = logging.getLogger(__name__)
@@ -75,6 +75,13 @@ class TradingBot:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
+    def _persist(self):
+        """상태가 바뀌면 전체 스냅샷을 다시 쓴다. 봇 수가 적어 비용이 미미하다."""
+        try:
+            bot_manager.persist()
+        except Exception as e:
+            logger.error(f"[{self.bot_id}] 상태 저장 실패: {e}")
+
     # ── 로그 ──
     def log(self, level: str, message: str):
         with self._lock:
@@ -107,6 +114,7 @@ class TradingBot:
                          + (f" · {self.params.slowMa}봉 추세필터" if self.params.useTrendFilter else ""))
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
+        self._persist()
 
     def stop(self, liquidate: bool = True):
         self.is_running = False
@@ -117,6 +125,7 @@ class TradingBot:
             except bithumb.BithumbError as e:
                 self.log("ERROR", f"청산 실패 — 포지션이 남아 있습니다: {e.message}")
         self.log("WARNING", "봇이 정지되었습니다.")
+        self._persist()
 
     # ── 메인 루프 ──
     def _loop(self):
@@ -200,6 +209,7 @@ class TradingBot:
         self.cash = 0.0
         self.log("BUY", f"매수 {units:.8f} {self.coin} @ {price:,.0f}원 "
                         f"({invest:,.0f}원) | 사유: {reason}")
+        self._persist()
 
     def _exit(self, price: float, reason: str):
         units = self.pos.units
@@ -231,6 +241,37 @@ class TradingBot:
 
         self.log("SELL", f"매도 {units:.8f} {self.coin} @ {price:,.0f}원 | "
                          f"손익 {pnl:+,.0f}원 ({pnl_pct:+.2f}%) | 사유: {reason}")
+        self._persist()
+
+    # ── 영속화 ──
+    def snapshot(self) -> Dict[str, Any]:
+        """디스크에 저장할 최소 상태. 로그와 지표는 저장하지 않는다(재계산 가능)."""
+        return {
+            "botId": self.bot_id, "coin": self.coin, "interval": self.interval,
+            "mode": self.mode, "initialKrw": self.initial_krw,
+            "params": self.params.to_dict(),
+            "cash": self.cash,
+            "units": self.pos.units, "entryPrice": self.pos.entryPrice,
+            "peakPrice": self.pos.peakPrice,
+            "realizedPnl": self.realized_pnl,
+            "totalTrades": self.total_trades, "winningTrades": self.winning_trades,
+            "createdAt": self.created_at, "wasRunning": self.is_running,
+        }
+
+    @classmethod
+    def restore(cls, d: Dict[str, Any],
+                account: Optional[bithumb.BithumbAccount]) -> "TradingBot":
+        bot = cls(d["botId"], d["coin"], d["interval"], d["mode"],
+                  float(d["initialKrw"]), StrategyParams.from_dict(d.get("params")), account)
+        bot.cash = float(d.get("cash", d["initialKrw"]))
+        bot.pos = Position(units=float(d.get("units", 0.0)),
+                           entryPrice=float(d.get("entryPrice", 0.0)),
+                           peakPrice=float(d.get("peakPrice", 0.0)))
+        bot.realized_pnl = float(d.get("realizedPnl", 0.0))
+        bot.total_trades = int(d.get("totalTrades", 0))
+        bot.winning_trades = int(d.get("winningTrades", 0))
+        bot.created_at = d.get("createdAt", bot.created_at)
+        return bot
 
     # ── 상태 ──
     def status(self) -> Dict[str, Any]:
@@ -320,10 +361,97 @@ class BotManager:
             return False
         bot.stop(liquidate=True)
         del self.bots[bot_id]
+        self.persist()
         return True
 
     def all_status(self) -> List[Dict[str, Any]]:
         return [b.status() for b in self.bots.values()]
+
+    # ── 영속화 / 복원 ──
+
+    def persist(self) -> None:
+        botstore.save([b.snapshot() for b in self.bots.values()])
+
+    def restore(self, account: Optional[bithumb.BithumbAccount]) -> Dict[str, Any]:
+        """저장된 봇을 복원한다.
+
+        LIVE 봇이 포지션을 들고 있었다면 빗썸 실제 보유량과 대조한다.
+        내부 장부가 거래소보다 많다고 주장하면(= 팔 수 없는 수량) 자동으로
+        재가동하지 않는다. 그 상태로 매도를 걸면 주문이 거부되거나
+        의도하지 않은 수량이 나가기 때문이다. 판단은 사용자에게 맡긴다.
+        """
+        records = botstore.load()
+        if not records:
+            return {"restored": 0, "resumed": 0, "held": 0, "notes": []}
+
+        # '보유량이 0' 과 '조회를 못 했다' 는 다르다. 후자를 0 으로 취급하면
+        # 잘못된 사유를 안내하게 된다 (실제로 그렇게 안내했다).
+        exchange: Dict[str, float] = {}
+        balance_known = False
+        balance_error = ""
+        need_check = any(r.get("mode") == "LIVE" and float(r.get("units", 0)) > 0
+                         for r in records)
+        if need_check:
+            if not (account and account.configured):
+                balance_error = "빗썸 API 키가 등록되지 않았습니다."
+            else:
+                try:
+                    exchange = account.get_balance().get("coins", {})
+                    balance_known = True
+                except bithumb.BithumbError as e:
+                    balance_error = e.message
+                    logger.error(f"복원 중 빗썸 잔고 조회 실패: {e.message}")
+
+        notes: List[str] = []
+        resumed = held = 0
+
+        for r in records:
+            try:
+                bot = TradingBot.restore(r, account)
+            except Exception as e:
+                logger.error(f"봇 복원 실패 {r.get('botId')}: {e}")
+                continue
+            self.bots[bot.bot_id] = bot
+
+            if not r.get("wasRunning"):
+                bot.log("INFO", "이전에 정지된 상태로 복원되었습니다. 재가동하지 않습니다.")
+                continue
+
+            # LIVE + 포지션 보유 → 거래소와 대조
+            if bot.mode == "LIVE" and bot.pos.open:
+                if not balance_known:
+                    msg = (f"{bot.coin} 포지션 {bot.pos.units:.8f} 를 들고 있는데 "
+                           f"빗썸 잔고를 조회하지 못해 대조할 수 없습니다. "
+                           f"재가동을 보류합니다. (사유: {balance_error})")
+                    bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                    held += 1
+                    continue
+                actual = float(exchange.get(bot.coin, 0.0))
+                # 계좌에 봇 것 외의 보유분이 있을 수 있으므로 '이상' 이면 정상으로 본다.
+                if actual + 1e-8 < bot.pos.units:
+                    msg = (f"내부 장부({bot.pos.units:.8f} {bot.coin})가 빗썸 실제 "
+                           f"보유량({actual:.8f})보다 많습니다. 재가동을 보류합니다. "
+                           f"빗썸에서 실제 보유량을 확인한 뒤 이 봇을 삭제하거나 "
+                           f"수동으로 정리하세요.")
+                    bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                    held += 1
+                    continue
+                bot.log("INFO", f"거래소 대조 통과 (내부 {bot.pos.units:.8f} ≤ 빗썸 {actual:.8f})")
+
+            if bot.pos.open:
+                bot.log("WARNING",
+                        f"포지션을 들고 재시작되었습니다 — 진입가 {bot.pos.entryPrice:,.0f}원 · "
+                        f"{bot.pos.units:.8f} {bot.coin}. 손절·익절 감시를 재개합니다.")
+            bot.start()
+            resumed += 1
+
+        self.persist()
+        summary = {"restored": len(self.bots), "resumed": resumed,
+                   "held": held, "notes": notes}
+        logger.info(f"봇 복원: 총 {summary['restored']}개 · 재가동 {resumed}개 · 보류 {held}개")
+        for n in notes:
+            logger.warning(n)
+        return summary
 
 
 bot_manager = BotManager()

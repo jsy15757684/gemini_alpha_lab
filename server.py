@@ -37,6 +37,9 @@ _origins = [o.strip() for o in os.getenv("APP_ALLOWED_ORIGINS", "").split(",") i
 app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=True,
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type"])
 
+# 서버 시작 시 봇 복원 결과. 화면이 '보류된 봇' 을 알려주는 데 쓴다.
+RESTORE_SUMMARY: Dict[str, Any] = {"restored": 0, "resumed": 0, "held": 0, "notes": []}
+
 PUBLIC_API_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
 
 
@@ -62,6 +65,10 @@ def _startup_log():
         logger.warning(auth.password_strength_warning())
     ks = keystore.status()
     logger.info(f"빗썸 키: {'등록됨(' + ks['source'] + ')' if ks['connected'] else '미등록'}")
+
+    # 저장된 봇을 복원한다. LIVE 포지션은 빗썸 실제 보유량과 대조한 뒤에만 재가동한다.
+    global RESTORE_SUMMARY
+    RESTORE_SUMMARY = bot_manager.restore(keystore.account)
 
 
 # ───────────────────────── 인증 ─────────────────────────
@@ -228,7 +235,8 @@ def deploy_bot(req: DeployRequest):
 @app.get("/api/bot/list")
 def list_bots():
     return {"bots": bot_manager.all_status(),
-            "activeCount": bot_manager.active_count(), "maxActive": MAX_ACTIVE_BOTS}
+            "activeCount": bot_manager.active_count(), "maxActive": MAX_ACTIVE_BOTS,
+            "restoreSummary": RESTORE_SUMMARY}
 
 
 @app.post("/api/bot/stop")
