@@ -353,6 +353,17 @@ def explain_auth_failure(diag: Dict[str, Any]) -> str:
     blob = f"{diag.get('v2', '')} {diag.get('v1', '')}".lower()
     raw = f"(원문: 2.0={diag.get('v2')} / 1.0={diag.get('v1')})"
 
+    # IP 거부를 가장 먼저 본다.
+    # API 2.0 이 NotAllowIP 를 돌려줘도 1.0 폴백은 "Invalid Apikey" 를 돌려주는데,
+    # 키 오류를 먼저 검사하면 IP 문제를 '키가 틀렸다' 고 잘못 안내하게 된다.
+    # (실제로 그렇게 잘못 안내했다 — IP 가 바뀐 상황에서 키를 의심하게 만들었다)
+    if "notallowip" in blob or "not allowed client ip" in blob or "allowed ip" in blob:
+        current = egress_ip().get("ip")
+        where = ("프록시 서버" if proxy_url() else "이 서버")
+        return (f"빗썸이 요청 IP 를 거부했습니다 (등록되지 않은 IP). "
+                f"{where}의 현재 공인 IP 는 {current or '확인 불가'} 입니다. "
+                f"빗썸 [API 관리 > IP 주소 등록]에 이 IP 를 추가하세요. "
+                f"회선 IP 가 바뀌면 이 오류가 다시 납니다. {raw}")
     if "auth data" in blob:
         # 키는 인식되는데 서명이 검증되지 않는 상태 = Secret Key 불일치
         return ("Connect Key 는 빗썸이 인식했지만 서명이 검증되지 않았습니다. "
@@ -360,7 +371,7 @@ def explain_auth_failure(diag: Dict[str, Any]) -> str:
     if "invalid apikey" in blob or "invalid_access_key" in blob:
         return ("빗썸이 Connect Key 를 인식하지 못했습니다. 키 값과 Connect/Secret 자리가 "
                 "바뀌지 않았는지 확인하세요. " + raw)
-    if "ip" in blob:
+    if " ip " in f" {blob} ":
         hint = ("프록시를 경유 중입니다. 프록시 서버 IP 를 빗썸에 등록했는지 확인하세요."
                 if proxy_url() else
                 "화면에 표시된 서버 IP 를 빗썸 [API 관리 > IP 주소 등록]에 등록하세요.")
