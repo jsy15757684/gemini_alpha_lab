@@ -143,6 +143,21 @@ function readParams(prefix) {
   if (rules.length) p.entryRules = rules;
   const mode = $(`${prefix}entryMode`);
   if (mode) p.entryMode = mode.value;
+
+  if (prefix === "bp_") {
+    const stratType = $("botStrategyType") ? $("botStrategyType").value : "technical";
+    if (stratType === "gemini_ai") {
+      p.useGemini = true;
+      p.geminiMode = "ai_only";
+      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "70", 10);
+    } else if (stratType === "gemini_hybrid") {
+      p.useGemini = true;
+      p.geminiMode = "hybrid";
+      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "70", 10);
+    } else {
+      p.useGemini = false;
+    }
+  }
   return p;
 }
 
@@ -189,6 +204,7 @@ async function deployBot() {
   const btn = $("deployBtn");
   setAlert($("deployError"), null);
   const mode = $("botMode").value;
+  const isGemini = $("botStrategyType")?.value.startsWith("gemini");
   if (mode === "LIVE" && !confirm(
       "실전 모드로 가동합니다.\n\n빗썸 계좌에서 실제 원화로 주문이 나가며 손실이 발생할 수 있습니다.\n계속하시겠습니까?"))
     return;
@@ -202,6 +218,9 @@ async function deployBot() {
       }),
     });
     await loadBots();
+    // 봇 탭으로 이동
+    const botTab = document.querySelector('.tab[data-panel="panel-bots"]');
+    if (botTab) botTab.click();
   } catch (e) {
     setAlert($("deployError"), e.message);
   } finally {
@@ -211,14 +230,17 @@ async function deployBot() {
 
 function botCard(b) {
   const live = b.mode === "LIVE";
+  const isGemini = b.params?.useGemini;
+  const gemMode = b.params?.geminiMode === "ai_only" ? "✨ AI 전용" : "🧬 하이브리드";
   const badge = !b.isRunning ? `<span class="badge badge-stop">정지됨</span>`
     : live ? `<span class="badge badge-live">실전</span>`
            : `<span class="badge badge-paper">모의</span>`;
+  const aiBadge = isGemini ? `<span class="badge" style="background:rgba(59,130,246,.2); color:var(--accent); border:1px solid rgba(59,130,246,.4);">${gemMode} (${b.params?.geminiMinConfidence}%)</span>` : "";
   const logs = (b.recentLogs || []).map(l =>
     `<div class="logline"><span class="t">${l.time}</span><span class="lv-${l.level}">${l.message}</span></div>`).join("");
   return `<div class="bot">
     <div class="bot-head">
-      <div><span class="bot-title">${b.coinName} (${b.coin})</span> ${badge}
+      <div><span class="bot-title">${b.coinName} (${b.coin})</span> ${badge} ${aiBadge}
         <span class="muted small">${b.interval}</span></div>
       <div class="inline">
         ${b.isRunning ? `<button class="btn btn-ghost btn-sm" data-stop="${b.botId}">정지</button>` : ""}
@@ -233,7 +255,7 @@ function botCard(b) {
           : ""}</div><div class="stat-v">${won(b.currentPrice)}</div></div>
       <div><div class="stat-k">보유</div><div class="stat-v">${b.units > 0 ? b.units.toFixed(6) : "-"}</div></div>
       <div><div class="stat-k">평가손익</div><div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0 ? won(b.unrealizedPnlKrw) : "-"}</div></div>
-      <div><div class="stat-k">RSI</div><div class="stat-v">${b.rsi ?? "-"}</div></div>
+      <div><div class="stat-k">${isGemini ? "AI 신뢰도" : "RSI"}</div><div class="stat-v">${isGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-")}</div></div>
       <div><div class="stat-k">거래</div><div class="stat-v">${b.totalTrades}회</div></div>
       <div><div class="stat-k">승률</div><div class="stat-v">${b.totalTrades ? b.winRatePct + "%" : "-"}</div></div>
     </div>
@@ -392,6 +414,184 @@ function sparkline(values, label, forceMin, forceMax) {
     </svg></div>`;
 }
 
+// ───────── Gemini AI ─────────
+
+async function loadGeminiScan() {
+  const btn = $("geminiScanBtn");
+  const statusEl = $("geminiScanStatus");
+  const host = $("geminiCards");
+  const interval = $("geminiScanInterval") ? $("geminiScanInterval").value : "1h";
+
+  btn.disabled = true;
+  btn.textContent = "AI 분석 중…";
+  statusEl.innerHTML = `<span class="muted">Google Gemini AI가 5개 코인을 정밀 분석하고 있습니다. 잠시만 기다려주세요…</span>`;
+
+  try {
+    const data = await api(`/api/gemini/scan?interval=${interval}`);
+    statusEl.innerHTML = `<span class="muted">스캔 완료 시각: ${data.scanned_at} (모델: <code>${data.model}</code> · ${interval} 기준)</span>`;
+    
+    if (!data.results || !data.results.length) {
+      host.innerHTML = `<div class="empty">분석 결과가 없습니다.</div>`;
+      return;
+    }
+
+    host.innerHTML = data.results.map(r => {
+      const isBuy = r.action === "BUY";
+      const isSell = r.action === "SELL";
+      const badgeCls = isBuy ? "gemini-badge-BUY" : isSell ? "gemini-badge-SELL" : "gemini-badge-HOLD";
+      const barColor = isBuy ? "var(--up)" : isSell ? "var(--down)" : "var(--muted)";
+      const cardCls = isBuy ? "action-BUY" : isSell ? "action-SELL" : "action-HOLD";
+      const conf = r.confidence || 0;
+
+      const reasonsHtml = (r.reasons || []).map(re => `<li>${re}</li>`).join("");
+
+      return `
+        <div class="gemini-card ${cardCls}">
+          <div class="gemini-card-head">
+            <div>
+              <span class="gemini-coin-title">${r.name || r.coin} <span class="muted small">(${r.coin})</span></span>
+              <div class="muted small" style="margin-top:2px;">현재가: <b class="mono" style="color:var(--text);">${won(r.current_price)}원</b></div>
+            </div>
+            <div class="gemini-action-badge ${badgeCls}">${r.action}</div>
+          </div>
+
+          <div class="gemini-conf-wrap">
+            <div style="display:flex; justify-content:space-between; font-size:.78rem;">
+              <span class="stat-k">AI 신뢰도</span>
+              <span class="mono" style="font-weight:700; color:${barColor};">${conf}%</span>
+            </div>
+            <div class="gemini-conf-bar-bg">
+              <div class="gemini-conf-bar-fill" style="width:${conf}%; background:${barColor};"></div>
+            </div>
+          </div>
+
+          <div class="gemini-summary">
+            ${r.summary || "분석 요약 없음"}
+          </div>
+
+          <ul class="gemini-reasons">
+            ${reasonsHtml}
+          </ul>
+
+          <div class="gemini-targets">
+            <div>권장 익절: <b class="up">+${r.target_profit_pct || 3.5}%</b></div>
+            <div>권장 손절: <b class="down">-${r.stop_loss_pct || 2.0}%</b></div>
+          </div>
+
+          <div class="gemini-card-foot">
+            <button class="btn btn-primary btn-sm btn-block" onclick="startGeminiBotFromScan('${r.coin}', '${interval}', ${conf})">
+              🚀 ${r.coin} Gemini 봇 즉시 가동
+            </button>
+          </div>
+        </div>
+      `;
+    }).join("");
+
+  } catch (err) {
+    statusEl.innerHTML = `<span class="down">스캔 실패: ${err.message}</span>`;
+    host.innerHTML = `<div class="alert alert-error">Gemini AI 스캔 중 오류가 발생했습니다: ${err.message}<br><small>Gemini API 키가 올바르게 설정되어 있는지 확인하세요.</small></div>`;
+  } finally {
+    btn.disabled = false;
+    btn.textContent = "⚡ 전체 AI 스캔";
+  }
+}
+
+function startGeminiBotFromScan(coin, interval, conf) {
+  $("botCoin").value = coin;
+  $("botInterval").value = interval;
+  if ($("botStrategyType")) {
+    $("botStrategyType").value = "gemini_ai";
+    toggleStrategyUI();
+  }
+  if ($("geminiMinConf")) {
+    $("geminiMinConf").value = Math.max(50, conf);
+    if ($("geminiConfVal")) $("geminiConfVal").textContent = Math.max(50, conf) + "%";
+  }
+  const botTab = document.querySelector('.tab[data-panel="panel-bots"]');
+  if (botTab) botTab.click();
+}
+
+async function loadGeminiStatus() {
+  try {
+    const s = await api("/api/gemini/status");
+    $("geminiStatus").innerHTML = [
+      ["연동 상태", s.configured ? "등록됨" : "미등록"],
+      ["API 키", s.maskedKey || "-"],
+      ["보관 위치", s.source === "env" ? "환경변수 (.env)" : s.source === "disk" ? "서버 파일 (data/gemini_key.json)" : "-"],
+      ["기본 모델", `<code>${s.model}</code>`],
+    ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("");
+
+    if (s.model && $("geminiModelSelect")) {
+      $("geminiModelSelect").value = s.model;
+    }
+    if (s.configured && s.readOnly) {
+      $("geminiKeyForm").classList.add("hidden");
+    } else {
+      $("geminiKeyForm").classList.remove("hidden");
+    }
+    if (s.configured && !s.readOnly && $("clearGeminiBtn")) {
+      $("clearGeminiBtn").classList.remove("hidden");
+    } else if ($("clearGeminiBtn")) {
+      $("clearGeminiBtn").classList.add("hidden");
+    }
+  } catch (e) {
+    console.error("Gemini 상태 조회 실패:", e);
+  }
+}
+
+async function geminiKeyAction(save) {
+  const apiKey = $("geminiApiKeyInput").value.trim();
+  const model = $("geminiModelSelect").value;
+  if (!apiKey) return setAlert($("geminiKeyResult"), "Gemini API Key 를 입력하세요.");
+  const btn = save ? $("saveGeminiBtn") : $("testGeminiBtn");
+  btn.disabled = true;
+  setAlert($("geminiKeyResult"), null);
+  try {
+    const r = await api(save ? "/api/gemini/save" : "/api/gemini/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ apiKey, model }),
+    });
+    if (save || r.success) {
+      setAlert($("geminiKeyResult"), `연결 성공 — ${r.message || "정상 작동 확인"}` + (save ? " · 저장되었습니다." : ""), "ok");
+      $("geminiApiKeyInput").value = "";
+      await loadGeminiStatus();
+    } else {
+      setAlert($("geminiKeyResult"), r.message);
+    }
+  } catch (e) {
+    setAlert($("geminiKeyResult"), e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function clearGeminiKey() {
+  if (!confirm("저장된 Gemini API 키를 삭제하시겠습니까?")) return;
+  try {
+    await api("/api/gemini/clear", { method: "POST" });
+    setAlert($("geminiKeyResult"), "Gemini API 키가 삭제되었습니다.", "ok");
+    await loadGeminiStatus();
+  } catch (e) {
+    setAlert($("geminiKeyResult"), e.message);
+  }
+}
+
+function toggleStrategyUI() {
+  const type = $("botStrategyType")?.value || "technical";
+  const gemOptions = $("geminiBotOptions");
+  const botRules = $("botRules");
+  if (type === "technical") {
+    if (gemOptions) gemOptions.style.display = "none";
+    if (botRules) botRules.style.display = "block";
+  } else if (type === "gemini_ai") {
+    if (gemOptions) gemOptions.style.display = "block";
+    if (botRules) botRules.style.display = "none";
+  } else if (type === "gemini_hybrid") {
+    if (gemOptions) gemOptions.style.display = "block";
+    if (botRules) botRules.style.display = "block";
+  }
+}
+
 // ───────── 계정 ─────────
 
 async function loadAccount() {
@@ -418,7 +618,7 @@ async function loadAccount() {
     else $("keyForm").classList.remove("hidden");
 
     $("balanceBox").innerHTML = !a.connected
-      ? `<div class="empty">API 키를 등록하면 표시됩니다.</div>`
+      ? `<div class="empty">빗썸 API 키를 등록하면 표시됩니다.</div>`
       : !a.balanceOk
         ? `<div class="alert alert-error">${a.error}</div>`
         : `<div class="kv">
@@ -487,6 +687,24 @@ async function boot() {
   renderParams("botParams", "bp_");
   renderParams("btParams", "tp_");
 
+  // 전략 선택기 UI 바인딩
+  if ($("botStrategyType")) {
+    $("botStrategyType").onchange = toggleStrategyUI;
+    toggleStrategyUI();
+  }
+  if ($("geminiMinConf")) {
+    $("geminiMinConf").oninput = () => {
+      $("geminiConfVal").textContent = $("geminiMinConf").value + "%";
+    };
+  }
+
+  // Gemini AI 스캐너 바인딩
+  if ($("geminiScanBtn")) $("geminiScanBtn").onclick = loadGeminiScan;
+  if ($("geminiScanInterval")) $("geminiScanInterval").onchange = loadGeminiScan;
+  if ($("testGeminiBtn")) $("testGeminiBtn").onclick = () => geminiKeyAction(false);
+  if ($("saveGeminiBtn")) $("saveGeminiBtn").onclick = () => geminiKeyAction(true);
+  if ($("clearGeminiBtn")) $("clearGeminiBtn").onclick = clearGeminiKey;
+
   $("botMode").onchange = () =>
     $("liveWarning").classList.toggle("hidden", $("botMode").value !== "LIVE");
   $("deployBtn").onclick = deployBot;
@@ -511,18 +729,18 @@ async function boot() {
     tab.classList.add("active");
     document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
     $(tab.dataset.panel).classList.remove("hidden");
+    if (tab.dataset.panel === "panel-gemini") loadGeminiScan();
     if (tab.dataset.panel === "panel-chart") loadChart();
-    if (tab.dataset.panel === "panel-account") { loadAccount(); loadEgressIp(); }
+    if (tab.dataset.panel === "panel-account") { loadAccount(); loadGeminiStatus(); loadEgressIp(); }
   });
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadAccount()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadAccount(), loadGeminiStatus(), loadGeminiScan()]);
   timers.push(
     setInterval(loadPrices, 10000),
     setInterval(loadBots, 8000),
-    setInterval(renderFreshness, 1000),   // 경과 시간 표시는 매초 갱신
+    setInterval(renderFreshness, 1000),
   );
 
-  // 브라우저는 백그라운드 탭의 타이머를 조인다. 다시 보이면 즉시 따라잡는다.
   document.addEventListener("visibilitychange", () => {
     if (!document.hidden && started) { loadPrices(); loadBots(); }
   });

@@ -113,8 +113,12 @@ def main():
     if ip:
         print(f"    {ip.get('registerThisIp') or '확인 불가'}")
 
-    call("14. 로그아웃", "/api/auth/logout", "POST")
-    call("15. 로그아웃 후 차단 확인", "/api/prices", expect=401)
+    gem = call("14. Gemini 설정 상태", "/api/gemini/status")
+    if gem:
+        print(f"    연동 {gem['configured']} · 모델 {gem['model']}")
+
+    call("15. 로그아웃", "/api/auth/logout", "POST")
+    call("16. 로그아웃 후 차단 확인", "/api/prices", expect=401)
 
     print("\n" + "=" * 58)
     if FAILURES:

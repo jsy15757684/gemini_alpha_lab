@@ -29,12 +29,14 @@ else
 fi
 
 # ── 2. 파이썬 환경 준비 ──────────────────────────────────────
-if [ -x "/Users/jay_mac/my_ai_system/ai_env/bin/python3" ]; then
-    PYTHON="/Users/jay_mac/my_ai_system/ai_env/bin/python3"   # 기존 개발 환경
+if [ -x "venv/bin/python3" ]; then
+    PYTHON="venv/bin/python3"
+elif [ -x ".venv/bin/python3" ]; then
+    PYTHON=".venv/bin/python3"
+elif [ -x "/Users/jay_mac/my_ai_system/ai_env/bin/python3" ]; then
+    PYTHON="/Users/jay_mac/my_ai_system/ai_env/bin/python3"
 elif [ -x "../ai_env/bin/python3" ]; then
     PYTHON="../ai_env/bin/python3"
-elif [ -x "venv/bin/python3" ]; then
-    PYTHON="venv/bin/python3"
 else
     echo "🔧 가상환경이 없어 venv 를 새로 만듭니다 (처음 1회만, 1~2분 소요)"
     BASE_PY="$(command -v python3 || true)"
@@ -51,7 +53,7 @@ else
 fi
 
 # 의존성 누락 확인 (PyJWT 를 빠뜨려 배포가 죽은 전례가 있다)
-if ! "$PYTHON" -c "import fastapi, uvicorn, yfinance, jwt" 2>/dev/null; then
+if ! "$PYTHON" -c "import fastapi, uvicorn, requests, jwt" 2>/dev/null; then
     echo "🔧 누락된 의존성을 설치합니다..."
     "$PYTHON" -m pip install --quiet -r requirements.txt || { echo "❌ 의존성 설치 실패"; exit 1; }
 fi

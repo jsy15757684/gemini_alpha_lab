@@ -57,6 +57,12 @@ class StrategyParams:
     macdSlow: int = 26
     macdSignal: int = 9
 
+    # Gemini AI 매매 파라미터
+    useGemini: bool = False
+    geminiMode: str = "ai_only"    # "ai_only" (AI 판단만으로 매매) | "hybrid" (기술지표 + AI 승인)
+    geminiMinConfidence: int = 70  # AI 진입 최소 신뢰도 (0~100)
+    geminiModel: str = "gemini-2.5-flash"
+
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "StrategyParams":
         d = d or {}
@@ -97,6 +103,9 @@ class StrategyParams:
         self.macdSlow = max(3, min(200, self.macdSlow))
         self.macdFast = max(2, min(self.macdSlow - 1, self.macdFast))
         self.macdSignal = max(2, min(100, self.macdSignal))
+        self.geminiMinConfidence = max(0, min(100, self.geminiMinConfidence))
+        if self.geminiMode not in ("ai_only", "hybrid"):
+            self.geminiMode = "ai_only"
 
         # ENTRY_RULES 는 파일 하단에 정의된다. validated() 는 인스턴스 생성 후에만
         # 호출되므로 이 시점에는 이미 모듈이 끝까지 로드돼 있다.

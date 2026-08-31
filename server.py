@@ -25,7 +25,8 @@ sys.path.insert(0, CURRENT_DIR)
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb
+from services import auth, backtest, bithumb, gemini_service
+from services.gemini_service import gemini_keystore
 from services.keystore import keystore
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, bot_manager
@@ -65,6 +66,8 @@ def _startup_log():
         logger.warning(auth.password_strength_warning())
     ks = keystore.status()
     logger.info(f"빗썸 키: {'등록됨(' + ks['source'] + ')' if ks['connected'] else '미등록'}")
+    gs = gemini_keystore.status()
+    logger.info(f"Gemini 키: {'등록됨(' + gs['source'] + ', ' + gs['model'] + ')' if gs['configured'] else '미등록'}")
 
     # 저장된 봇을 복원한다. LIVE 포지션은 빗썸 실제 보유량과 대조한 뒤에만 재가동한다.
     global RESTORE_SUMMARY
@@ -314,6 +317,70 @@ def egress_ip():
             "registerThisIp": info.get("ip"),
             "hint": ("프록시 IP 를 확인할 수 없습니다. 프록시가 살아 있는지 점검하세요."
                      if info.get("proxyConfigured") and not info.get("ip") else None)}
+
+
+# ───────────────────────── Gemini AI ─────────────────────────
+
+class GeminiKeyRequest(BaseModel):
+    apiKey: str
+    model: Optional[str] = None
+
+
+class GeminiAnalyzeRequest(BaseModel):
+    coin: str = "BTC"
+    interval: str = "1h"
+    forceRefresh: bool = True
+
+
+@app.get("/api/gemini/status")
+def gemini_status():
+    """Gemini API 키 및 설정 상태."""
+    return gemini_keystore.status()
+
+
+@app.post("/api/gemini/save")
+def gemini_save(req: GeminiKeyRequest):
+    """Gemini API 키 및 모델 저장."""
+    test = gemini_keystore.test_connection(req.apiKey, req.model)
+    if not test.get("success"):
+        raise HTTPException(400, test.get("message", "Gemini API 키 연결 실패"))
+    try:
+        gemini_keystore.save(req.apiKey.strip(), req.model)
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    return {"success": True, **gemini_keystore.status()}
+
+
+@app.post("/api/gemini/clear")
+def gemini_clear():
+    """Gemini API 키 삭제."""
+    try:
+        gemini_keystore.clear()
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    return {"success": True, **gemini_keystore.status()}
+
+
+@app.post("/api/gemini/test")
+def gemini_test(req: GeminiKeyRequest):
+    """Gemini API 연결 테스트."""
+    return gemini_keystore.test_connection(req.apiKey, req.model)
+
+
+@app.post("/api/gemini/analyze")
+def gemini_analyze(req: GeminiAnalyzeRequest):
+    """특정 코인 실시간 Gemini AI 분석."""
+    coin = bithumb.normalize_coin(req.coin)
+    if not coin:
+        raise HTTPException(400, f"지원하지 않는 코인: {req.coin}")
+    res = gemini_service.analyze_coin(coin, req.interval, force_refresh=req.forceRefresh)
+    return res
+
+
+@app.get("/api/gemini/scan")
+def gemini_scan(interval: str = "1h"):
+    """5종 코인 전체 실시간 AI 스캔 및 추천 순위."""
+    return gemini_service.scan_all_coins(interval=interval)
 
 
 # ───────────────────────── 정적 파일 ─────────────────────────

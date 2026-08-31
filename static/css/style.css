@@ -172,3 +172,25 @@ tbody tr:last-child td{border-bottom:none}
 .spark{width:100%; height:120px; display:block}
 .foot{padding:1.2rem; text-align:center; font-size:.76rem; color:var(--faint);
   border-top:1px solid var(--line)}
+
+/* Gemini AI 스캐너 */
+.gemini-grid{display:grid; grid-template-columns:repeat(auto-fit, minmax(320px, 1fr)); gap:1rem; margin-top:1rem}
+.gemini-card{background:var(--surface-2); border:1px solid var(--line); border-radius:12px; padding:1.1rem; display:flex; flex-direction:column; gap:.7rem; position:relative; overflow:hidden}
+.gemini-card.action-BUY{border-color:rgba(34,197,94,.4); box-shadow:0 0 16px rgba(34,197,94,.08)}
+.gemini-card.action-SELL{border-color:rgba(239,68,68,.4); box-shadow:0 0 16px rgba(239,68,68,.08)}
+.gemini-card.action-HOLD{border-color:var(--line)}
+.gemini-card-head{display:flex; justify-content:space-between; align-items:center}
+.gemini-coin-title{font-size:1.1rem; font-weight:700}
+.gemini-action-badge{font-size:.8rem; font-weight:800; padding:.25rem .6rem; border-radius:6px; letter-spacing:.05em}
+.gemini-badge-BUY{background:rgba(34,197,94,.2); color:var(--up); border:1px solid rgba(34,197,94,.4)}
+.gemini-badge-SELL{background:rgba(239,68,68,.2); color:var(--down); border:1px solid rgba(239,68,68,.4)}
+.gemini-badge-HOLD{background:rgba(139,147,165,.2); color:var(--muted); border:1px solid var(--line)}
+.gemini-conf-wrap{display:flex; flex-direction:column; gap:.25rem}
+.gemini-conf-bar-bg{height:6px; background:var(--bg); border-radius:999px; overflow:hidden}
+.gemini-conf-bar-fill{height:100%; border-radius:999px; transition:width .4s ease}
+.gemini-summary{font-size:.9rem; font-weight:600; color:var(--text); line-height:1.45; background:rgba(255,255,255,.02); padding:.6rem .8rem; border-radius:8px; border:1px solid var(--line)}
+.gemini-reasons{list-style:none; padding:0; margin:0; display:flex; flex-direction:column; gap:.35rem; font-size:.82rem; color:var(--muted)}
+.gemini-reasons li{display:flex; gap:.4rem; align-items:flex-start}
+.gemini-reasons li::before{content:"•"; color:var(--accent); font-weight:bold}
+.gemini-targets{display:grid; grid-template-columns:1fr 1fr; gap:.5rem; font-size:.78rem; background:var(--bg); padding:.5rem .7rem; border-radius:6px; border:1px solid var(--line)}
+.gemini-card-foot{margin-top:auto; padding-top:.4rem; display:flex; gap:.5rem}
