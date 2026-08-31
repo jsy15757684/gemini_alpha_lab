@@ -296,22 +296,31 @@ def analyze_coin(coin: str, interval: str = "1h",
             }
         }
 
-        resp = _HTTP_SESSION.post(url, json=payload, timeout=45)
+        resp = None
+        for attempt in range(2):
+            resp = _HTTP_SESSION.post(url, json=payload, timeout=45)
+            if resp.status_code != 429:
+                break
+            # 429 할당량 초과 시 2초 대기 후 1회 재시도
+            time.sleep(2.0)
+
         if resp.status_code != 200:
             err_msg = f"Gemini API 오류 ({resp.status_code})"
             try:
                 err_msg = resp.json().get("error", {}).get("message", err_msg)
             except Exception:
                 pass
+            if resp.status_code == 429:
+                err_msg = "Google Gemini 무료 할당량(분당 요청 한도)에 도달했습니다. 약 30초~1분 후 다시 스캔해 주세요."
             return {
                 "success": False,
                 "action": "HOLD",
                 "confidence": 0,
                 "coin": norm_coin,
                 "name": bithumb.COINS.get(norm_coin, norm_coin),
-                "summary": f"AI 분석 실패: {err_msg}",
+                "summary": f"AI 분석 일시 지연: {err_msg}",
                 "reasons": [err_msg],
-                "risk_level": "MEDIUM",
+                "risk_level": "LOW",
                 "market_sentiment": "NEUTRAL",
             }
 
@@ -364,22 +373,16 @@ def analyze_coin(coin: str, interval: str = "1h",
 
 
 def scan_all_coins(interval: str = "1h") -> Dict[str, Any]:
-    """빗썸 원화마켓 5개 코인 전체를 병렬(Parallel) AI 분석하여 스캔 결과 반환."""
-    from concurrent.futures import ThreadPoolExecutor
-
+    """빗썸 원화마켓 5개 코인 전체를 순차 스로틀링(Throttling) 분석하여 스캔 결과 반환."""
     coins = list(bithumb.COINS.keys())
     results = []
 
-    def _worker(c):
-        return analyze_coin(c, interval=interval, force_refresh=True)
-
-    with ThreadPoolExecutor(max_workers=min(5, len(coins))) as executor:
-        futures = [executor.submit(_worker, c) for c in coins]
-        for f in futures:
-            try:
-                results.append(f.result())
-            except Exception as e:
-                logger.warning(f"병렬 분석 작업 실패: {e}")
+    for i, c in enumerate(coins):
+        # 무료 할당량(RPM) 초과 방지를 위해 코인 간 1.5초 간격 유지
+        if i > 0:
+            time.sleep(1.5)
+        res = analyze_coin(c, interval=interval, force_refresh=True)
+        results.append(res)
 
     def sort_key(item):
         action_weight = {"BUY": 3, "HOLD": 2, "SELL": 1}.get(item.get("action", "HOLD"), 0)
