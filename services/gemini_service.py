@@ -163,76 +163,60 @@ class GeminiKeyStore:
 
 gemini_keystore = GeminiKeyStore()
 
-# ── AI 분석 캐시 (중복 호출 방지) ──
+# ── AI 분석 캐시 및 세션 ──
 _ANALYSIS_CACHE: Dict[str, Dict[str, Any]] = {}
-CACHE_TTL_SEC = 25.0
+CACHE_TTL_SEC = 30.0
+
+_HTTP_SESSION = requests.Session()
 
 
 def _build_analysis_prompt(coin: str, interval: str, current_price: float,
                            bars: List[Dict[str, Any]], pos_open: bool,
                            entry_price: Optional[float] = None) -> str:
-    """Gemini AI에게 전달할 종합 기술적 지표 및 시황 데이터 프롬프트 구성."""
+    """Gemini AI에게 전달할 종합 기술적 지표 및 시황 데이터 프롬프트 구성 (경량화)."""
     coin_name = bithumb.COINS.get(coin, coin)
 
-    # 최근 15개 봉의 데이터 요약
-    recent_bars = bars[-15:] if len(bars) >= 15 else bars
+    # 최근 10개 봉의 핵심 데이터만 슬림하게 요약
+    recent_bars = bars[-10:] if len(bars) >= 10 else bars
     bars_summary = []
     for b in recent_bars:
         bars_summary.append({
-            "time": b.get("time"),
-            "open": b.get("open"),
-            "high": b.get("high"),
-            "low": b.get("low"),
-            "close": b.get("close"),
-            "volume": round(b.get("volume", 0), 4),
-            "rsi": round(b.get("rsi", 0), 2) if b.get("rsi") is not None else None,
-            "smaFast": round(b.get("smaFast", 0), 2) if b.get("smaFast") is not None else None,
-            "smaSlow": round(b.get("smaSlow", 0), 2) if b.get("smaSlow") is not None else None,
-            "macd": round(b.get("macd", 0), 2) if b.get("macd") is not None else None,
-            "macdSignal": round(b.get("macdSignal", 0), 2) if b.get("macdSignal") is not None else None,
-            "bbUpper": round(b.get("bbUpper", 0), 2) if b.get("bbUpper") is not None else None,
-            "bbLower": round(b.get("bbLower", 0), 2) if b.get("bbLower") is not None else None,
+            "t": b.get("time"),
+            "c": b.get("close"),
+            "v": round(b.get("volume", 0), 2),
+            "rsi": round(b.get("rsi", 0), 1) if b.get("rsi") is not None else None,
+            "ma_f": round(b.get("smaFast", 0), 1) if b.get("smaFast") is not None else None,
+            "ma_s": round(b.get("smaSlow", 0), 1) if b.get("smaSlow") is not None else None,
+            "macd": round(b.get("macd", 0), 1) if b.get("macd") is not None else None,
+            "bb_l": round(b.get("bbLower", 0), 1) if b.get("bbLower") is not None else None,
+            "bb_u": round(b.get("bbUpper", 0), 1) if b.get("bbUpper") is not None else None,
         })
 
     last_bar = bars[-1] if bars else {}
     rsi_cur = last_bar.get("rsi")
-    rsi_str = f"{rsi_cur:.1f}" if rsi_cur is not None else "계산불가"
+    rsi_str = f"{rsi_cur:.1f}" if rsi_cur is not None else "N/A"
 
-    pos_info = "현재 포지션 없음 (현금 100% 보유 중)"
+    pos_info = "무포지션"
     if pos_open and entry_price:
         pnl_pct = (current_price - entry_price) / entry_price * 100
-        pos_info = f"현재 포지션 보유 중 (진입가: {entry_price:,.0f}원, 현재 수익률: {pnl_pct:+.2f}%)"
+        pos_info = f"보유중(진입가 {entry_price:,.0f}원, 손익 {pnl_pct:+.2f}%)"
 
-    prompt = f"""당신은 가상자산 퀀트 트레이딩 및 시장 분석 최고 전문가인 'Gemini Alpha AI' 입니다.
-대한민국 원화 거래소(빗썸)의 {coin_name}({coin}/KRW)에 대한 실시간 시세 및 기술적 지표 데이터를 제공합니다.
+    prompt = f"""당신은 가상자산 퀀트 트레이딩 최고 전문가입니다.
+빗썸 {coin_name}({coin}/KRW)의 실시간 지표를 분석하여 JSON 매매 판단을 내려주세요.
 
-[현재 시장 상황]
-- 대상 종목: {coin_name} ({coin}/KRW)
-- 캔들 간격: {interval}
-- 현재 실시간 가격: {current_price:,.0f} 원
-- 현재 RSI(14): {rsi_str}
-- 보유 상태: {pos_info}
+- 종목: {coin_name}({coin}), 봉: {interval}, 현재가: {current_price:,.0f}원, RSI: {rsi_str}, 상태: {pos_info}
+- 최근 지표 추이 (c:종가, v:거래량, ma_f/s:단/장기이평, bb_l/u:볼린저하/상단):
+{json.dumps(bars_summary, ensure_ascii=False)}
 
-[최근 캔들 및 지표 추이 (과거 -> 최신순)]
-{json.dumps(bars_summary, ensure_ascii=False, indent=2)}
-
-[요청 사항]
-위 기술적 데이터(RSI, 이동평균선 정배열/역배열, MACD 오실레이터, 볼린저밴드 위치, 거래량 추이, 지지/저항선)를 정밀 분석하여 매매 판단을 내려주세요.
-반드시 아래 JSON 스키마를 엄격히 준수하여 응답하세요. 다른 설명이나 마크다운 백틱(```) 없이 오직 유효한 JSON 문자열만 출력해야 합니다.
-
-[응답 JSON 스키마]
+반드시 아래 JSON 스키마로만 응답하세요:
 {{
   "action": "BUY" | "SELL" | "HOLD",
-  "confidence": 0~100 사이의 정수 (신뢰도 점수, 75 이상이면 강한 확신),
+  "confidence": 0~100 정수,
   "risk_level": "LOW" | "MEDIUM" | "HIGH",
-  "target_profit_pct": 권장 익절 목표 수익률(%),
-  "stop_loss_pct": 권장 손절 비율(%),
-  "summary": "한 줄 요약 (예: 단기 바닥 확인 후 거래량 동반 반등 추세 진입)",
-  "reasons": [
-    "핵심 근거 1 (예: RSI 30 부근에서 반등 시작)",
-    "핵심 근거 2 (예: MACD 히스토그램 양전환)",
-    "핵심 근거 3 (예: 볼린저 하단 지지 확인)"
-  ],
+  "target_profit_pct": 3.5,
+  "stop_loss_pct": 2.0,
+  "summary": "한 줄 요약",
+  "reasons": ["핵심 근거 1", "핵심 근거 2"],
   "market_sentiment": "BULLISH" | "BEARISH" | "NEUTRAL"
 }}
 """
@@ -273,7 +257,7 @@ def analyze_coin(coin: str, interval: str = "1h",
             "coin": norm_coin,
             "name": bithumb.COINS.get(norm_coin, norm_coin),
             "summary": "Gemini API 키가 설정되지 않았습니다.",
-            "reasons": ["'빗썸 계정' 탭 또는 .env 에서 GEMINI_API_KEY 를 등록해주세요."],
+            "reasons": ["'연동 계정·설정' 탭 또는 .env 에서 GEMINI_API_KEY 를 등록해주세요."],
             "risk_level": "LOW",
             "market_sentiment": "NEUTRAL",
             "target_profit_pct": 3.0,
@@ -281,14 +265,13 @@ def analyze_coin(coin: str, interval: str = "1h",
         }
 
     try:
-        # 시세 및 캔들 지표 준비
         if current_price is None:
             current_price = bithumb.get_price(norm_coin)
 
         if custom_bars is not None:
             bars = custom_bars
         else:
-            raw_candles = bithumb.get_candles(norm_coin, interval, limit=100)
+            raw_candles = bithumb.get_candles(norm_coin, interval, limit=60)
             bars = compute_indicators(raw_candles, StrategyParams())
 
         if not bars:
@@ -313,7 +296,7 @@ def analyze_coin(coin: str, interval: str = "1h",
             }
         }
 
-        resp = requests.post(url, json=payload, timeout=20)
+        resp = _HTTP_SESSION.post(url, json=payload, timeout=45)
         if resp.status_code != 200:
             err_msg = f"Gemini API 오류 ({resp.status_code})"
             try:
@@ -381,11 +364,22 @@ def analyze_coin(coin: str, interval: str = "1h",
 
 
 def scan_all_coins(interval: str = "1h") -> Dict[str, Any]:
-    """빗썸 원화마켓 5개 코인 전체를 일괄 AI 분석하여 스캔 결과 및 추천 순위 반환."""
+    """빗썸 원화마켓 5개 코인 전체를 병렬(Parallel) AI 분석하여 스캔 결과 반환."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    coins = list(bithumb.COINS.keys())
     results = []
-    for coin_code in bithumb.COINS.keys():
-        res = analyze_coin(coin_code, interval=interval, force_refresh=True)
-        results.append(res)
+
+    def _worker(c):
+        return analyze_coin(c, interval=interval, force_refresh=True)
+
+    with ThreadPoolExecutor(max_workers=min(5, len(coins))) as executor:
+        futures = [executor.submit(_worker, c) for c in coins]
+        for f in futures:
+            try:
+                results.append(f.result())
+            except Exception as e:
+                logger.warning(f"병렬 분석 작업 실패: {e}")
 
     def sort_key(item):
         action_weight = {"BUY": 3, "HOLD": 2, "SELL": 1}.get(item.get("action", "HOLD"), 0)
