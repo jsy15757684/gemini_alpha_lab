@@ -291,7 +291,8 @@ def analyze_coin(coin: str, interval: str = "1h",
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
-                "temperature": 0.2,
+                "temperature": 0.1,
+                "maxOutputTokens": 250,
                 "response_mime_type": "application/json"
             }
         }

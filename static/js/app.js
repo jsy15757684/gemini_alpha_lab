@@ -479,8 +479,11 @@ async function loadGeminiScan() {
           </div>
 
           <div class="gemini-card-foot">
-            <button class="btn btn-primary btn-sm btn-block" onclick="startGeminiBotFromScan('${r.coin}', '${interval}', ${conf})">
-              🚀 ${r.coin} Gemini 봇 즉시 가동
+            <button class="btn btn-ghost btn-sm" id="btn-reanalyze-${r.coin}" onclick="analyzeSingleCoin('${r.coin}', '${interval}')" title="이 코인만 1초 만에 단독 재분석">
+              🔄 단독 분석
+            </button>
+            <button class="btn btn-primary btn-sm" style="flex:1" onclick="startGeminiBotFromScan('${r.coin}', '${interval}', ${conf})">
+              🚀 ${r.coin} 봇 가동
             </button>
           </div>
         </div>
@@ -493,6 +496,23 @@ async function loadGeminiScan() {
   } finally {
     btn.disabled = false;
     btn.textContent = "⚡ 전체 AI 스캔";
+  }
+}
+
+async function analyzeSingleCoin(coin, interval) {
+  const btn = $(`btn-reanalyze-${coin}`);
+  if (btn) { btn.disabled = true; btn.textContent = "분석 중…"; }
+  try {
+    const res = await api("/api/gemini/analyze", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ coin, interval, forceRefresh: true })
+    });
+    // 스캔 결과 새로고침 없이 즉시 완료 안내
+    await loadGeminiScan();
+  } catch (err) {
+    alert(`${coin} 단독 분석 실패: ${err.message}`);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "🔄 단독 분석"; }
   }
 }
 
