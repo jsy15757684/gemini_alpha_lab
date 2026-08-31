@@ -25,11 +25,11 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 DATA_DIR = os.path.join(os.path.dirname(CURRENT_DIR), "data")
 GEMINI_KEY_FILE = os.path.join(DATA_DIR, "gemini_key.json")
 
-DEFAULT_MODEL = "gemini-2.5-flash"
+DEFAULT_MODEL = "gemini-flash-latest"
 SUPPORTED_MODELS = [
-    "gemini-2.5-flash",
-    "gemini-1.5-flash",
-    "gemini-1.5-pro",
+    "gemini-flash-latest",
+    "gemini-pro-latest",
+    "gemini-flash-lite-latest",
 ]
 
 
@@ -40,7 +40,27 @@ class GeminiKeyStore:
         self._env_key = os.getenv("GEMINI_API_KEY", "").strip()
         self._model = os.getenv("GEMINI_MODEL", DEFAULT_MODEL).strip()
         self._disk_key = ""
+        self._load_dotenv_if_needed()
         self._load_disk()
+
+    def _load_dotenv_if_needed(self):
+        if not self._env_key:
+            env_path = os.path.join(os.path.dirname(CURRENT_DIR), ".env")
+            if os.path.exists(env_path):
+                try:
+                    with open(env_path, "r", encoding="utf-8") as f:
+                        for line in f:
+                            line = line.strip()
+                            if line.startswith("GEMINI_API_KEY="):
+                                val = line.split("=", 1)[1].strip()
+                                if val:
+                                    self._env_key = val
+                            elif line.startswith("GEMINI_MODEL="):
+                                val = line.split("=", 1)[1].strip()
+                                if val:
+                                    self._model = val
+                except Exception as e:
+                    logger.warning(f".env 파일 로드 실패: {e}")
 
     def _load_disk(self):
         try:
