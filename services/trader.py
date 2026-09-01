@@ -205,58 +205,84 @@ class TradingBot:
                                 time.sleep(poll)
                                 continue
 
-                    # 2) Gemini AI 분석 주기적 실행
-                    if (now - last_ai_check) >= ai_check_interval:
-                        try:
-                            ai_res = gemini_service.analyze_coin(
-                                coin=self.coin,
-                                interval=self.interval,
-                                custom_bars=bars,
-                                current_price=price,
-                                pos_open=self.pos.open,
-                                entry_price=self.pos.entryPrice if self.pos.open else None,
-                                force_refresh=True
-                            )
-                            self.last_ai_analysis = ai_res
-                            last_ai_check = now
-                        except Exception as ai_err:
-                            self.log("WARNING", f"Gemini AI 분석 호출 실패: {ai_err}")
-
-                    ai_action = (self.last_ai_analysis or {}).get("action", "HOLD")
-                    ai_conf = (self.last_ai_analysis or {}).get("confidence", 0)
-                    ai_summary = (self.last_ai_analysis or {}).get("summary", "")
-
+                    # 2) 스마트 AI 트리거 방식
                     if self.params.geminiMode == "ai_only":
+                        # 캔들 갱신 주기에 맞춰 스마트 AI 분석 (과도한 API 호출 방지)
+                        ai_interval = max(60.0, float(candle_ttl))
+                        if not self.last_ai_analysis or (now - last_ai_check) >= ai_interval:
+                            try:
+                                ai_res = gemini_service.analyze_coin(
+                                    coin=self.coin,
+                                    interval=self.interval,
+                                    custom_bars=bars,
+                                    current_price=price,
+                                    pos_open=self.pos.open,
+                                    entry_price=self.pos.entryPrice if self.pos.open else None,
+                                    force_refresh=True
+                                )
+                                if ai_res.get("success"):
+                                    self.last_ai_analysis = ai_res
+                                    last_ai_check = now
+                                    self.log("INFO", f"🤖 AI 분석 갱신: {ai_res.get('action')} ({ai_res.get('confidence')}%) — {ai_res.get('summary')}")
+                                else:
+                                    self.log("WARNING", f"AI 응답 지연: {ai_res.get('summary')}")
+                            except Exception as ai_err:
+                                self.log("WARNING", f"Gemini AI 분석 실패: {ai_err}")
+
+                        ai_action = (self.last_ai_analysis or {}).get("action", "HOLD")
+                        ai_conf = (self.last_ai_analysis or {}).get("confidence", 0)
+                        ai_summary = (self.last_ai_analysis or {}).get("summary", "")
+
                         if ai_action == "BUY" and not self.pos.open:
                             if ai_conf >= self.params.geminiMinConfidence:
                                 self.last_decision = f"Gemini AI 매수 신호 (신뢰도 {ai_conf}%)"
                                 self._enter(price, f"Gemini AI 신호 ({ai_conf}%): {ai_summary}")
                             else:
-                                self.last_decision = f"Gemini 매수 감지되었으나 신뢰도 미달 ({ai_conf}% < {self.params.geminiMinConfidence}%)"
+                                self.last_decision = f"Gemini 매수 감지 (신뢰도 {ai_conf}% < 기준 {self.params.geminiMinConfidence}%)"
                         elif ai_action == "SELL" and self.pos.open:
                             if ai_conf >= self.params.geminiMinConfidence:
                                 self.last_decision = f"Gemini AI 매도 신호 (신뢰도 {ai_conf}%)"
                                 self._exit(price, f"Gemini AI 신호 ({ai_conf}%): {ai_summary}")
                             else:
-                                self.last_decision = f"Gemini 매도 감지되었으나 신뢰도 미달 ({ai_conf}%)"
+                                self.last_decision = f"Gemini 매도 감지 (신뢰도 {ai_conf}%)"
                         else:
-                            self.last_decision = f"Gemini AI 관망 ({ai_action}, 신뢰도 {ai_conf}%) — {ai_summary}"
+                            self.last_decision = f"Gemini AI 관망 ({ai_action}, {ai_conf}%) — {ai_summary or '시그널 대기'}"
 
                     elif self.params.geminiMode == "hybrid":
-                        # 기술적 지표 판단 먼저 실행
+                        # 하이브리드: 기술 지표가 매수 신호를 냈을 때만 핀포인트로 Gemini AI 승인 요청!
                         d: Decision = decide(bars, i, price, self.pos, self.params)
                         if d.action == "BUY" and not self.pos.open:
-                            # AI 교차 검증: SELL이 아니고 신뢰도가 기준 이상이어야 진입
-                            if ai_action != "SELL" and ai_conf >= self.params.geminiMinConfidence:
-                                self.last_decision = f"지표+Gemini AI 하이브리드 매수 ({d.reason} + AI {ai_conf}%)"
-                                self._enter(price, f"{d.reason} + Gemini AI 승인({ai_conf}%): {ai_summary}")
-                            else:
-                                self.last_decision = f"기술지표 매수 신호 발생했으나 Gemini AI 미승인 (AI: {ai_action}, {ai_conf}%)"
+                            self.log("INFO", f"⚡ 기술지표 매수 조건 포착 ({d.reason}) → Gemini AI 최종 승인 요청 중...")
+                            try:
+                                ai_res = gemini_service.analyze_coin(
+                                    coin=self.coin,
+                                    interval=self.interval,
+                                    custom_bars=bars,
+                                    current_price=price,
+                                    pos_open=False,
+                                    force_refresh=True
+                                )
+                                self.last_ai_analysis = ai_res
+                                ai_action = ai_res.get("action", "HOLD")
+                                ai_conf = ai_res.get("confidence", 0)
+                                ai_summary = ai_res.get("summary", "")
+
+                                if ai_action != "SELL" and ai_conf >= self.params.geminiMinConfidence:
+                                    self.last_decision = f"하이브리드 매수 승인 (지표 + AI {ai_conf}%)"
+                                    self._enter(price, f"{d.reason} + AI승인({ai_conf}%): {ai_summary}")
+                                else:
+                                    self.last_decision = f"기술지표 신호 발생했으나 AI 매수 미승인 ({ai_action}, 신뢰도 {ai_conf}%)"
+                                    self.log("WARNING", f"진입 보류 — AI 판단: {ai_action}({ai_conf}%), 사유: {ai_summary}")
+                            except Exception as ai_err:
+                                self.log("WARNING", f"Gemini 검증 실패로 지표 기반 단독 진입: {ai_err}")
+                                self.last_decision = f"{d.reason} (AI 폴백 진입)"
+                                self._enter(price, d.reason)
+
                         elif d.action == "SELL" and self.pos.open:
                             self.last_decision = d.reason
                             self._exit(price, d.reason)
                         else:
-                            self.last_decision = f"{d.reason} (AI {ai_action} {ai_conf}%)"
+                            self.last_decision = d.reason
 
                 else:
                     # 기본 기술적 지표 전략
