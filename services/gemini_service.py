@@ -12,6 +12,7 @@ Google Gemini API 를 사용하여 빗썸 원화마켓 코인의 시세, 캔들,
 import json
 import logging
 import os
+import re
 import time
 from typing import Any, Dict, List, Optional
 import requests
@@ -161,6 +162,62 @@ class GeminiKeyStore:
             return {"success": False, "message": f"Gemini 연결 시도 중 네트워크 오류: {str(e)}"}
 
 
+def _parse_gemini_json(raw_text: str) -> Dict[str, Any]:
+    """Gemini 응답을 견고하게 파싱 (마크다운 백틱, Unterminated string, 부분 잘림 방어)."""
+    text = (raw_text or "").strip()
+    if not text:
+        return {}
+
+    # 마크다운 백틱(```json ... ```) 제거
+    if text.startswith("```"):
+        text = re.sub(r"^```(?:json)?\s*", "", text, flags=re.IGNORECASE)
+        text = re.sub(r"\s*```$", "", text)
+        text = text.strip()
+
+    # 1차 시도: 표준 JSON 파싱
+    try:
+        return json.loads(text)
+    except Exception:
+        pass
+
+    # 2차 시도: 잘린 JSON 끝에 닫는 따옴표와 괄호 붙여서 복구 시도
+    for suffix in ['"}', '"]}', '"}', '}']:
+        try:
+            return json.loads(text + suffix)
+        except Exception:
+            continue
+
+    # 3차 시도: 정규표현식(Regex) 안전 필드 추출
+    data = {}
+    action_m = re.search(r'"action"\s*:\s*"?(BUY|SELL|HOLD)"?', text, re.IGNORECASE)
+    if action_m:
+        data["action"] = action_m.group(1).upper()
+
+    conf_m = re.search(r'"confidence"\s*:\s*(\d+)', text)
+    if conf_m:
+        data["confidence"] = int(conf_m.group(1))
+
+    summary_m = re.search(r'"summary"\s*:\s*"([^"\\]*(?:\\.[^"\\]*)*)"?', text)
+    if summary_m:
+        data["summary"] = summary_m.group(1)
+
+    risk_m = re.search(r'"risk_level"\s*:\s*"?(LOW|MEDIUM|HIGH)"?', text, re.IGNORECASE)
+    if risk_m:
+        data["risk_level"] = risk_m.group(1).upper()
+
+    tp_m = re.search(r'"target_profit_pct"\s*:\s*([\d.]+)', text)
+    if tp_m:
+        data["target_profit_pct"] = float(tp_m.group(1))
+
+    sl_m = re.search(r'"stop_loss_pct"\s*:\s*([\d.]+)', text)
+    if sl_m:
+        data["stop_loss_pct"] = float(sl_m.group(1))
+
+    if "action" in data:
+        return data
+
+    raise ValueError(f"AI 응답 구문 분석 실패: {text[:80]}")
+
 gemini_keystore = GeminiKeyStore()
 
 # ── AI 분석 캐시 및 세션 ──
@@ -299,7 +356,7 @@ def analyze_coin(coin: str, interval: str = "1h",
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": {
                 "temperature": 0.1,
-                "maxOutputTokens": 250,
+                "maxOutputTokens": 1024,
                 "response_mime_type": "application/json"
             }
         }
@@ -334,7 +391,7 @@ def analyze_coin(coin: str, interval: str = "1h",
 
         data = resp.json()
         raw_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
-        parsed = json.loads(raw_text)
+        parsed = _parse_gemini_json(raw_text)
 
         action = str(parsed.get("action", "HOLD")).upper()
         if action not in ("BUY", "SELL", "HOLD"):
