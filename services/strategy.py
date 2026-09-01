@@ -22,46 +22,37 @@ from typing import Any, Dict, List, Optional
 @dataclass
 class StrategyParams:
     rsiPeriod: int = 14
-    rsiBuy: float = 35.0          # 이 값을 아래에서 위로 통과하면 진입 후보
-    rsiSell: float = 70.0         # 이 값 이상이면 과매수 청산
-    fastMa: int = 10
-    slowMa: int = 30
-    # 추세 필터 기본값은 끔.
-    # RSI 과매도 반등은 정의상 '가격이 이동평균 아래' 일 때 발생하므로,
-    # '종가 > 장기MA' 를 요구하면 두 조건이 배타적이 되어 진입 신호가 사라진다.
-    # 실측: 5종목 x 2간격(각 ~170봉)에서 필터 없음 35회 진입 -> 어떤 필터를 걸어도 0~1회.
-    # 옵션은 남겨두되(다른 RSI 기준선에서는 의미가 있을 수 있다) 기본은 끈다.
-    useTrendFilter: bool = False
-    takeProfitPct: float = 4.0
-    stopLossPct: float = 2.0
-    trailingStopPct: float = 0.0  # 0 이면 사용 안 함
-    feePct: float = 0.04          # 빗썸 시장가 수수료(%). 백테스트와 손익 계산에 반영
+    rsiBuy: float = 35.0          # 과매도 반등 매수 기준선
+    rsiSell: float = 75.0         # 과매수 익절 기준선 (추세 이익 극대화)
+    fastMa: int = 10              # 단기 이동평균
+    slowMa: int = 30              # 장기 이동평균
+    useTrendFilter: bool = False  # 추세 필터 (장기MA 위에서만 진입)
+    
+    # ── 퀀트 리스크 관리 (손익비 1:2.1 표준) ──
+    takeProfitPct: float = 3.8    # 익절 (+3.8%)
+    stopLossPct: float = 1.8      # 손절 (-1.8% 엄격 제한)
+    trailingStopPct: float = 1.2  # 트레일링 스탑 (고점 대비 -1.2% 하락 시 이익 보존)
+    feePct: float = 0.04          # 빗썸 시장가 수수료(%)
 
-    # ── 진입 규칙 선택 ──────────────────────────────────────
-    # 기본은 rsiCrossUp 하나. 여러 개를 고르면 entryMode 로 결합 방식을 정한다.
-    #   "any" = 하나라도 충족하면 진입 (신호가 잦아짐)
-    #   "all" = 전부 충족해야 진입 (신호가 드물어짐)
-    #
-    # 어떤 조합이 좋은지는 코드가 단정하지 않는다. 20개 데이터셋(5코인 x 4간격)
-    # 측정에서 '양 구간 모두 시장을 이긴' 조합은 없었다. 백테스트로 직접
-    # 비교해 보고 고르라는 뜻에서 옵션으로만 제공한다.
-    entryRules: List[str] = field(default_factory=lambda: ["rsiCrossUp"])
+    # ── 퀀트 2중 진입 규칙 ──
+    # RSI 반등 + 거래량 확인 (돈이 실린 진짜 반등 포착)
+    entryRules: List[str] = field(default_factory=lambda: ["rsiCrossUp", "volumeSurge"])
     entryMode: str = "any"
 
     # 개별 규칙 파라미터
-    volumeSurgeMult: float = 2.0   # volumeSurge: 20봉 평균 거래량의 몇 배
-    breakoutLookback: int = 20     # breakout: 직전 N봉 최고가 돌파
-    bbPeriod: int = 20             # bollinger 기간
-    bbStdMult: float = 2.0         # bollinger 표준편차 배수
+    volumeSurgeMult: float = 1.5   # 20봉 평균 대비 1.5배 이상 거래량
+    breakoutLookback: int = 20     # 직전 20봉 최고가 돌파
+    bbPeriod: int = 20             # 볼린저 밴드 기간
+    bbStdMult: float = 2.0         # 볼린저 밴드 표준편차 배수
     macdFast: int = 12
     macdSlow: int = 26
     macdSignal: int = 9
 
-    # Gemini AI 매매 파라미터
-    useGemini: bool = False
-    geminiMode: str = "ai_only"    # "ai_only" (AI 판단만으로 매매) | "hybrid" (기술지표 + AI 승인)
-    geminiMinConfidence: int = 70  # AI 진입 최소 신뢰도 (0~100)
-    geminiModel: str = "gemini-2.5-flash"
+    # ── Gemini AI 퀀트 검증 파라미터 ──
+    useGemini: bool = True
+    geminiMode: str = "hybrid"     # "hybrid" (지표 신호 + AI 승인) | "ai_only"
+    geminiMinConfidence: int = 60  # 퀀트 최적 신뢰도 (60% 이상 승인)
+    geminiModel: str = "gemini-flash-latest"
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "StrategyParams":

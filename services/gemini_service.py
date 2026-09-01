@@ -201,22 +201,29 @@ def _build_analysis_prompt(coin: str, interval: str, current_price: float,
         pnl_pct = (current_price - entry_price) / entry_price * 100
         pos_info = f"보유중(진입가 {entry_price:,.0f}원, 손익 {pnl_pct:+.2f}%)"
 
-    prompt = f"""당신은 가상자산 퀀트 트레이딩 최고 전문가입니다.
-빗썸 {coin_name}({coin}/KRW)의 실시간 지표를 분석하여 JSON 매매 판단을 내려주세요.
+    prompt = f"""당신은 월스트리트 최정상 가상자산 퀀트 트레이딩 알고리즘입니다.
+빗썸 {coin_name}({coin}/KRW)의 실시간 지표 데이터를 퀀트 4대 팩터(모멘텀, 평균회귀, 변동성, 거래량)로 정밀 평가하여 JSON 매매 판단을 내려주세요.
 
-- 종목: {coin_name}({coin}), 봉: {interval}, 현재가: {current_price:,.0f}원, RSI: {rsi_str}, 상태: {pos_info}
-- 최근 지표 추이 (c:종가, v:거래량, ma_f/s:단/장기이평, bb_l/u:볼린저하/상단):
+[시장 데이터]
+- 대상: {coin_name}({coin}), 주기: {interval}, 현재가: {current_price:,.0f}원, RSI: {rsi_str}, 상태: {pos_info}
+- 최근 지표 추이 (c:종가, v:거래량, rsi:RSI, ma_f/s:단/장기이평, macd:MACD, bb_l/u:볼린저하/상단):
 {json.dumps(bars_summary, ensure_ascii=False)}
 
-반드시 아래 JSON 스키마로만 응답하세요:
+[퀀트 평가 기준]
+1. 평균회귀: RSI 30~35 반등 또는 볼린저 하단 지지 여부
+2. 모멘텀: MACD 양전환 또는 단기 이평선 상승 탄력
+3. 거래량: 신호 발생 시 거래량 동반 여부 (가짜 신호 필터링)
+4. 손익비: 손절 -1.8% 대비 최소 +3.5% 이상 기대 수익률 확보 가능 여부
+
+반드시 아래 JSON 스키마로만 엄격히 응답하세요:
 {{
   "action": "BUY" | "SELL" | "HOLD",
-  "confidence": 0~100 정수,
+  "confidence": 0~100 정수 (확신도),
   "risk_level": "LOW" | "MEDIUM" | "HIGH",
-  "target_profit_pct": 3.5,
-  "stop_loss_pct": 2.0,
-  "summary": "한 줄 요약",
-  "reasons": ["핵심 근거 1", "핵심 근거 2"],
+  "target_profit_pct": 3.8,
+  "stop_loss_pct": 1.8,
+  "summary": "퀀트 관점 한 줄 요약",
+  "reasons": ["팩터 1 평가 근거", "팩터 2 평가 근거"],
   "market_sentiment": "BULLISH" | "BEARISH" | "NEUTRAL"
 }}
 """

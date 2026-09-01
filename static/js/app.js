@@ -89,8 +89,8 @@ const PARAM_FIELDS = [
   { k: "stopLossPct", label: "손절 %", step: 0.5, min: 0.1 },
   { k: "trailingStopPct", label: "트레일링 % (0=끔)", step: 0.5, min: 0 },
 ];
-const DEFAULTS = { rsiPeriod: 14, rsiBuy: 35, rsiSell: 70, slowMa: 30,
-                   takeProfitPct: 4, stopLossPct: 2, trailingStopPct: 0 };
+const DEFAULTS = { rsiPeriod: 14, rsiBuy: 35, rsiSell: 75, slowMa: 30,
+                   takeProfitPct: 3.8, stopLossPct: 1.8, trailingStopPct: 1.2 };
 
 function renderParams(hostId, prefix) {
   $(hostId).innerHTML = PARAM_FIELDS.map(f => `

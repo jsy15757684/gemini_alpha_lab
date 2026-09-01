@@ -112,17 +112,17 @@
           <div class="strategy-selector" style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
             <label class="label" style="font-weight: 600; margin-bottom: 8px;">🤖 매매 엔진 선택</label>
             <select class="input" id="botStrategyType" style="margin-bottom: 10px;">
-              <option value="technical">📊 전통 기술적 지표 전략 (RSI, MA, MACD 등)</option>
-              <option value="gemini_ai" selected>✨ Gemini AI 전용 자동매매 (AI 단독 판단)</option>
-              <option value="gemini_hybrid">🧬 하이브리드 전략 (기술지표 + Gemini AI 승인)</option>
+              <option value="gemini_hybrid" selected>🧬 퀀트 하이브리드 전략 (기술지표 + Gemini AI 승인 · 추천)</option>
+              <option value="gemini_ai">✨ Gemini AI 전용 자동매매 (순수 AI 판단)</option>
+              <option value="technical">📊 전통 기술적 지표 전략 (RSI, MA, MACD 단독)</option>
             </select>
             
             <div id="geminiBotOptions" style="margin-top: 10px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                <label class="label" style="margin: 0;">AI 진입 최소 신뢰도: <span id="geminiConfVal" style="color: var(--primary); font-weight: bold;">70%</span></label>
+                <label class="label" style="margin: 0;">AI 진입 최소 신뢰도: <span id="geminiConfVal" style="color: var(--primary); font-weight: bold;">60%</span></label>
               </div>
-              <input type="range" id="geminiMinConf" min="50" max="95" step="5" value="70" style="width: 100%;">
-              <p class="muted small" style="margin-top: 4px;">Gemini AI의 매수 확신도가 이 값 이상일 때만 진입합니다.</p>
+              <input type="range" id="geminiMinConf" min="50" max="95" step="5" value="60" style="width: 100%;">
+              <p class="muted small" style="margin-top: 4px;">Gemini AI의 매수 확신도가 이 값 이상일 때만 진입합니다 (퀀트 권장: 55~65%).</p>
             </div>
           </div>
 
