@@ -286,23 +286,38 @@ class BithumbAccount:
         if amount < 1000:
             raise BithumbError(f"주문 금액이 너무 작습니다: {amount:,}원")
 
+        # API 2.0 (ord_type=price: 시장가 매수)
+        v2_body = {
+            "market": f"KRW-{c}",
+            "side": "bid",
+            "price": str(amount),
+            "ord_type": "price",
+        }
+        v2_err = None
         try:
             res = requests.post(f"{BASE_V2}/orders",
-                                headers=self._v2_headers(),
-                                json={"market": f"KRW-{c}", "side": "bid",
-                                      "price": str(amount), "ord_type": "price"},
+                                headers=self._v2_headers(v2_body),
+                                json=v2_body,
                                 timeout=10, proxies=_proxies()).json()
             if isinstance(res, dict) and res.get("uuid"):
                 return {"orderId": res["uuid"], "apiVersion": "2.0"}
+            if isinstance(res, dict) and "error" in res:
+                v2_err = res["error"].get("message", res["error"]) if isinstance(res["error"], dict) else res["error"]
+                logger.warning(f"빗썸 2.0 매수 거부: {v2_err}")
         except Exception as e:
+            v2_err = str(e)
             logger.warning(f"빗썸 2.0 매수 실패, 1.0 시도: {e}")
 
+        # API 1.0 폴백
         price = get_price(c)
         units = round(amount / price, 8)
         res = self._v1_post("/trade/market_buy",
                             {"order_currency": c, "payment_currency": "KRW", "units": str(units)})
         if res.get("status") != "0000":
-            raise BithumbError(f"매수 거부: {res.get('message') or res.get('status')}", res)
+            err_detail = res.get("message") or res.get("status")
+            if v2_err:
+                err_detail = f"{err_detail} (2.0: {v2_err})"
+            raise BithumbError(f"매수 거부: {err_detail}", res)
         return {"orderId": res.get("order_id"), "apiVersion": "1.0"}
 
     def market_sell(self, coin: str, units: float) -> Dict[str, Any]:
@@ -315,21 +330,36 @@ class BithumbAccount:
         if units <= 0:
             raise BithumbError("매도 수량이 0 입니다.")
 
+        # API 2.0 (ord_type=market: 시장가 매도)
+        v2_body = {
+            "market": f"KRW-{c}",
+            "side": "ask",
+            "volume": str(units),
+            "ord_type": "market",
+        }
+        v2_err = None
         try:
             res = requests.post(f"{BASE_V2}/orders",
-                                headers=self._v2_headers(),
-                                json={"market": f"KRW-{c}", "side": "ask",
-                                      "volume": str(units), "ord_type": "market"},
+                                headers=self._v2_headers(v2_body),
+                                json=v2_body,
                                 timeout=10, proxies=_proxies()).json()
             if isinstance(res, dict) and res.get("uuid"):
                 return {"orderId": res["uuid"], "apiVersion": "2.0"}
+            if isinstance(res, dict) and "error" in res:
+                v2_err = res["error"].get("message", res["error"]) if isinstance(res["error"], dict) else res["error"]
+                logger.warning(f"빗썸 2.0 매도 거부: {v2_err}")
         except Exception as e:
+            v2_err = str(e)
             logger.warning(f"빗썸 2.0 매도 실패, 1.0 시도: {e}")
 
+        # API 1.0 폴백
         res = self._v1_post("/trade/market_sell",
                             {"order_currency": c, "payment_currency": "KRW", "units": str(units)})
         if res.get("status") != "0000":
-            raise BithumbError(f"매도 거부: {res.get('message') or res.get('status')}", res)
+            err_detail = res.get("message") or res.get("status")
+            if v2_err:
+                err_detail = f"{err_detail} (2.0: {v2_err})"
+            raise BithumbError(f"매도 거부: {err_detail}", res)
         return {"orderId": res.get("order_id"), "apiVersion": "1.0"}
 
     def test_connection(self) -> Dict[str, Any]:
