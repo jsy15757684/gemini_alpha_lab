@@ -241,6 +241,7 @@ class BithumbAccount:
             if isinstance(res, list):
                 krw_free = krw_locked = 0.0
                 coins: Dict[str, float] = {}
+                coins_avail: Dict[str, float] = {}
                 for item in res:
                     cur = str(item.get("currency", "")).upper()
                     bal = float(item.get("balance") or 0)
@@ -249,8 +250,10 @@ class BithumbAccount:
                         krw_free, krw_locked = bal, lock
                     elif cur in COINS:
                         coins[cur] = bal + lock
+                        coins_avail[cur] = bal
                 return {"apiVersion": "2.0 (JWT)", "krwAvailable": krw_free,
-                        "krwTotal": krw_free + krw_locked, "coins": coins}
+                        "krwTotal": krw_free + krw_locked, "coins": coins,
+                        "coinsAvailable": coins_avail}
             diag["v2"] = res.get("error", res) if isinstance(res, dict) else res
         except Exception as e:
             diag["v2"] = f"통신/서명 오류: {e}"
@@ -261,14 +264,18 @@ class BithumbAccount:
             if res.get("status") == "0000":
                 d = res.get("data", {})
                 coins = {}
+                coins_avail = {}
                 for c in COINS:
                     v = d.get(f"total_{c.lower()}")
+                    v_avail = d.get(f"available_{c.lower()}")
                     if v is not None:
                         coins[c] = float(v)
+                        coins_avail[c] = float(v_avail) if v_avail is not None else float(v)
                 return {"apiVersion": "1.0 (HMAC)",
                         "krwAvailable": float(d.get("available_krw") or 0),
                         "krwTotal": float(d.get("total_krw") or 0),
-                        "coins": coins}
+                        "coins": coins,
+                        "coinsAvailable": coins_avail}
             diag["v1"] = res.get("message") or res
         except Exception as e:
             diag["v1"] = f"통신 오류: {e}"
@@ -294,16 +301,24 @@ class BithumbAccount:
             "ord_type": "price",
         }
         v2_err = None
+        v2_status_code = None
         try:
-            res = requests.post(f"{BASE_V2}/orders",
-                                headers=self._v2_headers(v2_body),
-                                json=v2_body,
-                                timeout=10, proxies=_proxies()).json()
+            req_res = requests.post(f"{BASE_V2}/orders",
+                                    headers=self._v2_headers(v2_body),
+                                    json=v2_body,
+                                    timeout=10, proxies=_proxies())
+            v2_status_code = req_res.status_code
+            res = req_res.json()
             if isinstance(res, dict) and res.get("uuid"):
                 return {"orderId": res["uuid"], "apiVersion": "2.0"}
             if isinstance(res, dict) and "error" in res:
                 v2_err = res["error"].get("message", res["error"]) if isinstance(res["error"], dict) else res["error"]
                 logger.warning(f"빗썸 2.0 매수 거부: {v2_err}")
+                # 2.0 API에서 명확한 거래소 에러(잔고부족/최소주문금액 등)를 반환한 경우 즉시 보고
+                if v2_status_code == 400 or "부족" in str(v2_err) or "insufficient" in str(v2_err).lower():
+                    raise BithumbError(f"매수 거부: {v2_err}", res)
+        except BithumbError:
+            raise
         except Exception as e:
             v2_err = str(e)
             logger.warning(f"빗썸 2.0 매수 실패, 1.0 시도: {e}")
@@ -316,7 +331,10 @@ class BithumbAccount:
         if res.get("status") != "0000":
             err_detail = res.get("message") or res.get("status")
             if v2_err:
-                err_detail = f"{err_detail} (2.0: {v2_err})"
+                if "invalid apikey" in str(err_detail).lower():
+                    err_detail = f"{v2_err}"
+                else:
+                    err_detail = f"{err_detail} (2.0: {v2_err})"
             raise BithumbError(f"매수 거부: {err_detail}", res)
         return {"orderId": res.get("order_id"), "apiVersion": "1.0"}
 
@@ -331,23 +349,32 @@ class BithumbAccount:
             raise BithumbError("매도 수량이 0 입니다.")
 
         # API 2.0 (ord_type=market: 시장가 매도)
+        vol_str = f"{units:.8f}".rstrip('0').rstrip('.')
         v2_body = {
             "market": f"KRW-{c}",
             "side": "ask",
-            "volume": str(units),
+            "volume": vol_str,
             "ord_type": "market",
         }
         v2_err = None
+        v2_status_code = None
         try:
-            res = requests.post(f"{BASE_V2}/orders",
-                                headers=self._v2_headers(v2_body),
-                                json=v2_body,
-                                timeout=10, proxies=_proxies()).json()
+            req_res = requests.post(f"{BASE_V2}/orders",
+                                    headers=self._v2_headers(v2_body),
+                                    json=v2_body,
+                                    timeout=10, proxies=_proxies())
+            v2_status_code = req_res.status_code
+            res = req_res.json()
             if isinstance(res, dict) and res.get("uuid"):
                 return {"orderId": res["uuid"], "apiVersion": "2.0"}
             if isinstance(res, dict) and "error" in res:
                 v2_err = res["error"].get("message", res["error"]) if isinstance(res["error"], dict) else res["error"]
                 logger.warning(f"빗썸 2.0 매도 거부: {v2_err}")
+                # 2.0 API에서 명확한 거래소 에러(잔고부족/수량오류 등)를 반환한 경우 즉시 보고
+                if v2_status_code == 400 or "부족" in str(v2_err) or "insufficient" in str(v2_err).lower():
+                    raise BithumbError(f"매도 거부: {v2_err}", res)
+        except BithumbError:
+            raise
         except Exception as e:
             v2_err = str(e)
             logger.warning(f"빗썸 2.0 매도 실패, 1.0 시도: {e}")
@@ -358,7 +385,10 @@ class BithumbAccount:
         if res.get("status") != "0000":
             err_detail = res.get("message") or res.get("status")
             if v2_err:
-                err_detail = f"{err_detail} (2.0: {v2_err})"
+                if "invalid apikey" in str(err_detail).lower():
+                    err_detail = f"{v2_err}"
+                else:
+                    err_detail = f"{err_detail} (2.0: {v2_err})"
             raise BithumbError(f"매도 거부: {err_detail}", res)
         return {"orderId": res.get("order_id"), "apiVersion": "1.0"}
 

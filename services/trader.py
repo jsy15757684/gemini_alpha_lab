@@ -320,6 +320,17 @@ class TradingBot:
                 return
             self.log("ORDER", f"빗썸 실주문 매수 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
 
+            # 실체결 후 빗썸 실제 잔고 동기화 (슬리피지/수수료 차감 반영)
+            try:
+                time.sleep(0.5)
+                bal = self.account.get_balance()
+                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
+                if actual_coin > 0:
+                    units = actual_coin
+                    self.log("INFO", f"실체결 보유량 동기화: {units:.8f} {self.coin}")
+            except Exception as e:
+                logger.warning(f"매수 후 잔고 조회 실패 (이론 수량 {units:.8f} 유지): {e}")
+
         self.pos = Position(units=units, entryPrice=price, peakPrice=price)
         self.cash = 0.0
         self.log("BUY", f"매수 {units:.8f} {self.coin} @ {price:,.0f}원 "
@@ -336,8 +347,28 @@ class TradingBot:
             if not (self.account and self.account.configured):
                 self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
                 return
+
+            sell_units = units
+            # 실주문 매도 전 거래소 실제 주문가능 잔고 확인 및 자동 보정
             try:
-                res = self.account.market_sell(self.coin, units)
+                bal = self.account.get_balance()
+                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
+                if actual_coin <= 0:
+                    self.log("WARNING", f"거래소에 {self.coin} 잔고가 없습니다 (외부 매도 또는 잔고 0). 내부 포지션을 정리합니다.")
+                    self.pos = Position()
+                    self._persist()
+                    return
+                # 슬리피지/수수료 절사 등으로 인한 잔고 차이 보정
+                if actual_coin < units or abs(actual_coin - units) / max(units, 1e-8) < 0.05:
+                    if abs(actual_coin - units) > 1e-8:
+                        self.log("INFO", f"매도 수량 자동 보정: 장부 {units:.8f} → 실제 잔고 {actual_coin:.8f} {self.coin}")
+                    sell_units = actual_coin
+            except Exception as e:
+                logger.warning(f"매도 전 잔고 확인 실패 (장부 수량으로 시도): {e}")
+
+            try:
+                res = self.account.market_sell(self.coin, sell_units)
+                units = sell_units
             except bithumb.BithumbError as e:
                 self.log("ERROR", f"실주문 매도 실패 — 포지션 유지: {e.message}")
                 return
