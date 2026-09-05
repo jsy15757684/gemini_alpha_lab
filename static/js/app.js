@@ -271,16 +271,37 @@ async function loadBots() {
     const { bots, activeCount, maxActive, restoreSummary } = await api("/api/bot/list");
     $("botCount").textContent = `(${activeCount}/${maxActive} 가동)`;
 
-    // 재시작 후 대조에 걸려 보류된 봇이 있으면 반드시 눈에 띄게 알린다.
-    if (!restoreNoticeShown && restoreSummary?.held > 0) {
-      restoreNoticeShown = true;
-      const el = $("globalNotice");
+    // 재시작 후 대조에 걸려 보류된 봇이 있으면 알림 표시, 없으면 숨김
+    const el = $("globalNotice");
+    if (restoreSummary?.held > 0 && !restoreNoticeShown) {
       el.classList.remove("hidden");
       el.className = "alert alert-danger";
-      el.innerHTML = `<b>재시작 후 ${restoreSummary.held}개 봇이 보류되었습니다.</b> `
-        + `내부 기록과 빗썸 실제 보유량이 맞지 않거나 대조에 실패했습니다. `
-        + `빗썸에서 실제 보유량을 확인하고 정리하세요.<br>`
-        + (restoreSummary.notes || []).map(n => `· ${n}`).join("<br>");
+      el.innerHTML = `
+        <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.75rem;">
+          <div>
+            <b>재시작 후 ${restoreSummary.held}개 봇이 보류되었습니다.</b> 
+            내부 기록과 빗썸 실제 보유량이 맞지 않거나 대조에 실패했습니다. 
+            빗썸에서 실제 보유량을 확인하고 정리하세요.<br>
+            ${(restoreSummary.notes || []).map(n => `· ${n}`).join("<br>")}
+          </div>
+          <button id="dismissNoticeBtn" class="btn btn-ghost btn-sm" style="white-space:nowrap; padding:0.2rem 0.6rem; font-size:0.75rem; border-color:var(--down); color:var(--down);">닫기 ✕</button>
+        </div>`;
+      const btn = $("dismissNoticeBtn");
+      if (btn) {
+        btn.onclick = async () => {
+          restoreNoticeShown = true;
+          el.classList.add("hidden");
+          el.innerHTML = "";
+          try {
+            await api("/api/bot/dismiss_restore_notice", { method: "POST" });
+          } catch (e) { /* ignore */ }
+        };
+      }
+    } else if (!restoreSummary || restoreSummary.held === 0) {
+      if (el && el.classList.contains("alert-danger")) {
+        el.classList.add("hidden");
+        el.innerHTML = "";
+      }
     }
     $("botList").innerHTML = bots.length
       ? bots.map(botCard).join("")

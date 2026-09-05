@@ -253,7 +253,17 @@ def stop_bot(req: BotIdRequest):
 def delete_bot(req: BotIdRequest):
     if not bot_manager.delete(req.botId):
         raise HTTPException(404, f"봇을 찾을 수 없습니다: {req.botId}")
+    global RESTORE_SUMMARY
+    RESTORE_SUMMARY["notes"] = [n for n in RESTORE_SUMMARY.get("notes", []) if req.botId not in n]
+    RESTORE_SUMMARY["held"] = len(RESTORE_SUMMARY["notes"])
     return {"success": True, "botId": req.botId}
+
+
+@app.post("/api/bot/dismiss_restore_notice")
+def dismiss_restore_notice():
+    global RESTORE_SUMMARY
+    RESTORE_SUMMARY = {"restored": len(bot_manager.bots), "resumed": bot_manager.active_count(), "held": 0, "notes": []}
+    return {"success": True}
 
 
 @app.post("/api/bot/stop_all")
