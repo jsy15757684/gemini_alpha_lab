@@ -18,7 +18,10 @@
     <h1 class="gate-title">자동매매 콘솔</h1>
     <p class="gate-sub" id="authSub">실계좌 API 키와 주문 권한을 다룹니다. 접속 비밀번호를 입력하세요.</p>
     <label class="label" for="authPassword">접속 비밀번호</label>
-    <input class="input" type="password" id="authPassword" autocomplete="current-password" spellcheck="false">
+    <div style="position: relative; display: flex; align-items: center;">
+      <input class="input" type="password" id="authPassword" autocomplete="current-password" spellcheck="false" style="padding-right: 2.5rem;" placeholder="비밀번호 입력">
+      <button type="button" id="togglePwBtn" style="position: absolute; right: 8px; background: none; border: none; cursor: pointer; color: var(--muted); font-size: 1.1rem; padding: 4px; line-height: 1;" title="비밀번호 보기/숨기기">👁️</button>
+    </div>
     <div class="alert alert-error hidden" id="authError"></div>
     <button class="btn btn-primary" type="submit" id="authSubmit">잠금 해제</button>
     <div class="gate-foot">세션은 12시간 후 만료됩니다.</div>
@@ -427,6 +430,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.2.0"></script>
+<script src="/static/js/app.js?v=4.3.0"></script>
 </body>
 </html>

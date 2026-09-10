@@ -993,6 +993,18 @@ async function boot() {
 document.addEventListener("DOMContentLoaded", async () => {
   $("authForm").addEventListener("submit", handleLogin);
   $("authPassword").addEventListener("keydown", e => { if (e.key === "Enter") { e.preventDefault(); handleLogin(e); } });
+  if ($("togglePwBtn")) {
+    $("togglePwBtn").onclick = () => {
+      const pw = $("authPassword");
+      if (pw.type === "password") {
+        pw.type = "text";
+        $("togglePwBtn").textContent = "🙈";
+      } else {
+        pw.type = "password";
+        $("togglePwBtn").textContent = "👁️";
+      }
+    };
+  }
   $("logoutBtn").onclick = async () => {
     try { await fetch("/api/auth/logout", { method: "POST" }); } catch (_) {}
     location.reload();
