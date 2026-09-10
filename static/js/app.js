@@ -53,13 +53,27 @@ function showGate(reason) {
   pw.focus();
 }
 
+function togglePasswordVisibility() {
+  const pw = $("authPassword");
+  const btn = $("togglePwBtn");
+  if (!pw) return;
+  if (pw.type === "password") {
+    pw.type = "text";
+    if (btn) btn.textContent = "🙈";
+  } else {
+    pw.type = "password";
+    if (btn) btn.textContent = "👁️";
+  }
+}
+window.togglePasswordVisibility = togglePasswordVisibility;
+
 async function handleLogin(e) {
-  e.preventDefault();
+  if (e && e.preventDefault) e.preventDefault();
   const pw = $("authPassword"), submit = $("authSubmit");
-  const password = (pw.value || "").trim();   // 붙여넣기 공백 제거
+  const password = (pw?.value || "").trim();   // 붙여넣기 공백 제거
   if (!password) return setAlert($("authError"), "비밀번호를 입력하세요.");
   setAlert($("authError"), null);
-  submit.disabled = true; submit.textContent = "확인 중…";
+  if (submit) { submit.disabled = true; submit.textContent = "확인 중…"; }
   try {
     const res = await fetch("/api/auth/login", {
       method: "POST", headers: { "Content-Type": "application/json" },
@@ -67,7 +81,7 @@ async function handleLogin(e) {
     });
     const body = await res.json().catch(() => null);
     if (!res.ok) return setAlert($("authError"), body?.detail || `로그인 실패 (HTTP ${res.status})`);
-    pw.value = "";
+    if (pw) pw.value = "";
     $("authGate").classList.add("hidden");
     $("app").classList.remove("hidden");
     try {
@@ -79,9 +93,10 @@ async function handleLogin(e) {
     console.error("로그인 통신 오류:", err);
     setAlert($("authError"), err?.message || "로그인 요청이 실패했습니다.");
   } finally {
-    submit.disabled = false; submit.textContent = "잠금 해제";
+    if (submit) { submit.disabled = false; submit.textContent = "잠금 해제"; }
   }
 }
+window.handleLogin = handleLogin;
 
 // ───────── 파라미터 폼 ─────────
 
