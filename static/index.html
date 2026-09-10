@@ -110,14 +110,51 @@
 
           <!-- 매매 엔진 / 전략 모드 선택 -->
           <div class="strategy-selector" style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
-            <label class="label" style="font-weight: 600; margin-bottom: 8px;">🤖 매매 엔진 선택</label>
+            <label class="label" style="font-weight: 600; margin-bottom: 8px;">🤖 전략 엔진 선택</label>
             <select class="input" id="botStrategyType" style="margin-bottom: 10px;">
-              <option value="gemini_hybrid" selected>🧬 퀀트 하이브리드 전략 (기술지표 + Gemini AI 승인 · 추천)</option>
+              <option value="raoer_infinite" selected>🔄 라오어 무한매수법 (레버리지 40분할 + 10% 익절 · 강력 추천)</option>
+              <option value="raoer_vr">⚖️ 라오어 밸류리밸런싱 VR (목표 V 밴드 추종)</option>
+              <option value="gemini_hybrid">🧬 퀀트 하이브리드 (기술지표 + Gemini AI 승인)</option>
               <option value="gemini_ai">✨ Gemini AI 전용 자동매매 (순수 AI 판단)</option>
               <option value="technical">📊 전통 기술적 지표 전략 (RSI, MA, MACD 단독)</option>
             </select>
             
-            <div id="geminiBotOptions" style="margin-top: 10px;">
+            <!-- 라오어 무한매수 옵션 -->
+            <div id="raoerBotOptions" style="margin-top: 10px;">
+              <div class="form-grid" style="margin-bottom: 8px;">
+                <div>
+                  <label class="label">분할 매수 횟수</label>
+                  <input class="input" type="number" id="bp_splitCount" value="40" min="5" max="100" step="5">
+                </div>
+                <div>
+                  <label class="label">목표 익절률 (%)</label>
+                  <input class="input" type="number" id="bp_targetProfitPct" value="10.0" min="1.0" max="50.0" step="0.5">
+                </div>
+                <div>
+                  <label class="label">쿼터 방어 매도률 (%)</label>
+                  <input class="input" type="number" id="bp_quarterCutPct" value="25" min="5" max="50" step="5">
+                </div>
+              </div>
+              <p class="muted small" style="margin-top: 4px;">💡 원금을 N회로 쪼개어 매 캔들마다 기계적 분할매수하고, 평단가 대비 목표 수익률 도달 시 전량 익절합니다.</p>
+            </div>
+
+            <!-- 라오어 VR 옵션 -->
+            <div id="raoerVrBotOptions" class="hidden" style="margin-top: 10px;">
+              <div class="form-grid" style="margin-bottom: 8px;">
+                <div>
+                  <label class="label">기울기 G</label>
+                  <input class="input" type="number" id="bp_vrGradient" value="10.0" min="1.0" max="50.0" step="1.0">
+                </div>
+                <div>
+                  <label class="label">리밸런싱 밴드 (±%)</label>
+                  <input class="input" type="number" id="bp_vrBandPct" value="15.0" min="5.0" max="40.0" step="1.0">
+                </div>
+              </div>
+              <p class="muted small" style="margin-top: 4px;">💡 목표 가치(V)를 기계적으로 산출하여 상단 밴드 초과 시 매도, 하단 밴드 이탈 시 매수합니다.</p>
+            </div>
+
+            <!-- Gemini AI 옵션 -->
+            <div id="geminiBotOptions" class="hidden" style="margin-top: 10px;">
               <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
                 <label class="label" style="margin: 0;">AI 진입 최소 신뢰도: <span id="geminiConfVal" style="color: var(--primary); font-weight: bold;">60%</span></label>
               </div>
@@ -126,8 +163,10 @@
             </div>
           </div>
 
-          <div class="rules" id="botRules"></div>
-          <div class="params" id="botParams"></div>
+          <div id="quantBotSettings" class="hidden">
+            <div class="rules" id="botRules"></div>
+            <div class="params" id="botParams"></div>
+          </div>
 
           <div class="alert alert-danger hidden" id="liveWarning">
             <b>실전 모드</b>는 빗썸 계좌에서 실제 원화로 주문을 냅니다. 손실이 발생할 수 있습니다.
@@ -168,8 +207,37 @@
             <input class="input" type="number" id="btCapital" value="1000000" min="10000" step="10000">
           </div>
         </div>
-        <div class="rules" id="btRules"></div>
-        <div class="params" id="btParams"></div>
+
+        <!-- 백테스트 전략 선택 -->
+        <div style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
+          <label class="label" style="font-weight: 600; margin-bottom: 8px;">전략 모드</label>
+          <select class="input" id="btStrategyType" style="margin-bottom: 10px;">
+            <option value="raoer_infinite" selected>🔄 라오어 무한매수법 (레버리지 40분할 + 10% 익절)</option>
+            <option value="quant_ai">📊 퀀트 기술적 지표 전략 (RSI, MA, MACD)</option>
+          </select>
+
+          <div id="raoerBtOptions">
+            <div class="form-grid">
+              <div>
+                <label class="label">분할 매수 횟수</label>
+                <input class="input" type="number" id="tp_splitCount" value="40" min="5" max="100" step="5">
+              </div>
+              <div>
+                <label class="label">목표 익절률 (%)</label>
+                <input class="input" type="number" id="tp_targetProfitPct" value="10.0" min="1.0" max="50.0" step="0.5">
+              </div>
+              <div>
+                <label class="label">쿼터 방어 매도률 (%)</label>
+                <input class="input" type="number" id="tp_quarterCutPct" value="25" min="5" max="50" step="5">
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="quantBtSettings" class="hidden">
+          <div class="rules" id="btRules"></div>
+          <div class="params" id="btParams"></div>
+        </div>
         <button class="btn btn-primary btn-block" id="runBacktestBtn">백테스트 실행</button>
         <div class="alert alert-error hidden" id="btError"></div>
       </div>

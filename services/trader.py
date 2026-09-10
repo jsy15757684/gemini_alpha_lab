@@ -76,6 +76,7 @@ class TradingBot:
         self.logs: List[Dict[str, Any]] = []
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
+        self._last_bar_time: Optional[int] = None
 
     def _persist(self):
         """상태가 바뀌면 전체 스냅샷을 다시 쓴다. 봇 수가 적어 비용이 미미하다."""
@@ -105,21 +106,25 @@ class TradingBot:
         self.log("INFO", f"{mode_label} 봇 시작 · {self.coin}/KRW · {self.interval} 캔들 · "
                          f"운용자본 {self.initial_krw:,.0f}원")
         
-        if self.params.useGemini:
+        if self.params.strategyType == "raoer_infinite":
+            chunk_krw = self.initial_krw / self.params.splitCount
+            self.log("INFO", f"🔄 [라오어 무한매수법] {self.params.splitCount}분할 매수 (1회당 {chunk_krw:,.0f}원) · "
+                             f"목표 익절 +{self.params.targetProfitPct}% · 쿼터방어 {self.params.quarterCutPct:.0f}%")
+        elif self.params.strategyType == "raoer_vr":
+            self.log("INFO", f"⚖️ [라오어 밸류리밸런싱 VR] 기울기 G={self.params.vrGradient} · 리밸런싱 밴드 ±{self.params.vrBandPct}%")
+        elif self.params.useGemini:
             gem_mode_label = "순수 AI 매매" if self.params.geminiMode == "ai_only" else "하이브리드 (지표+AI 승인)"
             self.log("INFO", f"🤖 [Gemini AI 전략] {gem_mode_label} · 최소 신뢰도 {self.params.geminiMinConfidence}% 이상 진입")
         else:
-            # 실제로 선택된 진입 규칙을 적는다. 예전엔 규칙과 무관하게 RSI 로 찍혔다.
             from services.strategy import ENTRY_RULES
             labels = [ENTRY_RULES[r]["label"] for r in self.params.entryRules if r in ENTRY_RULES]
             joiner = " AND " if self.params.entryMode == "all" else " 또는 "
             self.log("INFO", f"진입: {joiner.join(labels) or '없음'}"
                              + (f" (RSI 기준선 {self.params.rsiBuy:.0f})" if "rsiCrossUp" in self.params.entryRules else ""))
-        
-        self.log("INFO", f"청산: 익절 +{self.params.takeProfitPct}% · 손절 -{self.params.stopLossPct}%"
-                         + f" · RSI {self.params.rsiSell:.0f} 과매수"
-                         + (f" · 트레일링 {self.params.trailingStopPct}%" if self.params.trailingStopPct > 0 else "")
-                         + (f" · {self.params.slowMa}봉 추세필터" if self.params.useTrendFilter else ""))
+            self.log("INFO", f"청산: 익절 +{self.params.takeProfitPct}% · 손절 -{self.params.stopLossPct}%"
+                             + f" · RSI {self.params.rsiSell:.0f} 과매수"
+                             + (f" · 트레일링 {self.params.trailingStopPct}%" if self.params.trailingStopPct > 0 else "")
+                             + (f" · {self.params.slowMa}봉 추세필터" if self.params.useTrendFilter else ""))
         self._thread = threading.Thread(target=self._loop, daemon=True)
         self._thread.start()
         self._persist()
@@ -183,7 +188,58 @@ class TradingBot:
                 self.last_rsi = bars[i].get("rsi")
 
                 # ── 전략 판단 실행 ──
-                if self.params.useGemini:
+                if self.params.strategyType == "raoer_infinite":
+                    # 라오어 무한매수법:
+                    # 1) 목표 익절선(+targetProfitPct%) 도달 시 즉시 전량 익절
+                    if self.pos.open:
+                        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+                        if pnl_pct >= self.params.targetProfitPct:
+                            self.last_decision = f"무한매수 목표 익절 (+{pnl_pct:.2f}% ≥ +{self.params.targetProfitPct:.1f}%)"
+                            self._exit(price, self.last_decision)
+                            time.sleep(poll)
+                            continue
+
+                    # 2) 캔들 갱신 시점마다 기계적 분할 매수 / 쿼터 방어
+                    cur_bar_time = bars[-1].get("time") if bars else None
+                    if cur_bar_time and cur_bar_time != self._last_bar_time:
+                        self._last_bar_time = cur_bar_time
+                        chunk_krw = self.initial_krw / self.params.splitCount
+                        if not self.pos.open:
+                            self.last_decision = f"무한매수 1/{self.params.splitCount}회차 첫 매수"
+                            self._enter_chunk(price, chunk_krw, self.last_decision)
+                        elif self.pos.turn < self.params.splitCount:
+                            pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+                            self.last_decision = f"무한매수 {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%)"
+                            self._enter_chunk(price, chunk_krw, self.last_decision)
+                        else:
+                            pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+                            self.last_decision = f"무한매수 {self.params.splitCount}회 소진 쿼터매도 방어 ({pnl_pct:+.2f}%)"
+                            self._exit_quarter(price, self.last_decision)
+                    else:
+                        if self.pos.open:
+                            pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+                            self.last_decision = f"무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%)"
+                        else:
+                            self.last_decision = "무한매수 다음 캔들 1회차 대기 중"
+
+                elif self.params.strategyType == "raoer_vr":
+                    # 라오어 밸류리밸런싱 VR:
+                    cur_bar_time = bars[-1].get("time") if bars else None
+                    if cur_bar_time and cur_bar_time != self._last_bar_time:
+                        self._last_bar_time = cur_bar_time
+                        from services.strategy import decide_raoer_vr
+                        equity = self.cash + self.pos.units * price
+                        d = decide_raoer_vr(price, self.pos, self.params, equity, self.cash)
+                        self.last_decision = d.reason
+                        if d.action == "SELL_PARTIAL":
+                            amt = d.detail.get("amount", 0.0)
+                            self._exit_partial(price, amt / price, d.reason)
+                        elif d.action == "BUY_PARTIAL":
+                            amt = d.detail.get("amount", 0.0)
+                            self._enter_partial(price, amt, d.reason)
+                        self.pos.vrTargetV = d.detail.get("targetV", self.pos.vrTargetV)
+
+                elif self.params.useGemini:
                     # 1) 포지션 보유 중인 경우: 익절/손절/트레일링스탑 리스크 관리 우선 확인
                     if self.pos.open:
                         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100
@@ -207,7 +263,6 @@ class TradingBot:
 
                     # 2) 스마트 AI 트리거 방식
                     if self.params.geminiMode == "ai_only":
-                        # 캔들 갱신 주기에 맞춰 스마트 AI 분석 (과도한 API 호출 방지)
                         ai_interval = max(60.0, float(candle_ttl))
                         if not self.last_ai_analysis or (now - last_ai_check) >= ai_interval:
                             try:
@@ -249,7 +304,6 @@ class TradingBot:
                             self.last_decision = f"Gemini AI 관망 ({ai_action}, {ai_conf}%) — {ai_summary or '시그널 대기'}"
 
                     elif self.params.geminiMode == "hybrid":
-                        # 하이브리드: 기술 지표가 매수 신호를 냈을 때만 핀포인트로 Gemini AI 승인 요청!
                         d: Decision = decide(bars, i, price, self.pos, self.params)
                         if d.action == "BUY" and not self.pos.open:
                             self.log("INFO", f"⚡ 기술지표 매수 조건 포착 ({d.reason}) → Gemini AI 최종 승인 요청 중...")
@@ -315,12 +369,10 @@ class TradingBot:
             try:
                 res = self.account.market_buy(self.coin, invest)
             except bithumb.BithumbError as e:
-                # 주문이 안 나갔으면 내부 장부도 건드리지 않는다.
                 self.log("ERROR", f"실주문 매수 실패 — 포지션 변경 없음: {e.message}")
                 return
             self.log("ORDER", f"빗썸 실주문 매수 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
 
-            # 실체결 후 빗썸 실제 잔고 동기화 (슬리피지/수수료 차감 반영)
             try:
                 time.sleep(0.5)
                 bal = self.account.get_balance()
@@ -331,10 +383,57 @@ class TradingBot:
             except Exception as e:
                 logger.warning(f"매수 후 잔고 조회 실패 (이론 수량 {units:.8f} 유지): {e}")
 
-        self.pos = Position(units=units, entryPrice=price, peakPrice=price)
+        self.pos = Position(units=units, entryPrice=price, peakPrice=price, turn=1, totalInvested=invest)
         self.cash = 0.0
         self.log("BUY", f"매수 {units:.8f} {self.coin} @ {price:,.0f}원 "
                         f"({invest:,.0f}원) | 사유: {reason}")
+        self._persist()
+
+    def _enter_chunk(self, price: float, invest_krw: float, reason: str):
+        """라오어 무한매수 분할 매수."""
+        invest = min(self.cash, invest_krw)
+        if invest < 5000:
+            self.log("WARNING", f"분할 매수 잔여 현금 부족 ({self.cash:,.0f}원 < 5,000원). 매수 보류.")
+            return
+        fee = self.params.feePct / 100.0
+        new_units = invest * (1 - fee) / price
+
+        if self.mode == "LIVE":
+            if not (self.account and self.account.configured):
+                self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
+                return
+            try:
+                res = self.account.market_buy(self.coin, invest)
+            except bithumb.BithumbError as e:
+                self.log("ERROR", f"실주문 분할 매수 실패: {e.message}")
+                return
+            self.log("ORDER", f"빗썸 실주문 분할 매수 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
+
+            try:
+                time.sleep(0.5)
+                bal = self.account.get_balance()
+                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
+                if actual_coin > 0 and self.pos.units > 0:
+                    new_units = max(0.0, actual_coin - self.pos.units)
+                elif actual_coin > 0:
+                    new_units = actual_coin
+            except Exception as e:
+                logger.warning(f"분할 매수 후 잔고 동기화 실패: {e}")
+
+        u0 = self.pos.units
+        p0 = self.pos.entryPrice
+        u_total = u0 + new_units
+        p_avg = (u0 * p0 + new_units * price) / u_total if u_total > 0 else price
+
+        self.pos.units = u_total
+        self.pos.entryPrice = p_avg
+        self.pos.peakPrice = max(self.pos.peakPrice, price)
+        self.pos.turn += 1
+        self.pos.totalInvested += invest
+        self.cash = max(0.0, self.cash - invest)
+
+        self.log("BUY", f"[{self.pos.turn}/{self.params.splitCount}회차 분할매수] {new_units:.8f} {self.coin} @ {price:,.0f}원 "
+                        f"({invest:,.0f}원) | 평단가 {p_avg:,.0f}원 (총 {u_total:.8f} {self.coin}) | 사유: {reason}")
         self._persist()
 
     def _exit(self, price: float, reason: str):
@@ -349,7 +448,6 @@ class TradingBot:
                 return
 
             sell_units = units
-            # 실주문 매도 전 거래소 실제 주문가능 잔고 확인 및 자동 보정
             try:
                 bal = self.account.get_balance()
                 actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
@@ -358,7 +456,6 @@ class TradingBot:
                     self.pos = Position()
                     self._persist()
                     return
-                # 슬리피지/수수료 절사 등으로 인한 잔고 차이 보정
                 if actual_coin < units or abs(actual_coin - units) / max(units, 1e-8) < 0.05:
                     if abs(actual_coin - units) > 1e-8:
                         self.log("INFO", f"매도 수량 자동 보정: 장부 {units:.8f} → 실제 잔고 {actual_coin:.8f} {self.coin}")
@@ -378,15 +475,107 @@ class TradingBot:
         pnl = proceeds - (units * self.pos.entryPrice)
         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100
 
-        self.cash = proceeds
+        self.cash += proceeds
         self.realized_pnl += pnl
         self.total_trades += 1
         if pnl > 0:
             self.winning_trades += 1
         self.pos = Position()
 
-        self.log("SELL", f"매도 {units:.8f} {self.coin} @ {price:,.0f}원 | "
+        self.log("SELL", f"전량 매도 {units:.8f} {self.coin} @ {price:,.0f}원 | "
                          f"손익 {pnl:+,.0f}원 ({pnl_pct:+.2f}%) | 사유: {reason}")
+        self._persist()
+
+    def _exit_quarter(self, price: float, reason: str):
+        """라오어 무한매수 소진 시 25% 쿼터 매도 방어."""
+        cut_ratio = self.params.quarterCutPct / 100.0
+        units_to_sell = self.pos.units * cut_ratio
+        if units_to_sell <= 0:
+            return
+        fee = self.params.feePct / 100.0
+
+        if self.mode == "LIVE":
+            if not (self.account and self.account.configured):
+                self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
+                return
+            try:
+                bal = self.account.get_balance()
+                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
+                if actual_coin < units_to_sell:
+                    units_to_sell = actual_coin
+            except Exception as e:
+                logger.warning(f"쿼터 매도 전 잔고 확인 실패: {e}")
+
+            try:
+                res = self.account.market_sell(self.coin, units_to_sell)
+            except bithumb.BithumbError as e:
+                self.log("ERROR", f"실주문 쿼터 매도 실패: {e.message}")
+                return
+            self.log("ORDER", f"빗썸 실주문 쿼터 매도 접수 (주문번호 {res.get('orderId')})")
+
+        proceeds = units_to_sell * price * (1 - fee)
+        pnl = proceeds - (units_to_sell * self.pos.entryPrice)
+        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+
+        self.pos.units -= units_to_sell
+        turns_rolled_back = max(1, int(self.params.splitCount * cut_ratio))
+        self.pos.turn = max(1, self.pos.turn - turns_rolled_back)
+        self.cash += proceeds
+        self.realized_pnl += pnl
+        self.total_trades += 1
+
+        self.log("SELL", f"[쿼터매도 방어] {units_to_sell:.8f} {self.coin} 매도 ({proceeds:,.0f}원 확보) | "
+                         f"손익 {pnl:+,.0f}원 ({pnl_pct:+.2f}%) | 회차 조정: T={self.pos.turn} | 사유: {reason}")
+        self._persist()
+
+    def _enter_partial(self, price: float, invest_krw: float, reason: str):
+        invest = min(self.cash, invest_krw)
+        if invest < 5000:
+            return
+        fee = self.params.feePct / 100.0
+        new_units = invest * (1 - fee) / price
+
+        if self.mode == "LIVE":
+            if not (self.account and self.account.configured):
+                return
+            try:
+                res = self.account.market_buy(self.coin, invest)
+            except bithumb.BithumbError as e:
+                self.log("ERROR", f"VR 부분 매수 실패: {e.message}")
+                return
+
+        u0 = self.pos.units
+        p0 = self.pos.entryPrice
+        u_total = u0 + new_units
+        p_avg = (u0 * p0 + new_units * price) / u_total if u_total > 0 else price
+
+        self.pos.units = u_total
+        self.pos.entryPrice = p_avg
+        self.cash = max(0.0, self.cash - invest)
+        self.log("BUY", f"[VR 리밸런싱 매수] {new_units:.8f} {self.coin} ({invest:,.0f}원) | 사유: {reason}")
+        self._persist()
+
+    def _exit_partial(self, price: float, sell_units: float, reason: str):
+        units_to_sell = min(self.pos.units, sell_units)
+        if units_to_sell <= 0:
+            return
+        fee = self.params.feePct / 100.0
+
+        if self.mode == "LIVE":
+            if not (self.account and self.account.configured):
+                return
+            try:
+                res = self.account.market_sell(self.coin, units_to_sell)
+            except bithumb.BithumbError as e:
+                self.log("ERROR", f"VR 부분 매도 실패: {e.message}")
+                return
+
+        proceeds = units_to_sell * price * (1 - fee)
+        pnl = proceeds - (units_to_sell * self.pos.entryPrice)
+        self.pos.units -= units_to_sell
+        self.cash += proceeds
+        self.realized_pnl += pnl
+        self.log("SELL", f"[VR 리밸런싱 매도] {units_to_sell:.8f} {self.coin} ({proceeds:,.0f}원) | 사유: {reason}")
         self._persist()
 
     # ── 영속화 ──
@@ -399,6 +588,9 @@ class TradingBot:
             "cash": self.cash,
             "units": self.pos.units, "entryPrice": self.pos.entryPrice,
             "peakPrice": self.pos.peakPrice,
+            "turn": self.pos.turn,
+            "totalInvested": self.pos.totalInvested,
+            "vrTargetV": self.pos.vrTargetV,
             "realizedPnl": self.realized_pnl,
             "totalTrades": self.total_trades, "winningTrades": self.winning_trades,
             "createdAt": self.created_at, "wasRunning": self.is_running,
@@ -412,7 +604,10 @@ class TradingBot:
         bot.cash = float(d.get("cash", d["initialKrw"]))
         bot.pos = Position(units=float(d.get("units", 0.0)),
                            entryPrice=float(d.get("entryPrice", 0.0)),
-                           peakPrice=float(d.get("peakPrice", 0.0)))
+                           peakPrice=float(d.get("peakPrice", 0.0)),
+                           turn=int(d.get("turn", 0)),
+                           totalInvested=float(d.get("totalInvested", 0.0)),
+                           vrTargetV=float(d.get("vrTargetV", 0.0)))
         bot.realized_pnl = float(d.get("realizedPnl", 0.0))
         bot.total_trades = int(d.get("totalTrades", 0))
         bot.winning_trades = int(d.get("winningTrades", 0))
@@ -430,6 +625,10 @@ class TradingBot:
             "coinName": bithumb.COINS.get(self.coin, self.coin),
             "interval": self.interval,
             "mode": self.mode,
+            "strategyType": self.params.strategyType,
+            "turn": self.pos.turn,
+            "splitCount": self.params.splitCount,
+            "targetProfitPct": self.params.targetProfitPct,
             "currency": "KRW",
             "isRunning": self.is_running,
             "createdAt": self.created_at,

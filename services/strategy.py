@@ -21,6 +21,20 @@ from typing import Any, Dict, List, Optional
 
 @dataclass
 class StrategyParams:
+    # ── 전략 유형 ──
+    # "quant_ai" (기존 RSI/MA/Gemini AI 퀀트) | "raoer_infinite" (라오어 무한매수법) | "raoer_vr" (라오어 밸류리밸런싱)
+    strategyType: str = "quant_ai"
+
+    # ── 라오어 무한매수법 파라미터 ──
+    splitCount: int = 40          # 분할 매수 횟수 (20~60, 기본 40분할)
+    targetProfitPct: float = 10.0 # 무한매수 목표 익절 수익률 (+10.0%)
+    quarterCutPct: float = 25.0   # 40회차 소진 시 쿼터 매도 방어율 (25%)
+
+    # ── 라오어 밸류 리밸런싱 (VR) 파라미터 ──
+    vrGradient: float = 10.0      # VR 기울기 G (10~20)
+    vrBandPct: float = 15.0       # VR 리밸런싱 밴드 (±15%)
+
+    # ── 기존 퀀트 기술지표 파라미터 ──
     rsiPeriod: int = 14
     rsiBuy: float = 35.0          # 과매도 반등 매수 기준선
     rsiSell: float = 75.0         # 과매수 익절 기준선 (추세 이익 극대화)
@@ -78,6 +92,14 @@ class StrategyParams:
         return p.validated()
 
     def validated(self) -> "StrategyParams":
+        if self.strategyType not in ("quant_ai", "raoer_infinite", "raoer_vr"):
+            self.strategyType = "quant_ai"
+        self.splitCount = max(5, min(100, self.splitCount))
+        self.targetProfitPct = max(0.5, min(100.0, self.targetProfitPct))
+        self.quarterCutPct = max(5.0, min(50.0, self.quarterCutPct))
+        self.vrGradient = max(1.0, min(100.0, self.vrGradient))
+        self.vrBandPct = max(1.0, min(50.0, self.vrBandPct))
+
         self.rsiPeriod = max(2, min(100, self.rsiPeriod))
         self.fastMa = max(2, min(200, self.fastMa))
         self.slowMa = max(self.fastMa + 1, min(300, self.slowMa))
@@ -222,6 +244,9 @@ class Position:
     units: float = 0.0
     entryPrice: float = 0.0
     peakPrice: float = 0.0
+    turn: int = 0                  # 무한매수 진행 회차 T (1~splitCount)
+    totalInvested: float = 0.0     # 총 투입 원금(원)
+    vrTargetV: float = 0.0         # VR 목표 평가금액
 
     @property
     def open(self) -> bool:
@@ -230,9 +255,59 @@ class Position:
 
 @dataclass
 class Decision:
-    action: str            # "BUY" | "SELL" | "HOLD"
+    action: str            # "BUY" | "SELL" | "BUY_CHUNK" | "SELL_QUARTER" | "BUY_PARTIAL" | "SELL_PARTIAL" | "HOLD"
     reason: str = ""
     detail: Dict[str, Any] = field(default_factory=dict)
+
+
+def decide_raoer_infinite(price: float, pos: Position, p: StrategyParams) -> Decision:
+    """라오어 무한매수법 판단 로직."""
+    if pos.open:
+        pnl_pct = (price - pos.entryPrice) / pos.entryPrice * 100.0
+        # 1) 목표 수익률 도달 시 전량 익절
+        if pnl_pct >= p.targetProfitPct:
+            return Decision("SELL", f"무한매수 목표 익절 (+{pnl_pct:.2f}% ≥ +{p.targetProfitPct:.1f}%) [T={pos.turn}]",
+                            {"rule": "raoerTakeProfit", "pnlPct": round(pnl_pct, 2), "turn": pos.turn})
+
+        # 2) splitCount 소진 시 쿼터 매도 (25% 방어)
+        if pos.turn >= p.splitCount:
+            return Decision("SELL_QUARTER",
+                            f"무한매수 {p.splitCount}분할 소진 쿼터매도 방어 ({p.quarterCutPct:.0f}% 매도, 손익 {pnl_pct:+.2f}%) [T={pos.turn}]",
+                            {"rule": "raoerQuarterCut", "turn": pos.turn, "pnlPct": round(pnl_pct, 2)})
+
+        # 3) 분할 매수 (T+1 회차)
+        return Decision("BUY_CHUNK",
+                        f"무한매수 {pos.turn + 1}/{p.splitCount}회차 분할 매수 (평단 대비 {pnl_pct:+.2f}%)",
+                        {"rule": "raoerBuyChunk", "turn": pos.turn + 1, "pnlPct": round(pnl_pct, 2)})
+    else:
+        # 미보유 상태: 1회차 매수 시작
+        return Decision("BUY_CHUNK",
+                        f"무한매수 1/{p.splitCount}회차 첫 매수 시작",
+                        {"rule": "raoerFirstBuy", "turn": 1, "pnlPct": 0.0})
+
+
+def decide_raoer_vr(price: float, pos: Position, p: StrategyParams, total_equity: float, cash: float) -> Decision:
+    """라오어 밸류 리밸런싱 (VR) 판단 로직."""
+    cur_val = pos.units * price
+    target_v = pos.vrTargetV if pos.vrTargetV > 0 else (total_equity * 0.5)
+    next_v = target_v + (cash / max(1.0, p.vrGradient))
+    band_high = next_v * (1.0 + p.vrBandPct / 100.0)
+    band_low = next_v * (1.0 - p.vrBandPct / 100.0)
+
+    if cur_val > band_high and pos.units > 0:
+        excess = cur_val - next_v
+        return Decision("SELL_PARTIAL",
+                        f"VR 상단 밴드 초과 매도 (평가액 {cur_val:,.0f} > 상단 {band_high:,.0f})",
+                        {"rule": "vrSell", "targetV": next_v, "amount": excess})
+    elif cur_val < band_low and cash >= 5000:
+        deficit = min(cash, next_v - cur_val)
+        return Decision("BUY_PARTIAL",
+                        f"VR 하단 밴드 이탈 매수 (평가액 {cur_val:,.0f} < 하단 {band_low:,.0f})",
+                        {"rule": "vrBuy", "targetV": next_v, "amount": deficit})
+    else:
+        return Decision("HOLD",
+                        f"VR 밴드 내 유지 (평가액 {cur_val:,.0f}, 목표V {next_v:,.0f})",
+                        {"rule": "vrHold", "targetV": next_v})
 
 
 def decide(bars: List[Dict[str, Any]], i: int, price: float,
@@ -243,6 +318,9 @@ def decide(bars: List[Dict[str, Any]], i: int, price: float,
     i     : 판단 기준 캔들 (지표가 확정된 캔들)
     price : 체결 기준 가격. 실시간 봇은 현재 호가, 백테스트는 해당 캔들 종가.
     """
+    if p.strategyType == "raoer_infinite":
+        return decide_raoer_infinite(price, pos, p)
+
     bar = bars[i]
     if not bar.get("ready"):
         return Decision("HOLD", "지표 준비 안 됨 (캔들 부족)")

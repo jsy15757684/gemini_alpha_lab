@@ -62,15 +62,74 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
         bar = bars[i]
         price = bar["close"]
 
-        # 캔들 '안에서' 익절·손절선이 닿았는지 먼저 본다.
-        #
-        # 종가로만 판정하면 24h 봉에서 가격이 익절선을 한참 지나쳐도 종가까지
-        # 기다린 것으로 계산되어 이익도 손실도 과장된다(익절 2% 설정에서
-        # 평균 이익 +4.94% 가 나왔다). 실제 봇은 10초마다 현재가를 보므로
-        # 설정한 선 근처에서 체결된다. 고가/저가로 그 동작을 재현한다.
-        #
-        # 한 캔들에서 손절선과 익절선이 모두 닿았다면 어느 쪽이 먼저인지
-        # 알 수 없다. 보수적으로 '손절이 먼저' 로 본다.
+        if p.strategyType == "raoer_infinite":
+            # 1) 캔들 내 목표 익절선 도달 판정 (고가 기준)
+            if pos.open:
+                take_price = pos.entryPrice * (1 + p.targetProfitPct / 100.0)
+                if bar["high"] >= take_price:
+                    proceeds = pos.units * take_price * (1 - fee)
+                    pnl = proceeds - (pos.units * pos.entryPrice)
+                    trades.append({
+                        "entryTime": entry_time, "exitTime": bar["time"],
+                        "entryPrice": round(pos.entryPrice, 2), "exitPrice": round(take_price, 2),
+                        "units": round(pos.units, 8),
+                        "returnPct": round((take_price - pos.entryPrice) / pos.entryPrice * 100, 2),
+                        "pnlKrw": round(pnl, 0),
+                        "entryReason": f"무한매수 {pos.turn}회차 누적",
+                        "exitReason": f"목표 익절 (+{p.targetProfitPct:.1f}%, 고가 도달)",
+                        "rule": "raoerTakeProfit",
+                        "result": "WIN" if pnl > 0 else "LOSS",
+                    })
+                    cash += proceeds
+                    pos = Position()
+                    entry_time = None
+                    equity.append({"time": bar["time"], "value": round(cash, 0), "close": round(price, 2)})
+                    continue
+
+            # 2) 분할 매수 (T < splitCount) 또는 쿼터 방어
+            if not pos.open or pos.turn < p.splitCount:
+                chunk_krw = initial_krw / p.splitCount
+                invest = min(cash, chunk_krw)
+                if invest >= 5000:
+                    new_units = invest * (1 - fee) / price
+                    u_total = pos.units + new_units
+                    p_avg = (pos.units * pos.entryPrice + new_units * price) / u_total if u_total > 0 else price
+                    if not pos.open:
+                        entry_time = bar["time"]
+                    pos.units = u_total
+                    pos.entryPrice = p_avg
+                    pos.turn += 1
+                    pos.totalInvested += invest
+                    cash -= invest
+            else:
+                # 40회차 소진 쿼터 방어 매도
+                cut_ratio = p.quarterCutPct / 100.0
+                units_to_sell = pos.units * cut_ratio
+                if units_to_sell > 0:
+                    proceeds = units_to_sell * price * (1 - fee)
+                    pnl = proceeds - (units_to_sell * pos.entryPrice)
+                    trades.append({
+                        "entryTime": entry_time, "exitTime": bar["time"],
+                        "entryPrice": round(pos.entryPrice, 2), "exitPrice": round(price, 2),
+                        "units": round(units_to_sell, 8),
+                        "returnPct": round((price - pos.entryPrice) / pos.entryPrice * 100, 2),
+                        "pnlKrw": round(pnl, 0),
+                        "entryReason": f"무한매수 {p.splitCount}회차 도달",
+                        "exitReason": f"소진 방어 ({p.quarterCutPct:.0f}% 쿼터매도)",
+                        "rule": "raoerQuarterCut",
+                        "result": "WIN" if pnl > 0 else "LOSS",
+                    })
+                    pos.units -= units_to_sell
+                    turns_rolled_back = max(1, int(p.splitCount * cut_ratio))
+                    pos.turn = max(1, pos.turn - turns_rolled_back)
+                    cash += proceeds
+
+            equity.append({"time": bar["time"],
+                           "value": round(cash + pos.units * price, 0),
+                           "close": round(price, 2)})
+            continue
+
+        # ── 퀀트 전략 (기존) ──
         intrabar = None
         if pos.open:
             stop_price = pos.entryPrice * (1 - p.stopLossPct / 100.0)
@@ -107,7 +166,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
         if d.action == "BUY" and not pos.open:
             invest = cash
             units = invest * (1 - fee) / price
-            pos = Position(units=units, entryPrice=price, peakPrice=price)
+            pos = Position(units=units, entryPrice=price, peakPrice=price, turn=1, totalInvested=invest)
             cash = 0.0
             entry_time, entry_reason = bar["time"], d.reason
 

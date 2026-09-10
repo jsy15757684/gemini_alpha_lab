@@ -136,8 +136,11 @@ function renderEntryRules(hostId, prefix) {
 function readParams(prefix) {
   const p = {};
   PARAM_FIELDS.forEach(f => {
-    const v = parseFloat($(prefix + f.k).value);
-    if (!isNaN(v)) p[f.k] = v;
+    const el = $(prefix + f.k);
+    if (el) {
+      const v = parseFloat(el.value);
+      if (!isNaN(v)) p[f.k] = v;
+    }
   });
   const rules = ENTRY_RULES.filter(r => $(`${prefix}rule_${r.key}`)?.checked).map(r => r.key);
   if (rules.length) p.entryRules = rules;
@@ -145,17 +148,39 @@ function readParams(prefix) {
   if (mode) p.entryMode = mode.value;
 
   if (prefix === "bp_") {
-    const stratType = $("botStrategyType") ? $("botStrategyType").value : "technical";
-    if (stratType === "gemini_ai") {
+    const stratType = $("botStrategyType") ? $("botStrategyType").value : "raoer_infinite";
+    if (stratType === "raoer_infinite") {
+      p.strategyType = "raoer_infinite";
+      p.splitCount = parseInt($("bp_splitCount")?.value || "40", 10);
+      p.targetProfitPct = parseFloat($("bp_targetProfitPct")?.value || "10.0");
+      p.quarterCutPct = parseFloat($("bp_quarterCutPct")?.value || "25.0");
+    } else if (stratType === "raoer_vr") {
+      p.strategyType = "raoer_vr";
+      p.vrGradient = parseFloat($("bp_vrGradient")?.value || "10.0");
+      p.vrBandPct = parseFloat($("bp_vrBandPct")?.value || "15.0");
+    } else if (stratType === "gemini_ai") {
+      p.strategyType = "quant_ai";
       p.useGemini = true;
       p.geminiMode = "ai_only";
-      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "70", 10);
+      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "60", 10);
     } else if (stratType === "gemini_hybrid") {
+      p.strategyType = "quant_ai";
       p.useGemini = true;
       p.geminiMode = "hybrid";
-      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "70", 10);
+      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "60", 10);
     } else {
+      p.strategyType = "quant_ai";
       p.useGemini = false;
+    }
+  } else if (prefix === "tp_") {
+    const stratType = $("btStrategyType") ? $("btStrategyType").value : "raoer_infinite";
+    if (stratType === "raoer_infinite") {
+      p.strategyType = "raoer_infinite";
+      p.splitCount = parseInt($("tp_splitCount")?.value || "40", 10);
+      p.targetProfitPct = parseFloat($("tp_targetProfitPct")?.value || "10.0");
+      p.quarterCutPct = parseFloat($("tp_quarterCutPct")?.value || "25.0");
+    } else {
+      p.strategyType = "quant_ai";
     }
   }
   return p;
@@ -204,7 +229,6 @@ async function deployBot() {
   const btn = $("deployBtn");
   setAlert($("deployError"), null);
   const mode = $("botMode").value;
-  const isGemini = $("botStrategyType")?.value.startsWith("gemini");
   if (mode === "LIVE" && !confirm(
       "실전 모드로 가동합니다.\n\n빗썸 계좌에서 실제 원화로 주문이 나가며 손실이 발생할 수 있습니다.\n계속하시겠습니까?"))
     return;
@@ -230,17 +254,25 @@ async function deployBot() {
 
 function botCard(b) {
   const live = b.mode === "LIVE";
-  const isGemini = b.params?.useGemini;
-  const gemMode = b.params?.geminiMode === "ai_only" ? "✨ AI 전용" : "🧬 하이브리드";
   const badge = !b.isRunning ? `<span class="badge badge-stop">정지됨</span>`
     : live ? `<span class="badge badge-live">실전</span>`
            : `<span class="badge badge-paper">모의</span>`;
-  const aiBadge = isGemini ? `<span class="badge" style="background:rgba(59,130,246,.2); color:var(--accent); border:1px solid rgba(59,130,246,.4);">${gemMode} (${b.params?.geminiMinConfidence}%)</span>` : "";
+
+  let stratBadge = "";
+  if (b.strategyType === "raoer_infinite") {
+    stratBadge = `<span class="badge" style="background:rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(16,185,129,.4);">🔄 무한매수 (T=${b.turn||0}/${b.splitCount||40})</span>`;
+  } else if (b.strategyType === "raoer_vr") {
+    stratBadge = `<span class="badge" style="background:rgba(245,158,11,.18); color:#fbbf24; border:1px solid rgba(245,158,11,.4);">⚖️ 밸류리밸런싱 VR</span>`;
+  } else if (b.params?.useGemini) {
+    const gemMode = b.params?.geminiMode === "ai_only" ? "✨ AI 전용" : "🧬 하이브리드";
+    stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:var(--accent); border:1px solid rgba(59,130,246,.4);">${gemMode} (${b.params?.geminiMinConfidence}%)</span>`;
+  }
+
   const logs = (b.recentLogs || []).map(l =>
     `<div class="logline"><span class="t">${l.time}</span><span class="lv-${l.level}">${l.message}</span></div>`).join("");
   return `<div class="bot">
     <div class="bot-head">
-      <div><span class="bot-title">${b.coinName} (${b.coin})</span> ${badge} ${aiBadge}
+      <div><span class="bot-title">${b.coinName} (${b.coin})</span> ${badge} ${stratBadge}
         <span class="muted small">${b.interval}</span></div>
       <div class="inline">
         ${b.isRunning ? `<button class="btn btn-ghost btn-sm" data-stop="${b.botId}">정지</button>` : ""}
@@ -253,10 +285,10 @@ function botCard(b) {
       <div><div class="stat-k">현재가 ${b.priceAgeSec != null
           ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : 'muted'}">${Math.round(b.priceAgeSec)}초 전</span>`
           : ""}</div><div class="stat-v">${won(b.currentPrice)}</div></div>
-      <div><div class="stat-k">보유</div><div class="stat-v">${b.units > 0 ? b.units.toFixed(6) : "-"}</div></div>
+      <div><div class="stat-k">보유 / 평단</div><div class="stat-v">${b.units > 0 ? b.units.toFixed(6) : "-"} ${b.units > 0 ? `<span class="small muted">(${won(b.entryPrice)})</span>` : ""}</div></div>
       <div><div class="stat-k">평가손익</div><div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0 ? won(b.unrealizedPnlKrw) : "-"}</div></div>
-      <div><div class="stat-k">${isGemini ? "AI 신뢰도" : "RSI"}</div><div class="stat-v">${isGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-")}</div></div>
-      <div><div class="stat-k">거래</div><div class="stat-v">${b.totalTrades}회</div></div>
+      <div><div class="stat-k">${b.strategyType === 'raoer_infinite' ? '진행 회차' : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? `${b.turn||0} / ${b.splitCount||40}` : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
+      <div><div class="stat-k">거래 (익절)</div><div class="stat-v">${b.totalTrades}회</div></div>
       <div><div class="stat-k">승률</div><div class="stat-v">${b.totalTrades ? b.winRatePct + "%" : "-"}</div></div>
     </div>
     <div class="bot-decision">판단: ${b.lastDecision || "-"}</div>
@@ -618,19 +650,25 @@ async function clearGeminiKey() {
 }
 
 function toggleStrategyUI() {
-  const type = $("botStrategyType")?.value || "technical";
+  const type = $("botStrategyType")?.value || "raoer_infinite";
+  const raoerOpts = $("raoerBotOptions");
+  const raoerVrOpts = $("raoerVrBotOptions");
   const gemOptions = $("geminiBotOptions");
-  const botRules = $("botRules");
-  if (type === "technical") {
-    if (gemOptions) gemOptions.style.display = "none";
-    if (botRules) botRules.style.display = "block";
-  } else if (type === "gemini_ai") {
-    if (gemOptions) gemOptions.style.display = "block";
-    if (botRules) botRules.style.display = "none";
-  } else if (type === "gemini_hybrid") {
-    if (gemOptions) gemOptions.style.display = "block";
-    if (botRules) botRules.style.display = "block";
-  }
+  const quantSettings = $("quantBotSettings");
+
+  if (raoerOpts) raoerOpts.classList.toggle("hidden", type !== "raoer_infinite");
+  if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");
+  if (gemOptions) gemOptions.classList.toggle("hidden", !(type === "gemini_ai" || type === "gemini_hybrid"));
+  if (quantSettings) quantSettings.classList.toggle("hidden", !(type === "technical" || type === "gemini_hybrid" || type === "gemini_ai"));
+}
+
+function toggleBtStrategyUI() {
+  const type = $("btStrategyType")?.value || "raoer_infinite";
+  const raoerBtOpts = $("raoerBtOptions");
+  const quantBtSettings = $("quantBtSettings");
+
+  if (raoerBtOpts) raoerBtOpts.classList.toggle("hidden", type !== "raoer_infinite");
+  if (quantBtSettings) quantBtSettings.classList.toggle("hidden", type === "raoer_infinite");
 }
 
 // ───────── 계정 ─────────
@@ -732,6 +770,10 @@ async function boot() {
   if ($("botStrategyType")) {
     $("botStrategyType").onchange = toggleStrategyUI;
     toggleStrategyUI();
+  }
+  if ($("btStrategyType")) {
+    $("btStrategyType").onchange = toggleBtStrategyUI;
+    toggleBtStrategyUI();
   }
   if ($("geminiMinConf")) {
     $("geminiMinConf").oninput = () => {
