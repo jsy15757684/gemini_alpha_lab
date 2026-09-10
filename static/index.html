@@ -45,6 +45,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
     <button class="tab" data-panel="panel-bots">자동매매 봇</button>
+    <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
     <button class="tab" data-panel="panel-chart">시세·지표</button>
     <button class="tab" data-panel="panel-account">연동 계정·설정</button>
@@ -183,6 +184,108 @@
             <button class="btn btn-ghost btn-sm" id="stopAllBtn">전체 정지</button>
           </div>
           <div id="botList" class="bot-list"><div class="empty">가동 중인 봇이 없습니다.</div></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- 매매 일지 & 수익 정산 -->
+    <section id="panel-trades" class="panel hidden">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">📜 자동매매 누적 성과 &amp; 실현 손익</h2>
+            <p class="muted small">가동 중이거나 완료된 봇들의 매수·매도 체결 일지와 누적 실현 손익 정산 현황입니다.</p>
+          </div>
+          <div class="inline">
+            <button class="btn btn-ghost btn-sm" id="refreshTradesBtn">🔄 새로고침</button>
+            <button class="btn btn-primary btn-sm" id="exportTradesCsvBtn">📥 CSV 내보내기</button>
+          </div>
+        </div>
+
+        <div class="metrics" id="tradeSummaryMetrics" style="margin-top: 12px;">
+          <div class="metric">
+            <div class="metric-k">누적 실현 손익</div>
+            <div class="metric-v" id="mTotalPnl">0원</div>
+          </div>
+          <div class="metric">
+            <div class="metric-k">총 체결 횟수</div>
+            <div class="metric-v" id="mTotalTrades">0회</div>
+          </div>
+          <div class="metric">
+            <div class="metric-k">승률 (익절/전체)</div>
+            <div class="metric-v" id="mWinRate">0.0%</div>
+          </div>
+          <div class="metric">
+            <div class="metric-k">총 매수 금액</div>
+            <div class="metric-v" id="mTotalBuy">0원</div>
+          </div>
+          <div class="metric">
+            <div class="metric-k">총 매도 금액</div>
+            <div class="metric-v" id="mTotalSell">0원</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 18px;">
+          <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 코인별 손익 요약</h3>
+          <div class="tbl-wrap">
+            <table id="coinSummaryTable">
+              <thead>
+                <tr>
+                  <th>코인</th>
+                  <th>총 거래수</th>
+                  <th>승리(익절)</th>
+                  <th>승률</th>
+                  <th>누적 실현 손익</th>
+                </tr>
+              </thead>
+              <tbody id="coinSummaryBody">
+                <tr><td colspan="5" class="empty">체결 내역이 없습니다.</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <div class="card" style="margin-top: 1rem;">
+        <div class="card-head">
+          <h2 class="card-title">📋 상세 매매 체결 일지</h2>
+          <div class="inline">
+            <select class="input input-sm" id="tradeFilterCoin">
+              <option value="ALL">전체 코인</option>
+            </select>
+            <select class="input input-sm" id="tradeFilterAction">
+              <option value="ALL">전체 주문</option>
+              <option value="BUY">매수 전체</option>
+              <option value="SELL">매도 전체</option>
+            </select>
+            <select class="input input-sm" id="tradeFilterMode">
+              <option value="ALL">전체 모드</option>
+              <option value="LIVE">실전 (LIVE)</option>
+              <option value="PAPER">모의 (PAPER)</option>
+            </select>
+          </div>
+        </div>
+
+        <div class="tbl-wrap" style="max-height: 520px; overflow-y: auto;">
+          <table id="tradesTable">
+            <thead>
+              <tr>
+                <th>체결 시각</th>
+                <th>코인</th>
+                <th>모드</th>
+                <th>구분</th>
+                <th>체결 가격</th>
+                <th>체결 수량</th>
+                <th>체결 금액</th>
+                <th>실현 손익</th>
+                <th>수익률</th>
+                <th>체결 사유</th>
+              </tr>
+            </thead>
+            <tbody id="tradesTableBody">
+              <tr><td colspan="10" class="empty">체결 내역이 없습니다.</td></tr>
+            </tbody>
+          </table>
         </div>
       </div>
     </section>

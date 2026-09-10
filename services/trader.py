@@ -63,6 +63,7 @@ class TradingBot:
         self.realized_pnl = 0.0
         self.total_trades = 0
         self.winning_trades = 0
+        self.trade_history: List[Dict[str, Any]] = []
 
         self.last_price = 0.0
         self.last_price_at = 0.0
@@ -77,6 +78,29 @@ class TradingBot:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._last_bar_time: Optional[int] = None
+
+    def _record_trade(self, action: str, price: float, units: float, amount_krw: float,
+                      pnl: float = 0.0, return_pct: float = 0.0, reason: str = ""):
+        """체결된 매매 기록을 보관한다."""
+        with self._lock:
+            trade_item = {
+                "id": f"t-{int(time.time()*1000)}-{uuid.uuid4().hex[:4]}",
+                "botId": self.bot_id,
+                "coin": self.coin,
+                "coinName": bithumb.COINS.get(self.coin, self.coin),
+                "mode": self.mode,
+                "action": action,
+                "turn": self.pos.turn,
+                "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                "price": round(price, 0),
+                "units": round(units, 8),
+                "amountKrw": round(amount_krw, 0),
+                "pnlKrw": round(pnl, 0),
+                "returnPct": round(return_pct, 2),
+                "reason": reason,
+            }
+            self.trade_history.insert(0, trade_item)
+            del self.trade_history[500:]
 
     def _persist(self):
         """상태가 바뀌면 전체 스냅샷을 다시 쓴다. 봇 수가 적어 비용이 미미하다."""
@@ -385,6 +409,7 @@ class TradingBot:
 
         self.pos = Position(units=units, entryPrice=price, peakPrice=price, turn=1, totalInvested=invest)
         self.cash = 0.0
+        self._record_trade("BUY", price, units, invest, pnl=0.0, return_pct=0.0, reason=reason)
         self.log("BUY", f"매수 {units:.8f} {self.coin} @ {price:,.0f}원 "
                         f"({invest:,.0f}원) | 사유: {reason}")
         self._persist()
@@ -432,6 +457,7 @@ class TradingBot:
         self.pos.totalInvested += invest
         self.cash = max(0.0, self.cash - invest)
 
+        self._record_trade("BUY_CHUNK", price, new_units, invest, pnl=0.0, return_pct=0.0, reason=reason)
         self.log("BUY", f"[{self.pos.turn}/{self.params.splitCount}회차 분할매수] {new_units:.8f} {self.coin} @ {price:,.0f}원 "
                         f"({invest:,.0f}원) | 평단가 {p_avg:,.0f}원 (총 {u_total:.8f} {self.coin}) | 사유: {reason}")
         self._persist()
@@ -473,13 +499,14 @@ class TradingBot:
 
         proceeds = units * price * (1 - fee)
         pnl = proceeds - (units * self.pos.entryPrice)
-        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100
+        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100 if self.pos.entryPrice > 0 else 0.0
 
         self.cash += proceeds
         self.realized_pnl += pnl
         self.total_trades += 1
         if pnl > 0:
             self.winning_trades += 1
+        self._record_trade("SELL", price, units, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
         self.pos = Position()
 
         self.log("SELL", f"전량 매도 {units:.8f} {self.coin} @ {price:,.0f}원 | "
@@ -515,7 +542,7 @@ class TradingBot:
 
         proceeds = units_to_sell * price * (1 - fee)
         pnl = proceeds - (units_to_sell * self.pos.entryPrice)
-        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
 
         self.pos.units -= units_to_sell
         turns_rolled_back = max(1, int(self.params.splitCount * cut_ratio))
@@ -523,7 +550,10 @@ class TradingBot:
         self.cash += proceeds
         self.realized_pnl += pnl
         self.total_trades += 1
+        if pnl > 0:
+            self.winning_trades += 1
 
+        self._record_trade("SELL_QUARTER", price, units_to_sell, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
         self.log("SELL", f"[쿼터매도 방어] {units_to_sell:.8f} {self.coin} 매도 ({proceeds:,.0f}원 확보) | "
                          f"손익 {pnl:+,.0f}원 ({pnl_pct:+.2f}%) | 회차 조정: T={self.pos.turn} | 사유: {reason}")
         self._persist()
@@ -552,6 +582,7 @@ class TradingBot:
         self.pos.units = u_total
         self.pos.entryPrice = p_avg
         self.cash = max(0.0, self.cash - invest)
+        self._record_trade("BUY_VR", price, new_units, invest, pnl=0.0, return_pct=0.0, reason=reason)
         self.log("BUY", f"[VR 리밸런싱 매수] {new_units:.8f} {self.coin} ({invest:,.0f}원) | 사유: {reason}")
         self._persist()
 
@@ -572,9 +603,14 @@ class TradingBot:
 
         proceeds = units_to_sell * price * (1 - fee)
         pnl = proceeds - (units_to_sell * self.pos.entryPrice)
+        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
         self.pos.units -= units_to_sell
         self.cash += proceeds
         self.realized_pnl += pnl
+        self.total_trades += 1
+        if pnl > 0:
+            self.winning_trades += 1
+        self._record_trade("SELL_VR", price, units_to_sell, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
         self.log("SELL", f"[VR 리밸런싱 매도] {units_to_sell:.8f} {self.coin} ({proceeds:,.0f}원) | 사유: {reason}")
         self._persist()
 
@@ -593,6 +629,7 @@ class TradingBot:
             "vrTargetV": self.pos.vrTargetV,
             "realizedPnl": self.realized_pnl,
             "totalTrades": self.total_trades, "winningTrades": self.winning_trades,
+            "tradeHistory": self.trade_history,
             "createdAt": self.created_at, "wasRunning": self.is_running,
         }
 
@@ -611,6 +648,7 @@ class TradingBot:
         bot.realized_pnl = float(d.get("realizedPnl", 0.0))
         bot.total_trades = int(d.get("totalTrades", 0))
         bot.winning_trades = int(d.get("winningTrades", 0))
+        bot.trade_history = list(d.get("tradeHistory", []))
         bot.created_at = d.get("createdAt", bot.created_at)
         return bot
 
@@ -712,6 +750,75 @@ class BotManager:
 
     def all_status(self) -> List[Dict[str, Any]]:
         return [b.status() for b in self.bots.values()]
+
+    def all_trade_history(self) -> Dict[str, Any]:
+        """모든 봇의 체결 내역 통합 및 누적 손익 정산 집계."""
+        all_trades = []
+        total_pnl = 0.0
+        total_trades = 0
+        winning_trades = 0
+        total_buy_krw = 0.0
+        total_sell_krw = 0.0
+        by_coin: Dict[str, Dict[str, Any]] = {}
+
+        with self._lock:
+            bot_list = list(self.bots.values())
+
+        for b in bot_list:
+            with b._lock:
+                for t in b.trade_history:
+                    all_trades.append(t)
+            total_pnl += b.realized_pnl
+            total_trades += b.total_trades
+            winning_trades += b.winning_trades
+
+            c = b.coin
+            if c not in by_coin:
+                by_coin[c] = {
+                    "coin": c,
+                    "coinName": bithumb.COINS.get(c, c),
+                    "realizedPnlKrw": 0.0,
+                    "totalTrades": 0,
+                    "winningTrades": 0,
+                    "winRatePct": 0.0,
+                }
+            by_coin[c]["realizedPnlKrw"] += b.realized_pnl
+            by_coin[c]["totalTrades"] += b.total_trades
+            by_coin[c]["winningTrades"] += b.winning_trades
+
+        # 최신순 정렬
+        all_trades.sort(key=lambda x: x.get("time", ""), reverse=True)
+
+        for t in all_trades:
+            act = t.get("action", "")
+            amt = float(t.get("amountKrw", 0.0))
+            if "BUY" in act:
+                total_buy_krw += amt
+            elif "SELL" in act:
+                total_sell_krw += amt
+
+        win_rate = round(winning_trades / total_trades * 100, 2) if total_trades > 0 else 0.0
+
+        coin_summary = []
+        for c, stats in by_coin.items():
+            tot = stats["totalTrades"]
+            win = stats["winningTrades"]
+            stats["winRatePct"] = round(win / tot * 100, 2) if tot > 0 else 0.0
+            stats["realizedPnlKrw"] = round(stats["realizedPnlKrw"], 0)
+            coin_summary.append(stats)
+
+        return {
+            "summary": {
+                "totalRealizedPnlKrw": round(total_pnl, 0),
+                "totalTrades": total_trades,
+                "winningTrades": winning_trades,
+                "winRatePct": win_rate,
+                "totalBuyKrw": round(total_buy_krw, 0),
+                "totalSellKrw": round(total_sell_krw, 0),
+                "byCoin": coin_summary,
+            },
+            "trades": all_trades[:500],
+        }
 
     # ── 영속화 / 복원 ──
 

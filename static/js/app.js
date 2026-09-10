@@ -742,9 +742,156 @@ async function keyAction(save) {
     } else {
       setAlert($("keyResult"), r.message);
     }
+// ───────── 매매 일지 & 수익 정산 ─────────
+
+let RAW_TRADES_DATA = { summary: {}, trades: [] };
+
+async function loadTradeHistory() {
+  try {
+    const data = await api("/api/bot/trades");
+    RAW_TRADES_DATA = data || { summary: {}, trades: [] };
+    const s = RAW_TRADES_DATA.summary || {};
+
+    if ($("mTotalPnl")) {
+      const pnl = s.totalRealizedPnlKrw || 0;
+      $("mTotalPnl").innerHTML = `<span class="${cls(pnl)}">${pnl >= 0 ? "+" : ""}${won(pnl)}원</span>`;
+    }
+    if ($("mTotalTrades")) {
+      const tot = s.totalTrades || 0;
+      const win = s.winningTrades || 0;
+      const lose = Math.max(0, tot - win);
+      $("mTotalTrades").textContent = `${tot}회 (${win}승 ${lose}패)`;
+    }
+    if ($("mWinRate")) {
+      const wr = s.winRatePct || 0;
+      $("mWinRate").innerHTML = `<span class="${wr >= 50 ? 'up' : wr > 0 ? 'down' : ''}">${wr.toFixed(1)}%</span>`;
+    }
+    if ($("mTotalBuy")) $("mTotalBuy").textContent = `${won(s.totalBuyKrw || 0)}원`;
+    if ($("mTotalSell")) $("mTotalSell").textContent = `${won(s.totalSellKrw || 0)}원`;
+
+    // 코인별 요약 테이블
+    const coinBody = $("coinSummaryBody");
+    if (coinBody) {
+      const byCoin = s.byCoin || [];
+      if (!byCoin.length) {
+        coinBody.innerHTML = `<tr><td colspan="5" class="empty">체결된 매매 내역이 없습니다.</td></tr>`;
+      } else {
+        coinBody.innerHTML = byCoin.map(c => {
+          const pnl = c.realizedPnlKrw || 0;
+          return `
+            <tr>
+              <td><b>${c.coinName || c.coin}</b> <span class="muted small">(${c.coin})</span></td>
+              <td>${c.totalTrades || 0}회</td>
+              <td>${c.winningTrades || 0}회</td>
+              <td class="${(c.winRatePct || 0) >= 50 ? 'up' : ''}">${(c.winRatePct || 0).toFixed(1)}%</td>
+              <td class="${cls(pnl)}">${pnl >= 0 ? "+" : ""}${won(pnl)}원</td>
+            </tr>
+          `;
+        }).join("");
+      }
+    }
+
+    // 코인 필터 옵션 채우기
+    const filterCoin = $("tradeFilterCoin");
+    if (filterCoin && filterCoin.options.length <= 1 && COINS.length) {
+      COINS.forEach(c => {
+        const opt = document.createElement("option");
+        opt.value = c.code;
+        opt.textContent = `${c.name} (${c.code})`;
+        filterCoin.appendChild(opt);
+      });
+    }
+
+    renderTradeRecords();
   } catch (e) {
-    setAlert($("keyResult"), e.message);
-  } finally { btn.disabled = false; }
+    console.error("매매 일지 조회 실패:", e);
+  }
+}
+
+function renderTradeRecords() {
+  const host = $("tradesTableBody");
+  if (!host) return;
+
+  const fCoin = $("tradeFilterCoin") ? $("tradeFilterCoin").value : "ALL";
+  const fAction = $("tradeFilterAction") ? $("tradeFilterAction").value : "ALL";
+  const fMode = $("tradeFilterMode") ? $("tradeFilterMode").value : "ALL";
+
+  const filtered = (RAW_TRADES_DATA.trades || []).filter(t => {
+    if (fCoin !== "ALL" && t.coin !== fCoin) return false;
+    if (fAction !== "ALL" && !t.action.startsWith(fAction)) return false;
+    if (fMode !== "ALL" && t.mode !== fMode) return false;
+    return true;
+  });
+
+  if (!filtered.length) {
+    host.innerHTML = `<tr><td colspan="10" class="empty">조건에 맞는 체결 내역이 없습니다.</td></tr>`;
+    return;
+  }
+
+  host.innerHTML = filtered.map(t => {
+    const isBuy = t.action.includes("BUY");
+    const isSell = t.action.includes("SELL");
+
+    let actBadge = `<span class="badge">${t.action}</span>`;
+    if (t.action === "BUY") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">일반매수</span>`;
+    else if (t.action === "BUY_CHUNK") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">분할매수 (T=${t.turn || 1})</span>`;
+    else if (t.action === "BUY_VR") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">VR매수</span>`;
+    else if (t.action === "SELL") actBadge = `<span class="badge" style="background:rgba(239,68,68,0.18); color:var(--down);">전량매도(익절)</span>`;
+    else if (t.action === "SELL_QUARTER") actBadge = `<span class="badge" style="background:rgba(245,158,11,0.18); color:var(--warn);">쿼터방어(손절)</span>`;
+    else if (t.action === "SELL_VR") actBadge = `<span class="badge" style="background:rgba(239,68,68,0.18); color:var(--down);">VR매도</span>`;
+
+    const pnl = t.pnlKrw != null && isSell ? t.pnlKrw : null;
+    const pnlPct = t.returnPct != null && isSell ? t.returnPct : null;
+
+    return `
+      <tr>
+        <td class="muted small">${t.time}</td>
+        <td><b>${t.coinName || t.coin}</b> <span class="muted small">(${t.coin})</span></td>
+        <td><span class="badge ${t.mode === 'LIVE' ? 'badge-live' : 'badge-paper'}">${t.mode}</span></td>
+        <td>${actBadge}</td>
+        <td>${won(t.price)}원</td>
+        <td>${Number(t.units).toFixed(8)}</td>
+        <td>${won(t.amountKrw)}원</td>
+        <td class="${pnl != null ? cls(pnl) : ''}">${pnl != null ? (pnl >= 0 ? '+' : '') + won(pnl) + '원' : '-'}</td>
+        <td class="${pnlPct != null ? cls(pnlPct) : ''}">${pnlPct != null ? pct(pnlPct) : '-'}</td>
+        <td class="reason">${t.reason || '-'}</td>
+      </tr>
+    `;
+  }).join("");
+}
+
+function exportTradesToCsv() {
+  const trades = RAW_TRADES_DATA.trades || [];
+  if (!trades.length) return alert("내보낼 체결 내역이 없습니다.");
+
+  const headers = ["체결시각", "코인", "코인명", "봇ID", "모드", "주문구분", "회차", "체결단가(KRW)", "체결수량", "체결금액(KRW)", "실현손익(KRW)", "수익률(%)", "체결사유"];
+  const rows = trades.map(t => [
+    `"${t.time || ''}"`,
+    `"${t.coin || ''}"`,
+    `"${t.coinName || ''}"`,
+    `"${t.botId || ''}"`,
+    `"${t.mode || ''}"`,
+    `"${t.action || ''}"`,
+    t.turn || 0,
+    t.price || 0,
+    Number(t.units || 0).toFixed(8),
+    t.amountKrw || 0,
+    t.pnlKrw || 0,
+    t.returnPct || 0,
+    `"${(t.reason || '').replace(/"/g, '""')}"`
+  ]);
+
+  const csvContent = "\uFEFF" + [headers.join(","), ...rows.map(r => r.join(","))].join("\r\n");
+  const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  const now = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
+  a.href = url;
+  a.download = `bithumb_bot_trade_journal_${now}.csv`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
 }
 
 // ───────── 부팅 ─────────
@@ -788,12 +935,19 @@ async function boot() {
   if ($("saveGeminiBtn")) $("saveGeminiBtn").onclick = () => geminiKeyAction(true);
   if ($("clearGeminiBtn")) $("clearGeminiBtn").onclick = clearGeminiKey;
 
+  // 매매 일지 바인딩
+  if ($("refreshTradesBtn")) $("refreshTradesBtn").onclick = loadTradeHistory;
+  if ($("exportTradesCsvBtn")) $("exportTradesCsvBtn").onclick = exportTradesToCsv;
+  if ($("tradeFilterCoin")) $("tradeFilterCoin").onchange = renderTradeRecords;
+  if ($("tradeFilterAction")) $("tradeFilterAction").onchange = renderTradeRecords;
+  if ($("tradeFilterMode")) $("tradeFilterMode").onchange = renderTradeRecords;
+
   $("botMode").onchange = () =>
     $("liveWarning").classList.toggle("hidden", $("botMode").value !== "LIVE");
   $("deployBtn").onclick = deployBot;
   $("stopAllBtn").onclick = async () => {
     if (!confirm("가동 중인 모든 봇을 정지하고 포지션을 청산합니다.")) return;
-    try { await api("/api/bot/stop_all", { method: "POST" }); await loadBots(); }
+    try { await api("/api/bot/stop_all", { method: "POST" }); await loadBots(); await loadTradeHistory(); }
     catch (e) { alert(e.message); }
   };
   $("runBacktestBtn").onclick = runBacktest;
@@ -813,19 +967,21 @@ async function boot() {
     document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
     $(tab.dataset.panel).classList.remove("hidden");
     if (tab.dataset.panel === "panel-gemini") loadGeminiScan();
+    if (tab.dataset.panel === "panel-trades") loadTradeHistory();
     if (tab.dataset.panel === "panel-chart") loadChart();
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadGeminiStatus(); loadEgressIp(); }
   });
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadAccount(), loadGeminiStatus(), loadGeminiScan()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadGeminiStatus(), loadGeminiScan()]);
   timers.push(
     setInterval(loadPrices, 10000),
     setInterval(loadBots, 8000),
+    setInterval(loadTradeHistory, 10000),
     setInterval(renderFreshness, 1000),
   );
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && started) { loadPrices(); loadBots(); }
+    if (!document.hidden && started) { loadPrices(); loadBots(); loadTradeHistory(); }
   });
 }
 

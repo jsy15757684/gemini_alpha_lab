@@ -242,6 +242,12 @@ def list_bots():
             "restoreSummary": RESTORE_SUMMARY}
 
 
+@app.get("/api/bot/trades")
+def bot_trades():
+    """모든 봇의 실시간 매매 일지 및 누적 손익 정산 데이터."""
+    return bot_manager.all_trade_history()
+
+
 @app.post("/api/bot/stop")
 def stop_bot(req: BotIdRequest):
     if not bot_manager.stop(req.botId):
