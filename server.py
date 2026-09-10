@@ -36,7 +36,12 @@ if os.path.exists(_env_file):
                 _v = _v.strip()
                 if (_v.startswith('"') and _v.endswith('"')) or (_v.startswith("'") and _v.endswith("'")):
                     _v = _v[1:-1]
-                if _k and _k not in os.environ:
+                # 빈 값은 넣지 않는다 — scripts/load_env.sh 와 같은 규칙이다.
+                # os.getenv(name, default) 는 변수가 '있지만 빈' 경우 default 가
+                # 아니라 '' 를 돌려주므로, 빈 값을 주입하면 float()/int() 변환이
+                # import 시점에 터져 서버가 부팅조차 못 한다. 실제로 .env 의
+                # 'APP_SESSION_TTL_SEC=' 한 줄 때문에 systemd 가 64회 재시작했다.
+                if _k and _v and _k not in os.environ:
                     os.environ[_k] = _v
     except Exception as _e:
         print(f"Warning: .env 로드 중 오류: {_e}")
