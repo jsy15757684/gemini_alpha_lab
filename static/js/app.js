@@ -762,6 +762,13 @@ async function keyAction(save) {
     } else {
       setAlert($("keyResult"), r.message);
     }
+  } catch (e) {
+    setAlert($("keyResult"), e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 // ───────── 매매 일지 & 수익 정산 ─────────
 
 let RAW_TRADES_DATA = { summary: {}, trades: [] };
