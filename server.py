@@ -134,7 +134,7 @@ def login(req: LoginRequest, request: Request):
     logger.info(f"로그인 성공 ip={ip}")
     resp = JSONResponse({"success": True, "expiresAt": int(expires)})
     resp.set_cookie(auth.COOKIE_NAME, token, max_age=int(auth.SESSION_TTL_SEC),
-                    httponly=True, samesite="strict",
+                    httponly=True, samesite="lax",
                     secure=auth.is_https(request), path="/")
     return resp
 

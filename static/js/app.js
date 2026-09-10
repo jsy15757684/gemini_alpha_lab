@@ -70,9 +70,14 @@ async function handleLogin(e) {
     pw.value = "";
     $("authGate").classList.add("hidden");
     $("app").classList.remove("hidden");
-    await boot();
+    try {
+      await boot();
+    } catch (bootErr) {
+      console.error("화면 초기화 중 오류:", bootErr);
+    }
   } catch (err) {
-    setAlert($("authError"), "로그인 요청이 실패했습니다.");
+    console.error("로그인 통신 오류:", err);
+    setAlert($("authError"), err?.message || "로그인 요청이 실패했습니다.");
   } finally {
     submit.disabled = false; submit.textContent = "잠금 해제";
   }
