@@ -22,13 +22,14 @@ import hashlib
 import logging
 import threading
 from typing import Dict, Optional, Tuple
+from services.envconf import env_float
 
 logger = logging.getLogger(__name__)
 
 COOKIE_NAME = "gal_session"
 
 # 세션 유효시간 (기본 12시간)
-SESSION_TTL_SEC = float(os.getenv("APP_SESSION_TTL_SEC", 12 * 60 * 60))
+SESSION_TTL_SEC = env_float("APP_SESSION_TTL_SEC", 12 * 60 * 60)
 
 # 로그인 시도 제한
 MAX_ATTEMPTS = 8

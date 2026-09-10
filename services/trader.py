@@ -21,10 +21,11 @@ from typing import Any, Dict, List, Optional
 from services import bithumb, botstore
 from services import gemini_service
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
+from services.envconf import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
-MAX_ACTIVE_BOTS = int(os.getenv("APP_MAX_ACTIVE_BOTS", "10"))
+MAX_ACTIVE_BOTS = env_int("APP_MAX_ACTIVE_BOTS", 10)
 
 # 가격 확인 주기와 캔들 갱신 주기는 분리해야 한다.
 #
@@ -34,7 +35,7 @@ MAX_ACTIVE_BOTS = int(os.getenv("APP_MAX_ACTIVE_BOTS", "10"))
 #     급락 시 손실이 크게 밀린다. (실제로 그렇게 만들어 놨었다)
 #
 # 따라서 가격은 캔들 간격과 무관하게 항상 같은 주기로 확인한다.
-PRICE_POLL_SEC = float(os.getenv("APP_PRICE_POLL_SEC", "10"))
+PRICE_POLL_SEC = env_float("APP_PRICE_POLL_SEC", 10.0)
 
 CANDLE_REFRESH_SECONDS = {
     "1m": 30, "3m": 60, "5m": 90, "10m": 150,

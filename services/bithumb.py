@@ -22,6 +22,7 @@ from typing import Any, Dict, List, Optional
 
 import jwt
 import requests
+from services.envconf import env_float
 
 logger = logging.getLogger(__name__)
 
@@ -75,7 +76,7 @@ def _proxies() -> Optional[Dict[str, str]]:
 
 # 봇 여러 개가 같은 코인을 동시에 볼 때 중복 호출을 줄인다.
 # 손절 판단에 쓰이므로 TTL 은 짧게 둔다 (기본 3초).
-_PRICE_TTL = float(os.getenv("APP_PRICE_CACHE_SEC", "3"))
+_PRICE_TTL = env_float("APP_PRICE_CACHE_SEC", 3.0)
 _price_cache: Dict[str, tuple] = {}
 _price_lock = threading.Lock()
 

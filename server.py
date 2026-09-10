@@ -49,6 +49,7 @@ from services.gemini_service import gemini_keystore
 from services.keystore import keystore
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, bot_manager
+from services.envconf import env_int
 
 app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0")
 app.add_middleware(GZipMiddleware, minimum_size=500)
@@ -435,4 +436,4 @@ def index():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="127.0.0.1", port=int(os.getenv("PORT", "8888")), reload=True)
+    uvicorn.run("server:app", host="127.0.0.1", port=env_int("PORT", 8888), reload=True)
