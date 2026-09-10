@@ -22,6 +22,25 @@ from pydantic import BaseModel
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, CURRENT_DIR)
 
+# .env 파일이 있으면 환경변수로 자동 로드 (직접 실행 및 supervisor 대비)
+_env_file = os.path.join(CURRENT_DIR, ".env")
+if os.path.exists(_env_file):
+    try:
+        with open(_env_file, "r", encoding="utf-8") as _f:
+            for _line in _f:
+                _line = _line.strip()
+                if not _line or _line.startswith("#") or "=" not in _line:
+                    continue
+                _k, _v = _line.split("=", 1)
+                _k = _k.strip()
+                _v = _v.strip()
+                if (_v.startswith('"') and _v.endswith('"')) or (_v.startswith("'") and _v.endswith("'")):
+                    _v = _v[1:-1]
+                if _k and _k not in os.environ:
+                    os.environ[_k] = _v
+    except Exception as _e:
+        print(f"Warning: .env 로드 중 오류: {_e}")
+
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 

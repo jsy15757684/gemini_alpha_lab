@@ -43,8 +43,28 @@ _attempts: Dict[str, Dict[str, float]] = {}
 
 
 def _password() -> str:
-    """환경변수는 매 호출마다 읽는다 (재배포 없이 값 교체가 반영되도록)."""
-    return (os.getenv("APP_ACCESS_PASSWORD") or "").strip()
+    """환경변수는 매 호출마다 읽는다. 없으면 .env 파일을 직접 조회한다."""
+    val = (os.getenv("APP_ACCESS_PASSWORD") or "").strip()
+    if val:
+        return val
+    # 환경변수에 주입되지 않은 실행 환경 대비: 프로젝트 루트의 .env 파일 직접 로드
+    base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+    env_path = os.path.join(base_dir, ".env")
+    if os.path.exists(env_path):
+        try:
+            with open(env_path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = line.strip()
+                    if line.startswith("#") or not line:
+                        continue
+                    if line.startswith("APP_ACCESS_PASSWORD="):
+                        p = line.split("=", 1)[1].strip()
+                        if (p.startswith('"') and p.endswith('"')) or (p.startswith("'") and p.endswith("'")):
+                            p = p[1:-1]
+                        return p.strip()
+        except Exception as e:
+            logger.warning(f".env 파일에서 비밀번호 읽기 실패: {e}")
+    return ""
 
 
 def is_configured() -> bool:
