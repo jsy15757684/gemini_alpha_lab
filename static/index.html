@@ -131,7 +131,7 @@
                   <input class="input" type="number" id="bp_splitCount" value="40" min="5" max="100" step="5">
                 </div>
                 <div>
-                  <label class="label">목표 익절률 (%)</label>
+                  <label class="label">기본 목표 익절률 (%)</label>
                   <input class="input" type="number" id="bp_targetProfitPct" value="10.0" min="1.0" max="50.0" step="0.5">
                 </div>
                 <div>
@@ -139,7 +139,33 @@
                   <input class="input" type="number" id="bp_quarterCutPct" value="25" min="5" max="50" step="5">
                 </div>
               </div>
-              <p class="muted small" style="margin-top: 4px;">💡 원금을 N회로 쪼개어 매 캔들마다 기계적 분할매수하고, 평단가 대비 목표 수익률 도달 시 전량 익절합니다.</p>
+
+              <!-- AI 스마트 무한매수 토글 -->
+              <div style="margin-top: 12px; padding: 10px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 6px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 0.88rem;">
+                  <input type="checkbox" id="bp_raoerUseAi" style="width: 16px; height: 16px; accent-color: var(--accent);">
+                  <span>✨ Gemini AI 스마트 조절 (동적 비중 + 가변 익절)</span>
+                </label>
+                <div id="raoerAiSubOptions" class="hidden" style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.1);">
+                  <div class="form-grid">
+                    <div>
+                      <label class="label">약세장 조기 익절선 (%)</label>
+                      <input class="input" type="number" id="bp_raoerMinProfitPct" value="5.0" min="1.0" max="10.0" step="0.5">
+                    </div>
+                    <div>
+                      <label class="label">강세장 최대 익절선 (%)</label>
+                      <input class="input" type="number" id="bp_raoerMaxProfitPct" value="20.0" min="10.0" max="50.0" step="1.0">
+                    </div>
+                    <div>
+                      <label class="label">저점 집중 매수 배수</label>
+                      <input class="input" type="number" id="bp_raoerMaxMultiplier" value="2.0" min="1.2" max="3.0" step="0.1">
+                    </div>
+                  </div>
+                  <p class="muted small" style="margin-top: 6px;">⚡ 과매도·폭락 시 최대 N배 집중 매수하여 평단가를 급격히 낮추고, 시장 강도에 따라 목표 수익률을 5%~20%로 유연하게 자동 조절합니다.</p>
+                </div>
+              </div>
+
+              <p class="muted small" style="margin-top: 8px;">💡 원금을 N회로 쪼개어 매 캔들마다 분할매수하고 목표 수익률 도달 시 전량 익절합니다.</p>
             </div>
 
             <!-- 라오어 VR 옵션 -->
@@ -430,6 +456,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.4.1"></script>
+<script src="/static/js/app.js?v=4.5.0"></script>
 </body>
 </html>

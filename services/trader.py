@@ -133,8 +133,12 @@ class TradingBot:
         
         if self.params.strategyType == "raoer_infinite":
             chunk_krw = self.initial_krw / self.params.splitCount
-            self.log("INFO", f"🔄 [라오어 무한매수법] {self.params.splitCount}분할 매수 (1회당 {chunk_krw:,.0f}원) · "
-                             f"목표 익절 +{self.params.targetProfitPct}% · 쿼터방어 {self.params.quarterCutPct:.0f}%")
+            if self.params.raoerUseAi:
+                self.log("INFO", f"🔄✨ [AI 스마트 무한매수] {self.params.splitCount}분할 (기본 1회 {chunk_krw:,.0f}원 · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
+                                 f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 쿼터방어 {self.params.quarterCutPct:.0f}%")
+            else:
+                self.log("INFO", f"🔄 [라오어 무한매수법] {self.params.splitCount}분할 매수 (1회당 {chunk_krw:,.0f}원) · "
+                                 f"목표 익절 +{self.params.targetProfitPct}% · 쿼터방어 {self.params.quarterCutPct:.0f}%")
         elif self.params.strategyType == "raoer_vr":
             self.log("INFO", f"⚖️ [라오어 밸류리밸런싱 VR] 기울기 G={self.params.vrGradient} · 리밸런싱 밴드 ±{self.params.vrBandPct}%")
         elif self.params.useGemini:
@@ -214,27 +218,60 @@ class TradingBot:
 
                 # ── 전략 판단 실행 ──
                 if self.params.strategyType == "raoer_infinite":
-                    # 라오어 무한매수법:
-                    # 1) 목표 익절선(+targetProfitPct%) 도달 시 즉시 전량 익절
+                    cur_bar_time = bars[-1].get("time") if bars else None
+                    if self.params.raoerUseAi and (now - last_ai_check >= float(candle_ttl) or not self.last_ai_analysis):
+                        try:
+                            ai_res = gemini_service.analyze_raoer_context(
+                                coin=self.coin,
+                                interval=self.interval,
+                                bars=bars,
+                                turn=max(1, self.pos.turn),
+                                split_count=self.params.splitCount,
+                                current_price=price,
+                                entry_price=self.pos.entryPrice if self.pos.open else None,
+                                min_profit_pct=self.params.raoerMinProfitPct,
+                                max_profit_pct=self.params.raoerMaxProfitPct,
+                                max_mult=self.params.raoerMaxMultiplier,
+                            )
+                            if ai_res.get("success"):
+                                self.last_ai_analysis = ai_res
+                                last_ai_check = now
+                                self.log("INFO", f"🤖 [AI 무한매수 분석] 비중 {ai_res.get('sizingMultiplier')}x 배수 | 가변 목표 +{ai_res.get('dynamicTargetProfitPct')}% ({ai_res.get('reason')})")
+                        except Exception as e:
+                            logger.warning(f"[{self.bot_id}] AI 무한매수 분석 실패: {e}")
+
+                    target_tp = self.params.targetProfitPct
+                    if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
+                        target_tp = self.last_ai_analysis.get("dynamicTargetProfitPct", target_tp)
+
+                    # 1) 목표 익절선 도달 시 즉시 전량 익절
                     if self.pos.open:
                         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
-                        if pnl_pct >= self.params.targetProfitPct:
-                            self.last_decision = f"무한매수 목표 익절 (+{pnl_pct:.2f}% ≥ +{self.params.targetProfitPct:.1f}%)"
+                        if pnl_pct >= target_tp:
+                            ai_note = f" (AI 가변목표 +{target_tp:.1f}%)" if self.params.raoerUseAi else ""
+                            self.last_decision = f"무한매수 목표 익절 (+{pnl_pct:.2f}% ≥ +{target_tp:.1f}%){ai_note}"
                             self._exit(price, self.last_decision)
                             time.sleep(poll)
                             continue
 
-                    # 2) 캔들 갱신 시점마다 기계적 분할 매수 / 쿼터 방어
-                    cur_bar_time = bars[-1].get("time") if bars else None
+                    # 2) 캔들 갱신 시점마다 기계적 / AI 동적 분할 매수 / 쿼터 방어
                     if cur_bar_time and cur_bar_time != self._last_bar_time:
                         self._last_bar_time = cur_bar_time
-                        chunk_krw = self.initial_krw / self.params.splitCount
+                        base_chunk_krw = self.initial_krw / self.params.splitCount
+                        sizing_mult = 1.0
+                        ai_reason = ""
+                        if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
+                            sizing_mult = self.last_ai_analysis.get("sizingMultiplier", 1.0)
+                            ai_reason = f" [AI {sizing_mult}x 배수: {self.last_ai_analysis.get('reason', '')}]"
+
+                        chunk_krw = base_chunk_krw * sizing_mult
+
                         if not self.pos.open:
-                            self.last_decision = f"무한매수 1/{self.params.splitCount}회차 첫 매수"
+                            self.last_decision = f"무한매수 1/{self.params.splitCount}회차 첫 매수{ai_reason}"
                             self._enter_chunk(price, chunk_krw, self.last_decision)
                         elif self.pos.turn < self.params.splitCount:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
-                            self.last_decision = f"무한매수 {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%)"
+                            self.last_decision = f"무한매수 {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%){ai_reason}"
                             self._enter_chunk(price, chunk_krw, self.last_decision)
                         else:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
@@ -243,7 +280,8 @@ class TradingBot:
                     else:
                         if self.pos.open:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
-                            self.last_decision = f"무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%)"
+                            ai_badge = f" · AI 목표 +{target_tp:.1f}%" if self.params.raoerUseAi else ""
+                            self.last_decision = f"무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%{ai_badge})"
                         else:
                             self.last_decision = "무한매수 다음 캔들 1회차 대기 중"
 

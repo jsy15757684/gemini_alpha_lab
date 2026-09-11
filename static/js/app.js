@@ -174,6 +174,10 @@ function readParams(prefix) {
       p.splitCount = parseInt($("bp_splitCount")?.value || "40", 10);
       p.targetProfitPct = parseFloat($("bp_targetProfitPct")?.value || "10.0");
       p.quarterCutPct = parseFloat($("bp_quarterCutPct")?.value || "25.0");
+      p.raoerUseAi = $("bp_raoerUseAi") ? $("bp_raoerUseAi").checked : false;
+      p.raoerMinProfitPct = parseFloat($("bp_raoerMinProfitPct")?.value || "5.0");
+      p.raoerMaxProfitPct = parseFloat($("bp_raoerMaxProfitPct")?.value || "20.0");
+      p.raoerMaxMultiplier = parseFloat($("bp_raoerMaxMultiplier")?.value || "2.0");
     } else if (stratType === "raoer_vr") {
       p.strategyType = "raoer_vr";
       p.vrGradient = parseFloat($("bp_vrGradient")?.value || "10.0");
@@ -280,7 +284,11 @@ function botCard(b) {
 
   let stratBadge = "";
   if (b.strategyType === "raoer_infinite") {
-    stratBadge = `<span class="badge" style="background:rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(16,185,129,.4);">🔄 무한매수 (T=${b.turn||0}/${b.splitCount||40})</span>`;
+    if (b.params?.raoerUseAi) {
+      stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:#60a5fa; border:1px solid rgba(59,130,246,.4);">✨ AI 스마트 무한매수 (T=${b.turn||0}/${b.splitCount||40})</span>`;
+    } else {
+      stratBadge = `<span class="badge" style="background:rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(16,185,129,.4);">🔄 무한매수 (T=${b.turn||0}/${b.splitCount||40})</span>`;
+    }
   } else if (b.strategyType === "raoer_vr") {
     stratBadge = `<span class="badge" style="background:rgba(245,158,11,.18); color:#fbbf24; border:1px solid rgba(245,158,11,.4);">⚖️ 밸류리밸런싱 VR</span>`;
   } else if (b.params?.useGemini) {
@@ -307,7 +315,7 @@ function botCard(b) {
           : ""}</div><div class="stat-v">${won(b.currentPrice)}</div></div>
       <div><div class="stat-k">보유 / 평단</div><div class="stat-v">${b.units > 0 ? b.units.toFixed(6) : "-"} ${b.units > 0 ? `<span class="small muted">(${won(b.entryPrice)})</span>` : ""}</div></div>
       <div><div class="stat-k">평가손익</div><div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0 ? won(b.unrealizedPnlKrw) : "-"}</div></div>
-      <div><div class="stat-k">${b.strategyType === 'raoer_infinite' ? '진행 회차' : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? `${b.turn||0} / ${b.splitCount||40}` : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
+      <div><div class="stat-k">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? '회차 (AI목표/비중)' : '진행 회차') : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? `${b.turn||0}/${b.splitCount||40} <span class="small" style="color:var(--accent); font-size:0.75rem;">(+${b.lastAiAnalysis?.dynamicTargetProfitPct || b.params?.targetProfitPct}% / ${b.lastAiAnalysis?.sizingMultiplier || 1.0}x)</span>` : `${b.turn||0} / ${b.splitCount||40}`) : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
       <div><div class="stat-k">거래 (익절)</div><div class="stat-v">${b.totalTrades}회</div></div>
       <div><div class="stat-k">승률</div><div class="stat-v">${b.totalTrades ? b.winRatePct + "%" : "-"}</div></div>
     </div>
@@ -675,11 +683,16 @@ function toggleStrategyUI() {
   const raoerVrOpts = $("raoerVrBotOptions");
   const gemOptions = $("geminiBotOptions");
   const quantSettings = $("quantBotSettings");
+  const raoerAiSub = $("raoerAiSubOptions");
+  const raoerUseAiCheck = $("bp_raoerUseAi");
 
   if (raoerOpts) raoerOpts.classList.toggle("hidden", type !== "raoer_infinite");
   if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");
   if (gemOptions) gemOptions.classList.toggle("hidden", !(type === "gemini_ai" || type === "gemini_hybrid"));
   if (quantSettings) quantSettings.classList.toggle("hidden", !(type === "technical" || type === "gemini_hybrid" || type === "gemini_ai"));
+  if (raoerAiSub && raoerUseAiCheck) {
+    raoerAiSub.classList.toggle("hidden", !raoerUseAiCheck.checked || type !== "raoer_infinite");
+  }
 }
 
 function toggleBtStrategyUI() {
@@ -943,8 +956,11 @@ async function boot() {
   // 전략 선택기 UI 바인딩
   if ($("botStrategyType")) {
     $("botStrategyType").onchange = toggleStrategyUI;
-    toggleStrategyUI();
   }
+  if ($("bp_raoerUseAi")) {
+    $("bp_raoerUseAi").onchange = toggleStrategyUI;
+  }
+  toggleStrategyUI();
   if ($("btStrategyType")) {
     $("btStrategyType").onchange = toggleBtStrategyUI;
     toggleBtStrategyUI();

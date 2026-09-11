@@ -29,6 +29,10 @@ class StrategyParams:
     splitCount: int = 40          # 분할 매수 횟수 (20~60, 기본 40분할)
     targetProfitPct: float = 10.0 # 무한매수 목표 익절 수익률 (+10.0%)
     quarterCutPct: float = 25.0   # 40회차 소진 시 쿼터 매도 방어율 (25%)
+    raoerUseAi: bool = False      # ✨ Gemini AI 스마트 무한매수 (동적 비중 + 가변 익절)
+    raoerMinProfitPct: float = 5.0    # 약세장 조기 익절선 (%)
+    raoerMaxProfitPct: float = 20.0   # 강세장 최대 익절선 (%)
+    raoerMaxMultiplier: float = 2.0   # 저점 과매도 시 집중 매수 최대 배수 (1.5~2.5배)
 
     # ── 라오어 밸류 리밸런싱 (VR) 파라미터 ──
     vrGradient: float = 10.0      # VR 기울기 G (10~20)

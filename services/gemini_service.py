@@ -462,3 +462,134 @@ def scan_all_coins(interval: str = "1h") -> Dict[str, Any]:
         "model": gemini_keystore.model,
         "results": ranked
     }
+
+
+def analyze_raoer_context(coin: str, interval: str = "1h",
+                          bars: Optional[List[Dict[str, Any]]] = None,
+                          turn: int = 1,
+                          split_count: int = 40,
+                          current_price: Optional[float] = None,
+                          entry_price: Optional[float] = None,
+                          min_profit_pct: float = 5.0,
+                          max_profit_pct: float = 20.0,
+                          max_mult: float = 2.0,
+                          force_refresh: bool = False) -> Dict[str, Any]:
+    """라오어 무한매수법 전용 AI 동적 비중 조절 및 가변 목표 익절률 분석."""
+    norm_coin = bithumb.normalize_coin(coin)
+    if not norm_coin:
+        return {"success": False, "sizingMultiplier": 1.0, "dynamicTargetProfitPct": 10.0, "reason": "유효하지 않은 코인"}
+
+    cache_key = f"raoer_{norm_coin}_{interval}_{turn}"
+    now = time.time()
+    if not force_refresh and cache_key in _ANALYSIS_CACHE:
+        cached = _ANALYSIS_CACHE[cache_key]
+        if now - cached.get("_cached_at", 0) < CACHE_TTL_SEC:
+            return cached
+
+    if not gemini_keystore.configured:
+        return {
+            "success": False,
+            "sizingMultiplier": 1.0,
+            "dynamicTargetProfitPct": 10.0,
+            "reason": "Gemini API 미설정 (표준 1.0x 비중 및 10.0% 익절 기준 유지)",
+            "marketRegime": "NORMAL",
+        }
+
+    try:
+        if current_price is None:
+            current_price = bithumb.get_price(norm_coin)
+
+        if bars is None:
+            raw_candles = bithumb.get_candles(norm_coin, interval, limit=40)
+            bars = compute_indicators(raw_candles, StrategyParams())
+
+        coin_name = bithumb.COINS.get(norm_coin, norm_coin)
+        recent_bars = bars[-8:] if len(bars) >= 8 else bars
+        bars_summary = []
+        for b in recent_bars:
+            bars_summary.append({
+                "t": b.get("time"),
+                "c": b.get("close"),
+                "v": round(b.get("volume", 0), 2),
+                "rsi": round(b.get("rsi", 0), 1) if b.get("rsi") is not None else None,
+                "macd": round(b.get("macd", 0), 1) if b.get("macd") is not None else None,
+                "bb_l": round(b.get("bbLower", 0), 1) if b.get("bbLower") is not None else None,
+            })
+
+        pnl_pct = (current_price - entry_price) / entry_price * 100.0 if (entry_price and entry_price > 0) else 0.0
+
+        prompt = f"""당신은 라오어 무한매수법을 극대화하는 암호화폐 퀀트 AI입니다.
+빗썸 {coin_name}({norm_coin}/KRW)의 실시간 지표 추세를 분석하여 이번 턴의 분할 매수 비중 배수(0.5x~{max_mult}x)와 가변 익절 목표 수익률({min_profit_pct}%~{max_profit_pct}%)을 결정해주세요.
+
+[현재 포지션 및 시장 상태]
+- 대상: {coin_name}({norm_coin}), 캔들: {interval}, 현재가: {current_price:,.0f}원
+- 진행 상황: {turn}/{split_count}회차 무한매수 진행 중
+- 포지션: {'미보유(첫 진입)' if not entry_price else f'평단 {entry_price:,.0f}원 (현재 손익 {pnl_pct:+.2f}%)'}
+- 최근 캔들 추이:
+{json.dumps(bars_summary, ensure_ascii=False)}
+
+[판단 가이드]
+1. sizingMultiplier (매수 비중 배수):
+   - RSI < 30 또는 볼린저 하단 이탈 등 심한 과매도/폭락 구간: 1.5 ~ {max_mult} (저점 집중 매수로 평단 대폭 인하)
+   - RSI > 70 또는 단기 급등 과열 구간: 0.5 (고점 매수 축소 및 현금 보존)
+   - 일반 정상 횡보/추세: 1.0 (표준 분할 매수)
+2. dynamicTargetProfitPct (가변 목표 익절률 %):
+   - 강력한 상승 모멘텀(불장): 12.0 ~ {max_profit_pct} (수익 극대화 추적)
+   - 약세장/단기 반등장: {min_profit_pct} ~ 8.0 (빠른 현금화/탈출)
+   - 표준: 10.0
+
+반드시 아래 JSON 스키마로만 엄격히 응답하세요:
+{{
+  "sizingMultiplier": 0.5~{max_mult} 사이 실수,
+  "dynamicTargetProfitPct": {min_profit_pct}~{max_profit_pct} 사이 실수,
+  "marketRegime": "DIP_OPPORTUNITY" | "NORMAL" | "OVERHEATED" | "STRONG_BULL" | "BEARISH_RALLY",
+  "reason": "한 줄 요약 사유 (예: RSI 28 과매도 구간으로 평단가 조기 인하를 위해 1.5배 매수 권장)"
+}}
+"""
+        target_model = gemini_keystore.model
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={gemini_keystore.api_key}"
+        payload = {
+            "contents": [{"parts": [{"text": prompt}]}],
+            "generationConfig": {
+                "temperature": 0.1,
+                "maxOutputTokens": 512,
+                "response_mime_type": "application/json"
+            }
+        }
+        resp = _HTTP_SESSION.post(url, json=payload, timeout=30)
+        if resp.status_code == 200:
+            data = resp.json()
+            raw_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            parsed = _parse_gemini_json(raw_text)
+            sm = float(parsed.get("sizingMultiplier", 1.0))
+            sm = max(0.5, min(max_mult, sm))
+            tp = float(parsed.get("dynamicTargetProfitPct", 10.0))
+            tp = max(min_profit_pct, min(max_profit_pct, tp))
+            result = {
+                "success": True,
+                "sizingMultiplier": round(sm, 2),
+                "dynamicTargetProfitPct": round(tp, 1),
+                "marketRegime": parsed.get("marketRegime", "NORMAL"),
+                "reason": parsed.get("reason", "AI 분석 완료"),
+                "_cached_at": time.time(),
+            }
+            _ANALYSIS_CACHE[cache_key] = result
+            return result
+        else:
+            return {
+                "success": False,
+                "sizingMultiplier": 1.0,
+                "dynamicTargetProfitPct": 10.0,
+                "reason": f"AI 응답 지연 ({resp.status_code}) — 기본 1.0x/10% 유지",
+                "marketRegime": "NORMAL",
+            }
+    except Exception as e:
+        logger.warning(f"[{norm_coin}] AI 스마트 무한매수 분석 실패: {e}")
+        return {
+            "success": False,
+            "sizingMultiplier": 1.0,
+            "dynamicTargetProfitPct": 10.0,
+            "reason": f"AI 분석 오류: {e}",
+            "marketRegime": "NORMAL",
+        }
+
