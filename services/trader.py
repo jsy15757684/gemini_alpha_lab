@@ -18,7 +18,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from services import bithumb, botstore
+from services import bithumb, botstore, tradelog
 from services import gemini_service
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 from services.envconf import env_float, env_int
@@ -102,6 +102,13 @@ class TradingBot:
             }
             self.trade_history.insert(0, trade_item)
             del self.trade_history[500:]
+        # 봇과 분리된 장부에도 남긴다. 봇을 지워도 체결 기록과 실현 손익은
+        # 남아야 한다 — 화면이 '누적 정산' 이라고 부르는 근거가 이것이다.
+        # 락 밖에서 호출한다(디스크 쓰기를 봇 락 안에서 하지 않는다).
+        try:
+            tradelog.append(trade_item)
+        except Exception as e:
+            logger.error(f"[{self.bot_id}] 체결 일지 기록 실패: {e}")
 
     def _persist(self):
         """상태가 바뀌면 전체 스냅샷을 다시 쓴다. 봇 수가 적어 비용이 미미하다."""
@@ -791,8 +798,18 @@ class BotManager:
         return [b.status() for b in self.bots.values()]
 
     def all_trade_history(self) -> Dict[str, Any]:
-        """모든 봇의 체결 내역 통합 및 누적 손익 정산 집계."""
-        all_trades = []
+        """전체 체결 일지와 누적 손익 정산.
+
+        집계 근거는 현재 살아 있는 봇이 아니라 tradelog(영속 장부)다.
+        봇을 지웠다고 과거 체결과 실현 손익이 사라지면 그 화면을 '누적 정산'
+        이라고 부를 수 없다.
+
+        실현 손익과 체결 횟수는 매도 행(SELL*)만 센다. 봇 내부 집계
+        (realized_pnl / total_trades)가 매도에서만 증가하는 것과 같은 규칙이라
+        화면의 봇별 숫자와 합계가 어긋나지 않는다.
+        """
+        rows = tradelog.all_rows()
+
         total_pnl = 0.0
         total_trades = 0
         winning_trades = 0
@@ -800,51 +817,47 @@ class BotManager:
         total_sell_krw = 0.0
         by_coin: Dict[str, Dict[str, Any]] = {}
 
-        with self._lock:
-            bot_list = list(self.bots.values())
+        for t in rows:
+            act = t.get("action", "") or ""
+            try:
+                amt = float(t.get("amountKrw", 0.0) or 0.0)
+                pnl = float(t.get("pnlKrw", 0.0) or 0.0)
+            except (TypeError, ValueError):
+                continue
+            coin = t.get("coin") or "?"
 
-        for b in bot_list:
-            with b._lock:
-                for t in b.trade_history:
-                    all_trades.append(t)
-            total_pnl += b.realized_pnl
-            total_trades += b.total_trades
-            winning_trades += b.winning_trades
+            stats = by_coin.setdefault(coin, {
+                "coin": coin,
+                "coinName": bithumb.COINS.get(coin, coin),
+                "realizedPnlKrw": 0.0,
+                "totalTrades": 0,
+                "winningTrades": 0,
+                "winRatePct": 0.0,
+            })
 
-            c = b.coin
-            if c not in by_coin:
-                by_coin[c] = {
-                    "coin": c,
-                    "coinName": bithumb.COINS.get(c, c),
-                    "realizedPnlKrw": 0.0,
-                    "totalTrades": 0,
-                    "winningTrades": 0,
-                    "winRatePct": 0.0,
-                }
-            by_coin[c]["realizedPnlKrw"] += b.realized_pnl
-            by_coin[c]["totalTrades"] += b.total_trades
-            by_coin[c]["winningTrades"] += b.winning_trades
-
-        # 최신순 정렬
-        all_trades.sort(key=lambda x: x.get("time", ""), reverse=True)
-
-        for t in all_trades:
-            act = t.get("action", "")
-            amt = float(t.get("amountKrw", 0.0))
-            if "BUY" in act:
-                total_buy_krw += amt
-            elif "SELL" in act:
+            if "SELL" in act:
                 total_sell_krw += amt
+                total_pnl += pnl
+                total_trades += 1
+                stats["realizedPnlKrw"] += pnl
+                stats["totalTrades"] += 1
+                if pnl > 0:
+                    winning_trades += 1
+                    stats["winningTrades"] += 1
+            elif "BUY" in act:
+                total_buy_krw += amt
+
+        rows.sort(key=lambda x: x.get("time", ""), reverse=True)
 
         win_rate = round(winning_trades / total_trades * 100, 2) if total_trades > 0 else 0.0
 
         coin_summary = []
-        for c, stats in by_coin.items():
+        for stats in by_coin.values():
             tot = stats["totalTrades"]
-            win = stats["winningTrades"]
-            stats["winRatePct"] = round(win / tot * 100, 2) if tot > 0 else 0.0
+            stats["winRatePct"] = round(stats["winningTrades"] / tot * 100, 2) if tot > 0 else 0.0
             stats["realizedPnlKrw"] = round(stats["realizedPnlKrw"], 0)
             coin_summary.append(stats)
+        coin_summary.sort(key=lambda x: x["realizedPnlKrw"], reverse=True)
 
         return {
             "summary": {
@@ -856,7 +869,7 @@ class BotManager:
                 "totalSellKrw": round(total_sell_krw, 0),
                 "byCoin": coin_summary,
             },
-            "trades": all_trades[:500],
+            "trades": rows[:500],
         }
 
     # ── 영속화 / 복원 ──
@@ -872,6 +885,10 @@ class BotManager:
         재가동하지 않는다. 그 상태로 매도를 걸면 주문이 거부되거나
         의도하지 않은 수량이 나가기 때문이다. 판단은 사용자에게 맡긴다.
         """
+        # 봇이 하나도 없어도 장부는 올려둔다. 봇을 전부 지운 뒤에도
+        # 매매 일지와 누적 손익은 계속 보여야 한다.
+        tradelog.load()
+
         records = botstore.load()
         if not records:
             return {"restored": 0, "resumed": 0, "held": 0, "notes": []}
@@ -938,6 +955,16 @@ class BotManager:
             resumed += 1
 
         self.persist()
+
+        # 장부가 생기기 전에 쌓인 체결은 봇 스냅샷에만 있다. 한 번 끌어온다.
+        # id 기준 중복 제외라 여러 번 호출해도 안전하다.
+        try:
+            merged = tradelog.seed([t for b in self.bots.values() for t in b.trade_history])
+            if merged:
+                logger.info(f"기존 봇 기록 {merged}건을 체결 일지로 이관했습니다.")
+        except Exception as e:
+            logger.error(f"체결 일지 이관 실패: {e}")
+
         summary = {"restored": len(self.bots), "resumed": resumed,
                    "held": held, "notes": notes}
         logger.info(f"봇 복원: 총 {summary['restored']}개 · 재가동 {resumed}개 · 보류 {held}개")
