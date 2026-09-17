@@ -99,6 +99,12 @@ def _startup_log():
     global RESTORE_SUMMARY
     RESTORE_SUMMARY = bot_manager.restore(keystore.account)
 
+    # 차익거래 시뮬레이터도 복원한다. 실주문이 없으니 거래소 대조는 없다.
+    try:
+        arbitrage_manager.restore()
+    except Exception as e:
+        logger.error(f"차익거래 시뮬레이터 복원 실패: {e}")
+
 
 # ───────────────────────── 인증 ─────────────────────────
 
@@ -477,10 +483,19 @@ def arbitrage_deploy(req: ArbitrageDeployRequest):
 
 @app.post("/api/arbitrage/stop")
 def arbitrage_stop(req: BotIdRequest):
-    """차익거래 봇 정지."""
+    """차익거래 시뮬레이터 정지."""
     ok = arbitrage_manager.stop_bot(req.botId)
     if not ok:
-        raise HTTPException(404, f"해당 차익거래 봇을 찾을 수 없습니다: {req.botId}")
+        raise HTTPException(404, f"해당 시뮬레이터를 찾을 수 없습니다: {req.botId}")
+    return {"success": True}
+
+
+@app.post("/api/arbitrage/delete")
+def arbitrage_delete(req: BotIdRequest):
+    """차익거래 시뮬레이터 삭제. 이제 재시작에도 남으므로 지울 수단이 필요하다."""
+    ok = arbitrage_manager.delete_bot(req.botId)
+    if not ok:
+        raise HTTPException(404, f"해당 시뮬레이터를 찾을 수 없습니다: {req.botId}")
     return {"success": True}
 
 

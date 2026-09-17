@@ -1078,13 +1078,23 @@ async function boot() {
                 <span class="muted small">(${b.coin})</span>
               </div>
               <div>
-                ${b.isRunning ? `<button class="btn btn-danger btn-xs" onclick="window.stopArbBot('${b.botId}')">정지</button>` : '<span class="muted small">정지됨</span>'}
+                ${b.isRunning
+                    ? `<button class="btn btn-danger btn-xs" onclick="window.stopArbBot('${b.botId}')">정지</button>`
+                    : `<span class="muted small" style="margin-right:6px;">정지됨</span><button class="btn btn-ghost btn-xs" onclick="window.deleteArbBot('${b.botId}')">삭제</button>`}
               </div>
             </div>
             <div class="bot-body" style="font-size: 0.85rem; margin-top: 8px;">
               <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                <span class="muted">자본:</span> <b>${won(b.initialKrw)}원</b>
-                <span class="muted">가상 손익:</span> <b class="${cls(b.realizedPnl)}">${won(b.realizedPnl)}원 (${pct(b.returnPct)})</b>
+                <span class="muted">가상 자본:</span> <b>${won(b.initialKrw)}원</b>
+                <span class="muted">평가액:</span>
+                <b class="${(b.totalReturnPct === null || b.totalReturnPct === undefined) ? '' : cls(b.totalReturnPct)}">${
+                  (b.equityKrw === null || b.equityKrw === undefined)
+                    ? '— (시세 대기)'
+                    : `${won(b.equityKrw)}원 (${pct(b.totalReturnPct)})`}</b>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                <span class="muted">확정 손익:</span> <b class="${cls(b.realizedPnl)}">${won(b.realizedPnl)}원 (${pct(b.returnPct)})</b>
+                <span class="muted">누적 펀딩:</span> <span>$${b.accruedFundingUsdt ?? 0}</span>
               </div>
               <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                 <span class="muted">국내(가상):</span> <span>${won(b.cashKrw)}원 / ${b.coinUnitsDomestic} ${b.coin}</span>
@@ -1101,6 +1111,20 @@ async function boot() {
       console.warn("차익거래 봇 목록 조회 실패:", e);
     }
   }
+
+  window.deleteArbBot = async function(botId) {
+    if (!confirm("이 시뮬레이터를 삭제하시겠습니까? 기록이 사라집니다.")) return;
+    try {
+      await api("/api/arbitrage/delete", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botId })
+      });
+      await loadArbitrageBots();
+    } catch (e) {
+      alert(e.message);
+    }
+  };
 
   window.stopArbBot = async function(botId) {
     if (!confirm("해당 차익거래 봇을 정지하시겠습니까?")) return;

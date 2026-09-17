@@ -116,14 +116,31 @@ echo ""
 echo "▶ 터널을 엽니다. 비밀번호를 입력하세요 (화면에 안 보이는 게 정상)"
 echo ""
 
-ssh -N \
-    -o ExitOnForwardFailure=yes \
-    -o ServerAliveInterval=30 \
-    -o ServerAliveCountMax=3 \
-    -L "127.0.0.1:${PORT}:127.0.0.1:${PORT}" \
-    "$SERVER"
+# 끊기면 다시 붙는다. 맥이 잠자기에서 깨거나 네트워크가 잠깐 끊겨도
+# 창을 다시 열 필요가 없다. 창을 닫거나 Ctrl+C 를 누르면 완전히 종료한다.
+trap 'echo ""; echo "  종료합니다."; exit 0' INT TERM
 
-code=$?
+attempt=0
+while true; do
+  attempt=$((attempt+1))
+  [ $attempt -gt 1 ] && echo "  [$(date '+%H:%M:%S')] 재연결 시도 ${attempt}..."
+
+  ssh -N \
+      -o ExitOnForwardFailure=yes \
+      -o ServerAliveInterval=30 \
+      -o ServerAliveCountMax=3 \
+      -o ConnectTimeout=10 \
+      -L "127.0.0.1:${PORT}:127.0.0.1:${PORT}" \
+      "$SERVER"
+  code=$?
+
+  # 사용자가 Ctrl+C 로 끊었으면(130) 재연결하지 않는다.
+  [ $code -eq 130 ] && break
+
+  echo "  [$(date '+%H:%M:%S')] 터널이 끊겼습니다 (코드 $code). 10초 뒤 다시 붙습니다."
+  echo "  중단하려면 Ctrl+C 를 두 번 누르세요."
+  sleep 10
+done
 echo ""
 printf '\033[1;33m'
 cat <<'OUTRO'

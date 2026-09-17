@@ -22,10 +22,60 @@ from typing import Any, Dict, List
 
 logger = logging.getLogger(__name__)
 
-STORE_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "bots.json")
+_DATA_DIR = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+
+STORE_FILE = os.path.join(_DATA_DIR, "bots.json")
 
 _lock = threading.Lock()
+
+
+class JsonStore:
+    """레코드 목록을 원자적으로 읽고 쓰는 작은 저장소.
+
+    자동매매 봇과 차익거래 시뮬레이터가 같은 방식을 쓰되 파일은 분리한다.
+    실계좌 포지션을 담은 파일에 가상 체결을 섞지 않기 위해서다.
+    """
+
+    def __init__(self, filename: str, label: str):
+        self.path = os.path.join(_DATA_DIR, filename)
+        self.label = label
+        self._lock = threading.Lock()
+
+    def save(self, records: List[Dict[str, Any]]) -> None:
+        with self._lock:
+            try:
+                os.makedirs(os.path.dirname(self.path), exist_ok=True)
+                fd, tmp = tempfile.mkstemp(dir=os.path.dirname(self.path), suffix=".tmp")
+                try:
+                    with os.fdopen(fd, "w", encoding="utf-8") as f:
+                        json.dump({"version": 1, "records": records}, f, ensure_ascii=False)
+                    os.replace(tmp, self.path)
+                except Exception:
+                    try:
+                        os.unlink(tmp)
+                    except OSError:
+                        pass
+                    raise
+            except Exception as e:
+                logger.error(f"{self.label} 저장 실패: {e}")
+
+    def load(self) -> List[Dict[str, Any]]:
+        with self._lock:
+            if not os.path.exists(self.path):
+                return []
+            try:
+                with open(self.path, encoding="utf-8") as f:
+                    data = json.load(f)
+            except Exception as e:
+                logger.error(f"{self.label} 파일을 읽지 못했습니다 (무시하고 진행): {e}")
+                return []
+        recs = data.get("records") if isinstance(data, dict) else None
+        return recs if isinstance(recs, list) else []
+
+
+# 차익거래 시뮬레이터 상태 (가상 체결 — 실계좌 봇과 파일을 분리한다)
+arb_store = JsonStore("arb_bots.json", "차익거래 시뮬레이터 상태")
 
 
 def save(records: List[Dict[str, Any]]) -> None:

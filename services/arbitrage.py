@@ -26,7 +26,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 
-from services import bithumb, tradelog
+from services import bithumb, botstore
 from services.envconf import env_float
 
 logger = logging.getLogger(__name__)
@@ -234,6 +234,13 @@ class ArbitrageBot:
         self.last_status = "대기 중"
         self.total_trades = 0
 
+        # 평가액 계산용 마지막 관측 시세. 네트워크 없이 status() 를 만들기 위해
+        # 루프에서 갱신해 둔다. 없으면 None 이고, 그 경우 평가액은 None 이다
+        # (0 으로 두면 '평가액 0원' 이라는 관측값처럼 보인다).
+        self._last_usdt_krw: Optional[float] = None
+        self._last_coin_krw: Optional[float] = None
+        self._last_binance_usd: Optional[float] = None
+
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
@@ -266,6 +273,7 @@ class ArbitrageBot:
         self.is_running = False
         self.last_status = "정지됨"
         self.log("INFO", "시뮬레이션 정지")
+        self._persist()
 
     def _run_loop(self):
         while self.is_running:
@@ -273,6 +281,13 @@ class ArbitrageBot:
                 radar = get_arbitrage_radar()
                 fx = radar.get("officialFxRate")
                 usdt_krw = radar.get("bithumbUsdtPrice")
+
+                self._last_usdt_krw = usdt_krw
+                item = next((c for c in radar.get("coins", [])
+                             if c["coin"] == self.coin), None)
+                if item:
+                    self._last_coin_krw = item.get("bithumbPrice")
+                    self._last_binance_usd = item.get("binanceUsdPrice")
 
                 # 값이 없으면 판단을 보류한다. 0 이나 추정치로 대신하지 않는다.
                 if not fx or not usdt_krw:
@@ -310,6 +325,7 @@ class ArbitrageBot:
                 self.total_trades += 1
                 self.log("BUY", f"[가상 체결] 역프 {prem_pct:+.2f}% — USDT {units:,.2f} 매수 "
                                 f"(@ {usdt_price:,.0f}원, {invest:,.0f}원)")
+                self._persist()
                 self.last_status = f"테더 보유 (진입 {usdt_price:,.0f}원, 프리미엄 {prem_pct:+.2f}%)"
             else:
                 self.last_status = f"역프 감시 중 (현재 {prem_pct:+.2f}%, 목표 ≤ {buy_at}%)"
@@ -326,6 +342,7 @@ class ArbitrageBot:
                 self.total_trades += 1
                 self.log("SELL", f"[가상 체결] 김프 {prem_pct:+.2f}% — USDT 전량 매도 "
                                  f"{proceeds:,.0f}원 회수 (손익 {pnl:+,.0f}원)")
+                self._persist()
                 self.last_status = f"청산 완료 (누적 {self.realized_pnl:+,.0f}원)"
             else:
                 now_val = self.coin_units_domestic * usdt_price
@@ -362,6 +379,7 @@ class ArbitrageBot:
                 self.total_trades += 1
                 self.log("BUY", f"[가상 체결] 김프 {kimchi:+.2f}% — 국내 현물 {units:.6f} {self.coin} 매수 "
                                 f"+ 해외 1배 숏 {units:.6f} 동시 구축 (가상)")
+                self._persist()
                 self.last_status = f"헤지 유지 중 (김프 {kimchi:+.2f}%, 수량 {units:.6f})"
             else:
                 self.last_status = f"김프 저점 감시 (현재 {kimchi:+.2f}%, 목표 ≤ {entry_at}%)"
@@ -396,6 +414,7 @@ class ArbitrageBot:
             self.log("SELL", f"[가상 체결] 김프 {kimchi:+.2f}% — 양다리 동시 청산 | "
                              f"현물 {domestic_proceeds:,.0f}원 · 숏 {short_pnl_krw:+,.0f}원 · "
                              f"펀딩 {funding_krw:+,.0f}원 → 손익 {pnl:+,.0f}원")
+            self._persist()
             self.last_status = f"청산 완료 (누적 {self.realized_pnl:+,.0f}원)"
         else:
             self.last_status = (f"펀딩비 누적 중 (김프 {kimchi:+.2f}%, 청산 ≥ {exit_at}%, "
@@ -427,6 +446,7 @@ class ArbitrageBot:
             self.total_trades += 1
             self.log("BUY", f"[가상 체결] 초기 재고 구축 — 국내 {units:.6f} {self.coin} 매수 "
                             f"+ 해외 증거금 ${self.foreign_cash_usdt:,.2f} 배치")
+            self._persist()
             return
 
         trigger = float(self.config.get("triggerSpreadPct", 0.4))
@@ -457,9 +477,103 @@ class ArbitrageBot:
                           f"+ 해외 매수 동시 (마진 {margin_krw:+,.0f}원)")
         self.last_status = (f"차익 실현 중 (스프레드 {spread:+.2f}%, "
                             f"누적 {self.realized_pnl:+,.0f}원)")
+        self._persist()
+
+    # ── 평가액 ────────────────────────────────────────────────────
+    def equity_krw(self) -> Optional[float]:
+        """현재 총 평가액(원). 시세를 아직 못 받았으면 None.
+
+        실현 손익만으로는 시뮬레이션 성과를 판단할 수 없다. 전략마다 가치가
+        국내 현금 · 국내 코인 · 해외 증거금 · 해외 포지션에 나뉘어 있어서,
+        한쪽만 보면 재고가 줄어든 것을 수익으로 착각하게 된다.
+        """
+        u = self._last_usdt_krw
+        c = self._last_coin_krw
+        b = self._last_binance_usd
+        if u is None:
+            return None
+
+        if self.strategy == "usdt_swap":
+            # coin_units_domestic 은 USDT 수량이다.
+            return self.cash_krw + self.coin_units_domestic * u
+
+        if self.strategy == "kimkim_funding":
+            if self.coin_units_domestic > 0 and (c is None or b is None):
+                return None
+            total = self.cash_krw + self.foreign_reserve_krw
+            if self.coin_units_domestic > 0:
+                total += self.coin_units_domestic * c
+                # 해외는 1배 숏이다. 진입가보다 내리면 이익.
+                total += (self.entry_binance_usd - b) * self.coin_units_foreign_short * u
+            total += self.accrued_funding_usdt * u
+            return total
+
+        if self.strategy == "spatial_dual":
+            if (self.coin_units_domestic > 0 or self.coin_units_foreign_short > 0) \
+               and (c is None or b is None):
+                return None
+            total = self.cash_krw + self.foreign_cash_usdt * u
+            if self.coin_units_domestic > 0:
+                total += self.coin_units_domestic * c
+            # 주의: 이름은 short 지만 이 전략에서는 해외에서 '매수' 한 물량이다.
+            if self.coin_units_foreign_short > 0:
+                total += self.coin_units_foreign_short * b * u
+            return total
+
+        return None
+
+    # ── 영속화 ────────────────────────────────────────────────────
+    def snapshot(self) -> Dict[str, Any]:
+        return {
+            "botId": self.bot_id, "strategy": self.strategy, "coin": self.coin,
+            "initialKrw": self.initial_krw, "config": self.config,
+            "cashKrw": self.cash_krw,
+            "foreignCashUsdt": self.foreign_cash_usdt,
+            "foreignReserveKrw": self.foreign_reserve_krw,
+            "unitsDomestic": self.coin_units_domestic,
+            "unitsForeign": self.coin_units_foreign_short,
+            "costBasisKrw": self.cost_basis_krw,
+            "entryBinanceUsd": self.entry_binance_usd,
+            "accruedFundingUsdt": self.accrued_funding_usdt,
+            "realizedPnl": self.realized_pnl,
+            "totalTrades": self.total_trades,
+            "setupDone": self._setup_done,
+            "createdAt": self.created_at,
+            "wasRunning": self.is_running,
+            "logs": self.logs[-50:],
+        }
+
+    @classmethod
+    def from_snapshot(cls, d: Dict[str, Any]) -> "ArbitrageBot":
+        bot = cls(d["botId"], d["strategy"], d["coin"],
+                  float(d.get("initialKrw", 1_000_000.0)), d.get("config") or {})
+        bot.cash_krw = float(d.get("cashKrw", bot.cash_krw))
+        bot.foreign_cash_usdt = float(d.get("foreignCashUsdt", 0.0))
+        bot.foreign_reserve_krw = float(d.get("foreignReserveKrw", bot.foreign_reserve_krw))
+        bot.coin_units_domestic = float(d.get("unitsDomestic", 0.0))
+        bot.coin_units_foreign_short = float(d.get("unitsForeign", 0.0))
+        bot.cost_basis_krw = float(d.get("costBasisKrw", 0.0))
+        bot.entry_binance_usd = float(d.get("entryBinanceUsd", 0.0))
+        bot.accrued_funding_usdt = float(d.get("accruedFundingUsdt", 0.0))
+        bot.realized_pnl = float(d.get("realizedPnl", 0.0))
+        bot.total_trades = int(d.get("totalTrades", 0))
+        bot._setup_done = bool(d.get("setupDone", False))
+        bot.created_at = d.get("createdAt", bot.created_at)
+        bot.logs = list(d.get("logs") or [])
+        # 펀딩비는 경과 시간으로 쌓는다. 복원 직후를 기준점으로 잡지 않으면
+        # 서버가 꺼져 있던 시간까지 수취한 것으로 계산된다.
+        bot._last_funding_at = time.time()
+        return bot
+
+    def _persist(self):
+        try:
+            arbitrage_manager.persist()
+        except Exception as e:
+            logger.error(f"[{self.bot_id}] 시뮬레이터 상태 저장 실패: {e}")
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
+            eq = self.equity_krw()
             return {
                 "botId": self.bot_id,
                 "strategy": self.strategy,
@@ -467,8 +581,12 @@ class ArbitrageBot:
                 "mode": self.mode,
                 "simulated": True,
                 "initialKrw": self.initial_krw,
+                "equityKrw": round(eq, 0) if eq is not None else None,
+                "totalReturnPct": (round((eq - self.initial_krw) / self.initial_krw * 100.0, 2)
+                                   if eq is not None and self.initial_krw > 0 else None),
                 "cashKrw": round(self.cash_krw, 0),
                 "foreignCashUsdt": round(self.foreign_cash_usdt, 2),
+                "foreignReserveKrw": round(self.foreign_reserve_krw, 0),
                 "coinUnitsDomestic": round(self.coin_units_domestic, 6),
                 "coinUnitsForeign": round(self.coin_units_foreign_short, 6),
                 "accruedFundingUsdt": round(self.accrued_funding_usdt, 4),
@@ -488,11 +606,17 @@ class ArbitrageBotManager:
 
     주문 경로가 없으므로 계좌(account)를 받지 않는다. 받아두면 나중에
     '실전 모드' 가 있는 것처럼 오해할 여지를 남긴다.
+
+    상태는 data/arb_bots.json 에 저장한다. 실계좌 봇(bots.json)과 파일을
+    분리해 가상 체결이 실제 포지션 기록에 섞이지 않게 한다.
     """
 
     def __init__(self):
         self.bots: Dict[str, ArbitrageBot] = {}
-        self._lock = threading.Lock()
+        # RLock 이어야 한다. stop_bot/delete_bot 이 락을 쥔 채 bot.stop() 을
+        # 부르고, 그 안에서 _persist() → persist() 로 같은 락을 다시 잡는다.
+        # 일반 Lock 이면 그 자리에서 교착된다 (실제로 걸렸다).
+        self._lock = threading.RLock()
 
     def create_bot(self, strategy: str, coin: str, capital_krw: float,
                    config: Dict[str, Any]) -> ArbitrageBot:
@@ -501,19 +625,70 @@ class ArbitrageBotManager:
             bot = ArbitrageBot(bot_id, strategy, coin, capital_krw, config)
             self.bots[bot_id] = bot
             bot.start()
-            return bot
+        self.persist()
+        return bot
 
     def stop_bot(self, bot_id: str) -> bool:
         with self._lock:
             bot = self.bots.get(bot_id)
-            if bot:
-                bot.stop()
-                return True
-            return False
+            if not bot:
+                return False
+            bot.stop()
+        self.persist()
+        return True
+
+    def delete_bot(self, bot_id: str) -> bool:
+        with self._lock:
+            bot = self.bots.get(bot_id)
+            if not bot:
+                return False
+            bot.stop()
+            del self.bots[bot_id]
+        self.persist()
+        return True
 
     def list_bots(self) -> List[Dict[str, Any]]:
         with self._lock:
-            return [b.status() for b in self.bots.values()]
+            bots = list(self.bots.values())
+        return [b.status() for b in bots]
+
+    # ── 영속화 ────────────────────────────────────────────────────
+    def persist(self) -> None:
+        with self._lock:
+            records = [b.snapshot() for b in self.bots.values()]
+        botstore.arb_store.save(records)
+
+    def restore(self) -> Dict[str, Any]:
+        """저장된 시뮬레이터를 복원한다.
+
+        실주문이 없으므로 거래소 대조는 필요 없다. 다만 지원 목록에서 빠진
+        종목은 지표를 계산할 수 없으므로 재가동하지 않는다.
+        """
+        records = botstore.arb_store.load()
+        if not records:
+            return {"restored": 0, "resumed": 0}
+
+        resumed = 0
+        for r in records:
+            try:
+                bot = ArbitrageBot.from_snapshot(r)
+            except Exception as e:
+                logger.error(f"시뮬레이터 복원 실패 {r.get('botId')}: {e}")
+                continue
+            self.bots[bot.bot_id] = bot
+
+            if bot.coin != "USDT" and bithumb.normalize_coin(bot.coin) is None:
+                bot.log("ERROR", f"{bot.coin} 는 더 이상 지원하지 않는 종목이라 "
+                                 f"재가동하지 않습니다.")
+                continue
+            if r.get("wasRunning"):
+                bot.start()
+                resumed += 1
+            else:
+                bot.log("INFO", "이전에 정지된 상태로 복원되었습니다.")
+
+        logger.info(f"차익거래 시뮬레이터 복원: 총 {len(self.bots)}개 · 재가동 {resumed}개")
+        return {"restored": len(self.bots), "resumed": resumed}
 
 
 arbitrage_manager = ArbitrageBotManager()
