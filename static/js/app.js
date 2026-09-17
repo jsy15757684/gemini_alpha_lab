@@ -366,11 +366,52 @@ async function loadBots() {
     $("botList").innerHTML = bots.length
       ? bots.map(botCard).join("")
       : `<div class="empty">가동 중인 봇이 없습니다.</div>`;
+    const byId = Object.fromEntries(bots.map(b => [b.botId, b]));
     $("botList").querySelectorAll("[data-stop]").forEach(el =>
-      el.onclick = () => actOnBot("/api/bot/stop", el.dataset.stop, "이 봇을 정지하고 보유 포지션을 시장가로 청산합니다."));
+      el.onclick = () => actOnBot("/api/bot/stop", el.dataset.stop,
+        liquidationNotice(byId[el.dataset.stop] || {}, "정지")));
     $("botList").querySelectorAll("[data-del]").forEach(el =>
-      el.onclick = () => actOnBot("/api/bot/delete", el.dataset.del, "이 봇을 정지·청산하고 목록에서 삭제합니다."));
+      el.onclick = () => actOnBot("/api/bot/delete", el.dataset.del,
+        liquidationNotice(byId[el.dataset.del] || {}, "정지·삭제")));
   } catch (e) { console.error("봇 목록 실패:", e); }
+}
+
+// 정지·삭제는 되돌릴 수 없다. 무엇이 얼마나 팔리는지 숫자로 보여준다.
+// "청산합니다" 만으로는 그냥 넘기기 쉽다.
+function liquidationNotice(b, action) {
+  const name = `${b.coin} 봇 (${b.mode === "LIVE" ? "실전" : "모의투자"})`;
+  const held = Number(b.units || 0) > 0;
+
+  if (!held) {
+    return `${name}\n\n보유 포지션이 없습니다. 주문은 나가지 않습니다.\n\n${action}하시겠습니까?`;
+  }
+  const value = Number(b.currentPrice || 0) * Number(b.units || 0);
+  const pnl = Number(b.unrealizedPnlKrw || 0);
+  const pnlPct = Number(b.unrealizedPnlPct || 0);
+  const lines = [
+    name,
+    "",
+    `보유 수량 : ${Number(b.units).toFixed(8)} ${b.coin}`,
+    `평단가    : ${won(b.entryPrice)}원`,
+    `현재가    : ${won(b.currentPrice)}원`,
+    `평가 금액 : ${won(value)}원`,
+    `평가 손익 : ${pnl >= 0 ? "+" : ""}${won(pnl)}원 (${pnlPct >= 0 ? "+" : ""}${Number(pnlPct).toFixed(2)}%)`,
+    "",
+  ];
+  if (b.mode === "LIVE") {
+    lines.push("⚠️ 위 물량 전부를 빗썸에 시장가 매도 주문으로 냅니다.");
+    lines.push("   되돌릴 수 없고, 평가 손익이 그대로 확정됩니다.");
+    if (b.strategyType === "raoer_infinite" && Number(b.turn || 0) > 1) {
+      lines.push("");
+      lines.push(`   무한매수 ${b.turn}/${b.splitCount}회차 진행 중입니다.`);
+      lines.push("   지금 청산하면 평단을 낮추던 과정이 중단됩니다.");
+    }
+  } else {
+    lines.push("모의투자 봇이라 실제 주문은 나가지 않습니다.");
+  }
+  lines.push("");
+  lines.push(`${action}하시겠습니까?`);
+  return lines.join("\n");
 }
 
 async function actOnBot(url, botId, message) {
@@ -989,7 +1030,27 @@ async function boot() {
     $("liveWarning").classList.toggle("hidden", $("botMode").value !== "LIVE");
   $("deployBtn").onclick = deployBot;
   $("stopAllBtn").onclick = async () => {
-    if (!confirm("가동 중인 모든 봇을 정지하고 포지션을 청산합니다.")) return;
+    // 무엇이 팔리는지 집계해서 보여준다.
+    let bots = [];
+    try { bots = (await api("/api/bot/list")).bots || []; } catch (e) { /* 아래서 일반 문구 */ }
+    const live = bots.filter(b => b.isRunning && b.mode === "LIVE" && Number(b.units || 0) > 0);
+    let msg;
+    if (!bots.length) {
+      msg = "가동 중인 봇이 없습니다. 계속하시겠습니까?";
+    } else if (!live.length) {
+      msg = `가동 중인 봇 ${bots.filter(b => b.isRunning).length}대를 정지합니다.\n`
+          + "실전 포지션이 없어 실제 주문은 나가지 않습니다.\n\n계속하시겠습니까?";
+    } else {
+      const total = live.reduce((s, b) => s + Number(b.currentPrice || 0) * Number(b.units || 0), 0);
+      const pnl = live.reduce((s, b) => s + Number(b.unrealizedPnlKrw || 0), 0);
+      msg = ["⚠️ 실전 포지션 " + live.length + "건을 시장가로 전량 매도합니다.", ""]
+        .concat(live.map(b => `  · ${b.coin} ${Number(b.units).toFixed(8)} `
+                            + `(평가 ${won(Number(b.currentPrice || 0) * Number(b.units || 0))}원, `
+                            + `${Number(b.unrealizedPnlKrw || 0) >= 0 ? "+" : ""}${won(b.unrealizedPnlKrw)}원)`))
+        .concat(["", `합계 평가 ${won(total)}원 · 손익 ${pnl >= 0 ? "+" : ""}${won(pnl)}원`,
+                 "", "되돌릴 수 없습니다. 계속하시겠습니까?"]).join("\n");
+    }
+    if (!confirm(msg)) return;
     try { await api("/api/bot/stop_all", { method: "POST" }); await loadBots(); await loadTradeHistory(); }
     catch (e) { alert(e.message); }
   };
@@ -1130,7 +1191,7 @@ async function boot() {
   };
 
   window.stopArbBot = async function(botId) {
-    if (!confirm("해당 차익거래 봇을 정지하시겠습니까?")) return;
+    if (!confirm("시뮬레이터를 정지합니다.\n실제 주문은 원래 나가지 않으므로 거래소에는 영향이 없습니다.\n\n계속하시겠습니까?")) return;
     try {
       await api("/api/arbitrage/stop", {
         method: "POST",
