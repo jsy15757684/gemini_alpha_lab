@@ -36,6 +36,10 @@ COINS: Dict[str, str] = {
     "SOL": "솔라나",
     "XRP": "리플",
     "DOGE": "도지코인",
+}
+
+ARB_COINS: Dict[str, str] = {
+    **COINS,
     "USDT": "테더",
 }
 
@@ -59,7 +63,7 @@ def normalize_coin(symbol: str) -> Optional[str]:
     if not symbol:
         return None
     s = symbol.upper().replace("KRW-", "").replace("-KRW", "").replace("-USD", "").strip()
-    return s if s in COINS else None
+    return s if s in ARB_COINS else None
 
 
 def proxy_url() -> str:

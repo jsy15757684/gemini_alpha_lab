@@ -438,8 +438,8 @@ def analyze_coin(coin: str, interval: str = "1h",
 
 
 def scan_all_coins(interval: str = "1h") -> Dict[str, Any]:
-    """빗썸 원화마켓 5개 코인 전체를 순차 스로틀링(Throttling) 분석하여 스캔 결과 반환."""
-    coins = list(bithumb.COINS.keys())
+    """빗썸 원화마켓 5대 코인 전체를 순차 스로틀링(Throttling) 분석하여 스캔 결과 반환 (USDT 제외)."""
+    coins = [c for c in bithumb.COINS.keys() if c != "USDT"]
     results = []
 
     for i, c in enumerate(coins):
