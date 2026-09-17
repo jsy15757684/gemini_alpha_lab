@@ -436,6 +436,14 @@ class TradingBot:
             if not (self.account and self.account.configured):
                 self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
                 return
+
+            bal_before = 0.0
+            try:
+                b = self.account.get_balance()
+                bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
+            except Exception:
+                pass
+
             try:
                 res = self.account.market_buy(self.coin, invest)
             except bithumb.BithumbError as e:
@@ -445,10 +453,11 @@ class TradingBot:
 
             try:
                 time.sleep(0.5)
-                bal = self.account.get_balance()
-                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
-                if actual_coin > 0:
-                    units = actual_coin
+                b = self.account.get_balance()
+                bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
+                delta = bal_after - bal_before
+                if delta > 0 and abs(delta - units) / max(units, 1e-8) < 0.2:
+                    units = delta
                     self.log("INFO", f"실체결 보유량 동기화: {units:.8f} {self.coin}")
             except Exception as e:
                 logger.warning(f"매수 후 잔고 조회 실패 (이론 수량 {units:.8f} 유지): {e}")
@@ -473,6 +482,14 @@ class TradingBot:
             if not (self.account and self.account.configured):
                 self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
                 return
+
+            bal_before = 0.0
+            try:
+                b = self.account.get_balance()
+                bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
+            except Exception:
+                pass
+
             try:
                 res = self.account.market_buy(self.coin, invest)
             except bithumb.BithumbError as e:
@@ -482,12 +499,12 @@ class TradingBot:
 
             try:
                 time.sleep(0.5)
-                bal = self.account.get_balance()
-                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
-                if actual_coin > 0 and self.pos.units > 0:
-                    new_units = max(0.0, actual_coin - self.pos.units)
-                elif actual_coin > 0:
-                    new_units = actual_coin
+                b = self.account.get_balance()
+                bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
+                delta = bal_after - bal_before
+                if delta > 0 and abs(delta - new_units) / max(new_units, 1e-8) < 0.2:
+                    new_units = delta
+                    self.log("INFO", f"실체결 수량 동기화: {new_units:.8f} {self.coin}")
             except Exception as e:
                 logger.warning(f"분할 매수 후 잔고 동기화 실패: {e}")
 
@@ -528,9 +545,9 @@ class TradingBot:
                     self.pos = Position()
                     self._persist()
                     return
-                if actual_coin < units or abs(actual_coin - units) / max(units, 1e-8) < 0.05:
-                    if abs(actual_coin - units) > 1e-8:
-                        self.log("INFO", f"매도 수량 자동 보정: 장부 {units:.8f} → 실제 잔고 {actual_coin:.8f} {self.coin}")
+                # 거래소 실제 잔고가 이 봇의 장부보다 적을 때만 실제 잔고로 제한 (타 봇/외부 물량 침범 금지)
+                if actual_coin < sell_units:
+                    self.log("INFO", f"매도 수량 제한: 장부 {units:.8f} → 실제 잔고 {actual_coin:.8f} {self.coin}")
                     sell_units = actual_coin
             except Exception as e:
                 logger.warning(f"매도 전 잔고 확인 실패 (장부 수량으로 시도): {e}")
@@ -614,11 +631,28 @@ class TradingBot:
         if self.mode == "LIVE":
             if not (self.account and self.account.configured):
                 return
+            bal_before = 0.0
+            try:
+                b = self.account.get_balance()
+                bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
+            except Exception:
+                pass
+
             try:
                 res = self.account.market_buy(self.coin, invest)
             except bithumb.BithumbError as e:
                 self.log("ERROR", f"VR 부분 매수 실패: {e.message}")
                 return
+
+            try:
+                time.sleep(0.5)
+                b = self.account.get_balance()
+                bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
+                delta = bal_after - bal_before
+                if delta > 0 and abs(delta - new_units) / max(new_units, 1e-8) < 0.2:
+                    new_units = delta
+            except Exception:
+                pass
 
         u0 = self.pos.units
         p0 = self.pos.entryPrice
@@ -641,6 +675,14 @@ class TradingBot:
         if self.mode == "LIVE":
             if not (self.account and self.account.configured):
                 return
+            try:
+                bal = self.account.get_balance()
+                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
+                if actual_coin < units_to_sell:
+                    units_to_sell = actual_coin
+            except Exception as e:
+                pass
+
             try:
                 res = self.account.market_sell(self.coin, units_to_sell)
             except bithumb.BithumbError as e:
@@ -913,6 +955,7 @@ class BotManager:
 
         notes: List[str] = []
         resumed = held = 0
+        allocated_units: Dict[str, float] = {}
 
         for r in records:
             try:
@@ -936,16 +979,18 @@ class BotManager:
                     held += 1
                     continue
                 actual = float(exchange.get(bot.coin, 0.0))
+                req_total = allocated_units.get(bot.coin, 0.0) + bot.pos.units
                 # 계좌에 봇 것 외의 보유분이 있을 수 있으므로 '이상' 이면 정상으로 본다.
-                if actual + 1e-8 < bot.pos.units:
-                    msg = (f"내부 장부({bot.pos.units:.8f} {bot.coin})가 빗썸 실제 "
+                if actual + 1e-8 < req_total:
+                    msg = (f"내부 장부 누적({req_total:.8f} {bot.coin})이 빗썸 실제 "
                            f"보유량({actual:.8f})보다 많습니다. 재가동을 보류합니다. "
                            f"빗썸에서 실제 보유량을 확인한 뒤 이 봇을 삭제하거나 "
                            f"수동으로 정리하세요.")
                     bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
                     held += 1
                     continue
-                bot.log("INFO", f"거래소 대조 통과 (내부 {bot.pos.units:.8f} ≤ 빗썸 {actual:.8f})")
+                allocated_units[bot.coin] = req_total
+                bot.log("INFO", f"거래소 대조 통과 (봇 장부 {bot.pos.units:.8f} / 계좌 잔고 {actual:.8f} {bot.coin})")
 
             if bot.pos.open:
                 bot.log("WARNING",
