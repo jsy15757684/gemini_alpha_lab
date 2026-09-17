@@ -1,9 +1,19 @@
-"""3대 무위험 퀀트 차익거래(Arbitrage) 엔진 서비스.
+"""김프·펀딩비·환율 모니터 + 차익거래 전략 시뮬레이터.
 
-전략 3종 지원:
-1. usdt_swap: USDT(테더) / 원달러 환차익 스왑 (역프 매수 -> 김프 매도)
-2. kimkim_funding: 김프 델타뉴트럴 펀딩비 헷지 (국내 현물 매수 + 해외 1배 숏, 8시간 펀딩비 수취)
-3. spatial_dual: 무전송 양방향 차익거래 (0.05초 괴리 동시 체결 & Skew 모니터링)
+**이 모듈은 주문을 내지 않는다.** 실제 차익거래에 필요한 다리가 없기 때문이다.
+
+  · USDT 스왑        빗썸 USDT 실매수/매도 필요        — 미구현
+  · 델타뉴트럴 헷지  해외 거래소 선물 숏 필요          — 미구현
+  · 무전송 양방향    해외 거래소 계좌·주문 필요        — 미구현
+
+바이낸스는 시세(premiumIndex) 조회만 쓴다. 거래 API 연동은 없다.
+따라서 여기서 돌아가는 봇은 전부 **가상 체결 시뮬레이션**이며, 화면도 그렇게
+표시해야 한다. 한쪽 다리(빗썸)만 실주문으로 연결하면 헤지가 없는 단방향
+베팅이 되므로, 그런 형태의 '실전 모드'는 두지 않는다.
+
+지표 자체는 실시간 실데이터로 계산한다. 조회에 실패하면 추정치를 채우지 않고
+실패로 표시한다 — 가짜 김프로 매매 신호를 만드는 것이 이 기능에서 가장
+위험한 고장이다.
 """
 
 import os
@@ -13,7 +23,7 @@ import uuid
 import logging
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 import requests
 
 from services import bithumb, tradelog
@@ -21,117 +31,164 @@ from services.envconf import env_float
 
 logger = logging.getLogger(__name__)
 
+# 이 모듈이 지원하는 유일한 모드. 주문 경로가 없으므로 실전 모드는 없다.
+MODE_SIM = "SIM"
+
 # 실시간 시세 캐시 및 락
 _RADAR_CACHE: Dict[str, Any] = {}
 _RADAR_CACHE_TIME = 0.0
 _RADAR_TTL_SEC = 2.0
 _RADAR_LOCK = threading.Lock()
 
-def get_official_fx_rate() -> float:
-    """서울외환시장 원/달러 기준환율 가져오기 (실패 시 최근 백업값 유지)."""
-    try:
-        url = "https://m.stock.naver.com/front-api/marketIndex/prices?category=exchange&reutersCode=FX_USDKRW"
-        r = requests.get(url, timeout=3)
-        if r.status_code == 200:
-            data = r.json()
-            items = data.get("result", [])
-            if items:
-                price_str = str(items[0].get("closePrice", "")).replace(",", "")
-                val = float(price_str)
-                if val > 500:
-                    return val
-    except Exception:
-        pass
 
-    return 1385.0
+def get_official_fx_rate() -> Tuple[Optional[float], str]:
+    """서울외환시장 원/달러 기준환율.
 
-def fetch_binance_market_data() -> Dict[str, Dict[str, float]]:
-    """바이낸스 선물 시세 및 실시간 펀딩비율 조회 (USDT 마진)."""
-    out: Dict[str, Dict[str, float]] = {
-        "BTC": {"price": 65000.0, "fundingRate": 0.0001},
-        "ETH": {"price": 3500.0, "fundingRate": 0.0001},
-        "SOL": {"price": 150.0, "fundingRate": 0.00015},
-        "XRP": {"price": 0.58, "fundingRate": 0.0001},
-        "DOGE": {"price": 0.12, "fundingRate": 0.0001},
-    }
+    실패하면 (None, 사유) 를 돌려준다. 예전에는 1385.0 을 대신 돌려줬는데,
+    그러면 화면은 정상으로 보이면서 김프가 통째로 틀어진다.
+    """
+    url = ("https://m.stock.naver.com/front-api/marketIndex/prices"
+           "?category=exchange&reutersCode=FX_USDKRW")
     try:
-        r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", timeout=4)
-        if r.status_code == 200:
-            for item in r.json():
-                sym = item.get("symbol", "")
-                for coin in out.keys():
-                    if sym == f"{coin}USDT":
-                        out[coin]["price"] = float(item.get("markPrice", out[coin]["price"]))
-                        out[coin]["fundingRate"] = float(item.get("lastFundingRate", 0.0001))
+        r = requests.get(url, timeout=4)
+        if r.status_code != 200:
+            return None, f"환율 조회 실패 (HTTP {r.status_code})"
+        items = r.json().get("result", [])
+        if not items:
+            return None, "환율 응답이 비어 있습니다"
+        val = float(str(items[0].get("closePrice", "")).replace(",", ""))
+        if val <= 500:
+            return None, f"환율 값이 비정상입니다 ({val})"
+        return val, ""
     except Exception as e:
-        logger.debug(f"바이낸스 시세 API 직접 통신 지연 (백업 모델 사용): {e}")
+        return None, f"환율 조회 실패: {e}"
 
-    return out
+
+def fetch_binance_market_data() -> Tuple[Dict[str, Dict[str, float]], str]:
+    """바이낸스 선물 마크가격과 펀딩비율 (USDT 마진).
+
+    받지 못한 코인은 결과에 넣지 않는다. 예전에는 2024년경 고정가
+    (BTC $65,000 등)를 기본값으로 두어, 조회가 실패해도 그 값으로 김프를
+    계산했다. 현재가와 차이가 커서 없는 김프가 크게 생긴다.
+    """
+    out: Dict[str, Dict[str, float]] = {}
+    wanted = set(bithumb.COINS.keys())
+    try:
+        r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", timeout=6)
+        if r.status_code != 200:
+            return out, f"바이낸스 조회 실패 (HTTP {r.status_code})"
+        for item in r.json():
+            sym = item.get("symbol", "")
+            if not sym.endswith("USDT"):
+                continue
+            coin = sym[:-4]
+            if coin not in wanted:
+                continue
+            try:
+                out[coin] = {
+                    "price": float(item.get("markPrice")),
+                    "fundingRate": float(item.get("lastFundingRate", 0.0)),
+                }
+            except (TypeError, ValueError):
+                continue
+        missing = sorted(wanted - set(out))
+        if missing:
+            return out, f"바이낸스에서 받지 못한 종목: {', '.join(missing)}"
+        return out, ""
+    except Exception as e:
+        return out, f"바이낸스 조회 실패: {e}"
+
 
 def get_arbitrage_radar(force: bool = False) -> Dict[str, Any]:
-    """3대 전략의 실시간 괴리율, 김프, 펀딩비, 테더 프리미엄 레이더 현황 조회."""
+    """김프·무전송 스프레드·펀딩비 실시간 지표.
+
+    값을 받지 못한 항목은 None 으로 두고 errors 에 사유를 남긴다.
+    호출하는 쪽(봇·화면)은 None 을 '모름' 으로 다뤄야 하며 0 으로 취급하면 안 된다.
+    """
     global _RADAR_CACHE, _RADAR_CACHE_TIME
     now = time.time()
     with _RADAR_LOCK:
         if not force and _RADAR_CACHE and (now - _RADAR_CACHE_TIME < _RADAR_TTL_SEC):
             return _RADAR_CACHE
 
-        official_fx = get_official_fx_rate()
-        binance_data = fetch_binance_market_data()
+        errors: List[str] = []
 
-        coins_to_fetch = ["BTC", "ETH", "SOL", "XRP", "DOGE", "USDT"]
-        bithumb_prices: Dict[str, float] = {}
-        for c in coins_to_fetch:
+        official_fx, fx_err = get_official_fx_rate()
+        if fx_err:
+            errors.append(fx_err)
+
+        binance_data, bn_err = fetch_binance_market_data()
+        if bn_err:
+            errors.append(bn_err)
+
+        bithumb_prices: Dict[str, Optional[float]] = {}
+        failed_coins: List[str] = []
+        for c in list(bithumb.COINS.keys()) + ["USDT"]:
             try:
-                bithumb_prices[c] = bithumb.get_price(c)
+                p = bithumb.get_price(c)
+                bithumb_prices[c] = p if p and p > 0 else None
             except Exception:
-                bithumb_prices[c] = 0.0
+                bithumb_prices[c] = None
+            if bithumb_prices[c] is None:
+                failed_coins.append(c)
+        if failed_coins:
+            errors.append(f"빗썸 시세를 받지 못한 종목: {', '.join(failed_coins)}")
 
-        usdt_price = bithumb_prices.get("USDT", official_fx)
-        if usdt_price <= 0:
-            usdt_price = official_fx
+        usdt_price = bithumb_prices.get("USDT")
 
-        usdt_prem_pct = ((usdt_price - official_fx) / official_fx) * 100.0
+        # 테더 프리미엄은 '빗썸 USDT' 와 '공시환율' 둘 다 있어야 계산된다.
+        if usdt_price is not None and official_fx:
+            usdt_prem_pct = (usdt_price - official_fx) / official_fx * 100.0
+            if usdt_prem_pct < -0.5:
+                usdt_status = "역프리미엄"
+            elif usdt_prem_pct > 2.0:
+                usdt_status = "김프 과열"
+            else:
+                usdt_status = "정상"
+        else:
+            usdt_prem_pct = None
+            usdt_status = "계산 불가 (데이터 없음)"
 
         coin_radars = []
         for c, name in bithumb.COINS.items():
-            if c == "USDT":
-                continue
-            b_p = bithumb_prices.get(c, 0.0)
-            bin_p = binance_data.get(c, {}).get("price", 0.0)
-            fr = binance_data.get(c, {}).get("fundingRate", 0.0001)
+            b_p = bithumb_prices.get(c)
+            bn = binance_data.get(c)
+            bin_p = bn["price"] if bn else None
+            fr = bn["fundingRate"] if bn else None
 
-            # 만약 오프라인/샌드박스 환경이라 시세 수집이 0이면 표준 추정치 반영
-            if b_p <= 0:
-                # 빗썸 정상 환산가 (약 1.5% 김프 반영)
-                b_p = bin_p * official_fx * 1.015
+            kimchi_pct = None
+            if b_p is not None and bin_p and official_fx:
+                bin_krw_official = bin_p * official_fx
+                if bin_krw_official > 0:
+                    kimchi_pct = (b_p - bin_krw_official) / bin_krw_official * 100.0
 
-            bin_krw_official = bin_p * official_fx
-            kimchi_pct = ((b_p - bin_krw_official) / bin_krw_official * 100.0) if bin_krw_official > 0 else 0.0
-
-            bin_krw_usdt = bin_p * usdt_price
-            spatial_spread_pct = ((b_p - bin_krw_usdt) / bin_krw_usdt * 100.0) if bin_krw_usdt > 0 else 0.0
-
-            annual_funding_pct = fr * 3 * 365 * 100.0
+            spatial_pct = None
+            if b_p is not None and bin_p and usdt_price:
+                bin_krw_usdt = bin_p * usdt_price
+                if bin_krw_usdt > 0:
+                    spatial_pct = (b_p - bin_krw_usdt) / bin_krw_usdt * 100.0
 
             coin_radars.append({
                 "coin": c,
                 "name": name,
-                "bithumbPrice": round(b_p, 0),
+                "bithumbPrice": round(b_p, 0) if b_p is not None else None,
                 "binanceUsdPrice": bin_p,
-                "kimchiPremiumPct": round(kimchi_pct, 2),
-                "spatialSpreadPct": round(spatial_spread_pct, 2),
-                "fundingRate8h": round(fr * 100.0, 4),
-                "fundingRateAnnualPct": round(annual_funding_pct, 2),
+                "kimchiPremiumPct": round(kimchi_pct, 2) if kimchi_pct is not None else None,
+                "spatialSpreadPct": round(spatial_pct, 2) if spatial_pct is not None else None,
+                # 펀딩비는 음수일 수 있다 (숏이 내는 구간). 부호를 그대로 둔다.
+                "fundingRate8h": round(fr * 100.0, 4) if fr is not None else None,
+                "fundingRateAnnualPct": round(fr * 3 * 365 * 100.0, 2) if fr is not None else None,
             })
 
         result = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "officialFxRate": official_fx,
             "bithumbUsdtPrice": usdt_price,
-            "usdtPremiumPct": round(usdt_prem_pct, 2),
-            "usdtStatus": "역프리미엄 (매수 기회)" if usdt_prem_pct < -0.5 else ("김프 과열 (매도 기회)" if usdt_prem_pct > 2.0 else "정상"),
-            "coins": coin_radars
+            "usdtPremiumPct": round(usdt_prem_pct, 2) if usdt_prem_pct is not None else None,
+            "usdtStatus": usdt_status,
+            "coins": coin_radars,
+            "dataOk": not errors,
+            "errors": errors,
         }
 
         _RADAR_CACHE = result
@@ -140,27 +197,39 @@ def get_arbitrage_radar(force: bool = False) -> Dict[str, Any]:
 
 
 class ArbitrageBot:
-    """3대 무위험 퀀트 차익거래 실행 봇."""
-    def __init__(self, bot_id: str, strategy: str, coin: str, mode: str,
-                 capital_krw: float, config: Dict[str, Any],
-                 account: Optional[bithumb.BithumbAccount] = None):
+    """차익거래 전략 시뮬레이터.
+
+    실주문은 내지 않는다. 체결은 전부 가상이며 수수료만 반영한다.
+    실제로 돌리려면 해외 거래소 주문 연동이 선행되어야 한다.
+    """
+
+    FEE = 0.0004   # 편도 0.04%
+
+    def __init__(self, bot_id: str, strategy: str, coin: str,
+                 capital_krw: float, config: Dict[str, Any]):
         self.bot_id = bot_id
-        self.strategy = strategy         # "usdt_swap" | "kimkim_funding" | "spatial_dual"
+        self.strategy = strategy
         self.coin = coin
-        self.mode = mode                 # "PAPER" | "LIVE"
+        self.mode = MODE_SIM
         self.initial_krw = float(capital_krw)
         self.config = config
-        self.account = account
 
         self.cash_krw = float(capital_krw)
         self.foreign_cash_usdt = 0.0
         self.coin_units_domestic = 0.0
         self.coin_units_foreign_short = 0.0
 
+        # 손익은 '이번 포지션에 들어간 돈' 과 비교해야 한다.
+        # 최초 자본과 비교하면 2회차부터 이전 회차 수익까지 다시 더해진다.
+        self.cost_basis_krw = 0.0
+        self.entry_binance_usd = 0.0     # 헤지 다리 손익 계산용
+        self.accrued_funding_usdt = 0.0
+        self._last_funding_at = 0.0
+        self._setup_done = False
+
         self.is_running = False
         self.created_at = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         self.logs: List[Dict[str, Any]] = []
-        self.trade_history: List[Dict[str, Any]] = []
         self.realized_pnl = 0.0
         self.last_status = "대기 중"
         self.total_trades = 0
@@ -169,22 +238,15 @@ class ArbitrageBot:
         self._lock = threading.Lock()
 
         if self.strategy == "kimkim_funding":
+            # 국내 현물 절반, 해외 증거금 절반 (가상 배분)
             self.cash_krw = capital_krw * 0.5
-            self.foreign_cash_usdt = (capital_krw * 0.5) / 1380.0
-        elif self.strategy == "spatial_dual":
-            self.cash_krw = capital_krw * 0.25
-            self.foreign_cash_usdt = (capital_krw * 0.25) / 1380.0
-            p = bithumb.get_price(self.coin) if self.coin != "USDT" else 1380.0
-            if p > 0:
-                self.coin_units_domestic = (capital_krw * 0.25) / p
-                self.coin_units_foreign_short = self.coin_units_domestic
+            self.foreign_reserve_krw = capital_krw * 0.5
+        else:
+            self.foreign_reserve_krw = 0.0
 
     def log(self, kind: str, message: str):
-        item = {
-            "time": datetime.now().strftime("%H:%M:%S"),
-            "kind": kind,
-            "message": message,
-        }
+        item = {"time": datetime.now().strftime("%H:%M:%S"),
+                "kind": kind, "message": message}
         with self._lock:
             self.logs.append(item)
             if len(self.logs) > 200:
@@ -197,145 +259,204 @@ class ArbitrageBot:
         self.is_running = True
         self._thread = threading.Thread(target=self._run_loop, daemon=True)
         self._thread.start()
-        self.log("INFO", f"⚡ {self.strategy} 차익거래 봇 가동 시작 (자본 {self.initial_krw:,.0f}원)")
+        self.log("INFO", f"{self.strategy} 시뮬레이션 시작 (가상 자본 {self.initial_krw:,.0f}원) "
+                         f"— 실제 주문은 나가지 않습니다")
 
     def stop(self):
         self.is_running = False
         self.last_status = "정지됨"
-        self.log("INFO", "차익거래 봇 정지")
+        self.log("INFO", "시뮬레이션 정지")
 
     def _run_loop(self):
         while self.is_running:
             try:
                 radar = get_arbitrage_radar()
-                official_fx = radar.get("officialFxRate", 1380.0)
-                usdt_krw = radar.get("bithumbUsdtPrice", 1380.0)
+                fx = radar.get("officialFxRate")
+                usdt_krw = radar.get("bithumbUsdtPrice")
 
-                if self.strategy == "usdt_swap":
-                    self._step_usdt_swap(radar, official_fx, usdt_krw)
+                # 값이 없으면 판단을 보류한다. 0 이나 추정치로 대신하지 않는다.
+                if not fx or not usdt_krw:
+                    self.last_status = ("데이터 없음 — 판단 보류 ("
+                                        + "; ".join(radar.get("errors", [])) + ")")
+                elif self.strategy == "usdt_swap":
+                    self._step_usdt_swap(radar, fx, usdt_krw)
                 elif self.strategy == "kimkim_funding":
-                    self._step_kimkim_funding(radar, official_fx, usdt_krw)
+                    self._step_kimkim_funding(radar, fx, usdt_krw)
                 elif self.strategy == "spatial_dual":
-                    self._step_spatial_dual(radar, official_fx, usdt_krw)
+                    self._step_spatial_dual(radar, fx, usdt_krw)
 
             except Exception as e:
                 self.log("ERROR", f"실행 중 오류: {e}")
 
             time.sleep(3.0)
 
+    # ── 1. USDT 환차익 스왑 ───────────────────────────────────────
     def _step_usdt_swap(self, radar: Dict[str, Any], fx: float, usdt_price: float):
-        prem_pct = radar.get("usdtPremiumPct", 0.0)
-        buy_threshold = float(self.config.get("usdtBuyThreshold", -0.8))
-        sell_threshold = float(self.config.get("usdtSellThreshold", 2.0))
+        prem_pct = radar.get("usdtPremiumPct")
+        if prem_pct is None:
+            self.last_status = "테더 프리미엄 계산 불가 — 판단 보류"
+            return
+
+        buy_at = float(self.config.get("usdtBuyThreshold", -0.8))
+        sell_at = float(self.config.get("usdtSellThreshold", 2.0))
 
         if self.coin_units_domestic == 0 and self.cash_krw >= 5000:
-            if prem_pct <= buy_threshold:
+            if prem_pct <= buy_at:
                 invest = self.cash_krw
-                units = invest * 0.9996 / usdt_price
+                units = invest * (1 - self.FEE) / usdt_price
                 self.coin_units_domestic = units
+                self.cost_basis_krw = invest
                 self.cash_krw = 0.0
                 self.total_trades += 1
-                self.log("BUY", f"🟢 [USDT 역프 매수] 프리미엄 {prem_pct:+.2f}% 포착! "
-                                f"{units:,.2f} USDT 매수 (@ {usdt_price:,.0f}원, 투자액 {invest:,.0f}원)")
-                self.last_status = f"테더 보유 중 ({units:,.0f} USDT, 진입가 {usdt_price:,.0f}원)"
+                self.log("BUY", f"[가상 체결] 역프 {prem_pct:+.2f}% — USDT {units:,.2f} 매수 "
+                                f"(@ {usdt_price:,.0f}원, {invest:,.0f}원)")
+                self.last_status = f"테더 보유 (진입 {usdt_price:,.0f}원, 프리미엄 {prem_pct:+.2f}%)"
             else:
-                self.last_status = f"역프 감시 중 (현재 {prem_pct:+.2f}%, 목표 ≤ {buy_threshold}%)"
+                self.last_status = f"역프 감시 중 (현재 {prem_pct:+.2f}%, 목표 ≤ {buy_at}%)"
 
         elif self.coin_units_domestic > 0:
-            if prem_pct >= sell_threshold:
+            if prem_pct >= sell_at:
                 units = self.coin_units_domestic
-                proceeds = units * usdt_price * 0.9996
-                pnl = proceeds - self.initial_krw
+                proceeds = units * usdt_price * (1 - self.FEE)
+                pnl = proceeds - self.cost_basis_krw       # 이번 회차 원금과 비교
                 self.realized_pnl += pnl
                 self.cash_krw = proceeds
                 self.coin_units_domestic = 0.0
+                self.cost_basis_krw = 0.0
                 self.total_trades += 1
-                self.log("SELL", f"🚀 [USDT 김프 청산] 프리미엄 {prem_pct:+.2f}% 도달 전량 매도! "
-                                 f"회수액 {proceeds:,.0f}원 (순수익 {pnl:+,.0f}원, +{pnl/self.initial_krw*100:.2f}%)")
-                self.last_status = f"차익 실현 완료 (누적 손익 {self.realized_pnl:+,.0f}원)"
+                self.log("SELL", f"[가상 체결] 김프 {prem_pct:+.2f}% — USDT 전량 매도 "
+                                 f"{proceeds:,.0f}원 회수 (손익 {pnl:+,.0f}원)")
+                self.last_status = f"청산 완료 (누적 {self.realized_pnl:+,.0f}원)"
             else:
-                pnl_now = (self.coin_units_domestic * usdt_price) - self.initial_krw
-                self.last_status = f"김프 청산 대기 중 (현재 {prem_pct:+.2f}%, 목표 ≥ {sell_threshold}%, 평가 {pnl_now:+,.0f}원)"
+                now_val = self.coin_units_domestic * usdt_price
+                self.last_status = (f"청산 대기 (현재 {prem_pct:+.2f}%, 목표 ≥ {sell_at}%, "
+                                    f"평가 {now_val - self.cost_basis_krw:+,.0f}원)")
 
+    # ── 2. 김프 델타뉴트럴 + 펀딩비 ───────────────────────────────
     def _step_kimkim_funding(self, radar: Dict[str, Any], fx: float, usdt_price: float):
-        coin_item = next((c for c in radar.get("coins", []) if c["coin"] == self.coin), None)
-        if not coin_item:
+        item = next((c for c in radar.get("coins", []) if c["coin"] == self.coin), None)
+        if not item:
+            return
+        kimchi = item.get("kimchiPremiumPct")
+        p_bithumb = item.get("bithumbPrice")
+        p_binance = item.get("binanceUsdPrice")
+        fr_8h = item.get("fundingRate8h")
+        if kimchi is None or not p_bithumb or not p_binance:
+            self.last_status = "김프 계산 불가 — 판단 보류"
             return
 
-        kimchi = coin_item.get("kimchiPremiumPct", 0.0)
-        fr_8h = coin_item.get("fundingRate8h", 0.01) / 100.0
-        p_bithumb = coin_item.get("bithumbPrice", 0.0)
-        p_binance_usd = coin_item.get("binanceUsdPrice", 0.0)
-
-        entry_kimchi = float(self.config.get("entryKimchiPct", 1.0))
-        exit_kimchi = float(self.config.get("exitKimchiPct", 5.0))
+        entry_at = float(self.config.get("entryKimchiPct", 1.0))
+        exit_at = float(self.config.get("exitKimchiPct", 5.0))
 
         if self.coin_units_domestic == 0 and self.cash_krw >= 5000:
-            if kimchi <= entry_kimchi:
-                invest_krw = self.cash_krw
-                units = invest_krw * 0.9996 / p_bithumb
+            if kimchi <= entry_at:
+                invest = self.cash_krw
+                units = invest * (1 - self.FEE) / p_bithumb
                 self.coin_units_domestic = units
                 self.coin_units_foreign_short = units
+                self.cost_basis_krw = invest + self.foreign_reserve_krw
+                self.entry_binance_usd = p_binance
                 self.cash_krw = 0.0
+                self.accrued_funding_usdt = 0.0
+                self._last_funding_at = time.time()
                 self.total_trades += 1
-                self.log("BUY", f"🛡️ [델타뉴트럴 진입] 김프 {kimchi:+.2f}% 저점 포착! "
-                                f"국내 현물 {units:.4f} {self.coin} 매수 + 해외 1배 숏 {units:.4f} {self.coin} 동시 구축")
-                self.last_status = f"델타뉴트럴 헤지 유지 중 (수량 {units:.4f} {self.coin}, 김프 {kimchi:+.2f}%)"
+                self.log("BUY", f"[가상 체결] 김프 {kimchi:+.2f}% — 국내 현물 {units:.6f} {self.coin} 매수 "
+                                f"+ 해외 1배 숏 {units:.6f} 동시 구축 (가상)")
+                self.last_status = f"헤지 유지 중 (김프 {kimchi:+.2f}%, 수량 {units:.6f})"
             else:
-                self.last_status = f"김프 저점 감시 중 (현재 {kimchi:+.2f}%, 목표 ≤ {entry_kimchi}%)"
-
-        elif self.coin_units_domestic > 0:
-            sim_fee_usdt = (self.coin_units_foreign_short * p_binance_usd) * fr_8h * (3.0 / 28800.0)
-            if sim_fee_usdt > 0:
-                self.foreign_cash_usdt += sim_fee_usdt
-
-            if kimchi >= exit_kimchi:
-                units = self.coin_units_domestic
-                proceeds_krw = units * p_bithumb * 0.9996
-                total_foreign_val_krw = self.foreign_cash_usdt * usdt_price
-                final_val = proceeds_krw + total_foreign_val_krw
-                pnl = final_val - self.initial_krw
-                self.realized_pnl += pnl
-                self.cash_krw = final_val * 0.5
-                self.foreign_cash_usdt = (final_val * 0.5) / usdt_price
-                self.coin_units_domestic = 0.0
-                self.coin_units_foreign_short = 0.0
-                self.total_trades += 1
-                self.log("SELL", f"🎉 [델타뉴트럴 고점 청산] 김프 {kimchi:+.2f}% 도달 동시 청산 완료! "
-                                 f"총 순수익 {pnl:+,.0f}원 (김프 마진 + 누적 펀딩비 확정)")
-                self.last_status = f"청산 완료 (누적 순수익 {self.realized_pnl:+,.0f}원)"
-            else:
-                self.last_status = f"펀딩비 수취 중 (김프 {kimchi:+.2f}%, 청산목표 ≥ {exit_kimchi}%, 펀딩비 ${self.foreign_cash_usdt:.2f})"
-
-    def _step_spatial_dual(self, radar: Dict[str, Any], fx: float, usdt_price: float):
-        coin_item = next((c for c in radar.get("coins", []) if c["coin"] == self.coin), None)
-        if not coin_item:
+                self.last_status = f"김프 저점 감시 (현재 {kimchi:+.2f}%, 목표 ≤ {entry_at}%)"
             return
 
-        spread = coin_item.get("spatialSpreadPct", 0.0)
-        trigger_spread = float(self.config.get("triggerSpreadPct", 0.4))
-        p_bithumb = coin_item.get("bithumbPrice", 0.0)
-        p_binance_krw = coin_item.get("binanceUsdPrice", 0.0) * usdt_price
+        # 펀딩비 누적 — 경과 시간 기준. 부호를 그대로 반영한다.
+        # 숏이 받기만 하는 것이 아니다. 펀딩비가 음수면 숏이 낸다.
+        if fr_8h is not None and self._last_funding_at:
+            elapsed = time.time() - self._last_funding_at
+            self._last_funding_at = time.time()
+            notional_usdt = self.coin_units_foreign_short * p_binance
+            self.accrued_funding_usdt += notional_usdt * (fr_8h / 100.0) * (elapsed / 28800.0)
 
-        if spread >= trigger_spread and self.coin_units_domestic > 0.01 and self.foreign_cash_usdt >= 10:
-            chunk_units = min(self.coin_units_domestic * 0.25, (self.foreign_cash_usdt * 0.5 * usdt_price) / p_binance_krw)
-            if chunk_units > 0.001:
-                rec_krw = chunk_units * p_bithumb * 0.9996
-                self.coin_units_domestic -= chunk_units
-                self.cash_krw += rec_krw
+        if kimchi >= exit_at:
+            units = self.coin_units_domestic
+            domestic_proceeds = units * p_bithumb * (1 - self.FEE)
+            # 헤지 다리 손익: 숏이므로 가격이 내리면 이익이다.
+            # 이걸 빼면 '델타뉴트럴' 이라는 이름이 성립하지 않는다.
+            short_pnl_krw = (self.entry_binance_usd - p_binance) * units * usdt_price
+            funding_krw = self.accrued_funding_usdt * usdt_price
+            total = domestic_proceeds + short_pnl_krw + funding_krw
+            pnl = total - self.cost_basis_krw
 
-                cost_usdt = (chunk_units * coin_item["binanceUsdPrice"]) * 1.0004
-                self.foreign_cash_usdt -= cost_usdt
-                self.coin_units_foreign_short += chunk_units
-
-                margin_krw = rec_krw - (cost_usdt * usdt_price)
-                self.realized_pnl += margin_krw
-                self.total_trades += 1
-                self.log("ORDER", f"⚡ [0.05초 동시체결] 괴리 {spread:+.2f}% 포착! "
-                                  f"빗썸 매도 {chunk_units:.4f} {self.coin} + 바이낸스 매수 완료 (마진 +{margin_krw:,.0f}원)")
-                self.last_status = f"무전송 차익 실현 중 (최근 스프레드 {spread:+.2f}%, 누적 마진 +{self.realized_pnl:,.0f}원)"
+            self.realized_pnl += pnl
+            self.cash_krw = total * 0.5
+            self.foreign_reserve_krw = total * 0.5
+            self.coin_units_domestic = 0.0
+            self.coin_units_foreign_short = 0.0
+            self.cost_basis_krw = 0.0
+            self.accrued_funding_usdt = 0.0
+            self.total_trades += 1
+            self.log("SELL", f"[가상 체결] 김프 {kimchi:+.2f}% — 양다리 동시 청산 | "
+                             f"현물 {domestic_proceeds:,.0f}원 · 숏 {short_pnl_krw:+,.0f}원 · "
+                             f"펀딩 {funding_krw:+,.0f}원 → 손익 {pnl:+,.0f}원")
+            self.last_status = f"청산 완료 (누적 {self.realized_pnl:+,.0f}원)"
         else:
-            self.last_status = f"0.05초 괴리 스캔 중 (현재 {spread:+.2f}%, 기준 ≥ {trigger_spread}%)"
+            self.last_status = (f"펀딩비 누적 중 (김프 {kimchi:+.2f}%, 청산 ≥ {exit_at}%, "
+                                f"누적 펀딩 ${self.accrued_funding_usdt:+,.2f})")
+
+    # ── 3. 무전송 양방향 ──────────────────────────────────────────
+    def _step_spatial_dual(self, radar: Dict[str, Any], fx: float, usdt_price: float):
+        item = next((c for c in radar.get("coins", []) if c["coin"] == self.coin), None)
+        if not item:
+            return
+        spread = item.get("spatialSpreadPct")
+        p_bithumb = item.get("bithumbPrice")
+        p_binance = item.get("binanceUsdPrice")
+        if spread is None or not p_bithumb or not p_binance:
+            self.last_status = "스프레드 계산 불가 — 판단 보류"
+            return
+
+        # 초기 재고 구축도 '거래' 다. 예전에는 생성 시점에 보유량과 숏을
+        # 그냥 채워 넣어, 아무 체결 없이 포지션이 생긴 것처럼 보였다.
+        if not self._setup_done:
+            half = self.initial_krw * 0.5
+            units = half * (1 - self.FEE) / p_bithumb
+            self.coin_units_domestic = units
+            self.cash_krw = self.initial_krw - half
+            self.foreign_cash_usdt = (self.initial_krw * 0.25) / usdt_price
+            self.cash_krw -= self.initial_krw * 0.25
+            self.cost_basis_krw = self.initial_krw
+            self._setup_done = True
+            self.total_trades += 1
+            self.log("BUY", f"[가상 체결] 초기 재고 구축 — 국내 {units:.6f} {self.coin} 매수 "
+                            f"+ 해외 증거금 ${self.foreign_cash_usdt:,.2f} 배치")
+            return
+
+        trigger = float(self.config.get("triggerSpreadPct", 0.4))
+        if spread < trigger:
+            self.last_status = f"괴리 감시 중 (현재 {spread:+.2f}%, 기준 ≥ {trigger}%)"
+            return
+        if self.coin_units_domestic <= 0.0000001 or self.foreign_cash_usdt < 10:
+            self.last_status = f"괴리 {spread:+.2f}% 포착했으나 재고 부족 — 대기"
+            return
+
+        chunk = min(self.coin_units_domestic * 0.25,
+                    (self.foreign_cash_usdt * 0.5) / p_binance)
+        if chunk <= 0.0000001:
+            self.last_status = "체결 가능 수량이 너무 작습니다"
+            return
+
+        sell_krw = chunk * p_bithumb * (1 - self.FEE)
+        buy_usdt = chunk * p_binance * (1 + self.FEE)
+        margin_krw = sell_krw - buy_usdt * usdt_price
+
+        self.coin_units_domestic -= chunk
+        self.cash_krw += sell_krw
+        self.foreign_cash_usdt -= buy_usdt
+        self.coin_units_foreign_short += chunk
+        self.realized_pnl += margin_krw
+        self.total_trades += 1
+        self.log("ORDER", f"[가상 체결] 괴리 {spread:+.2f}% — 빗썸 매도 {chunk:.6f} {self.coin} "
+                          f"+ 해외 매수 동시 (마진 {margin_krw:+,.0f}원)")
+        self.last_status = (f"차익 실현 중 (스프레드 {spread:+.2f}%, "
+                            f"누적 {self.realized_pnl:+,.0f}원)")
 
     def status(self) -> Dict[str, Any]:
         with self._lock:
@@ -344,13 +465,16 @@ class ArbitrageBot:
                 "strategy": self.strategy,
                 "coin": self.coin,
                 "mode": self.mode,
+                "simulated": True,
                 "initialKrw": self.initial_krw,
                 "cashKrw": round(self.cash_krw, 0),
                 "foreignCashUsdt": round(self.foreign_cash_usdt, 2),
                 "coinUnitsDomestic": round(self.coin_units_domestic, 6),
                 "coinUnitsForeign": round(self.coin_units_foreign_short, 6),
+                "accruedFundingUsdt": round(self.accrued_funding_usdt, 4),
                 "realizedPnl": round(self.realized_pnl, 0),
-                "returnPct": round((self.realized_pnl / self.initial_krw * 100.0) if self.initial_krw > 0 else 0.0, 2),
+                "returnPct": round((self.realized_pnl / self.initial_krw * 100.0)
+                                   if self.initial_krw > 0 else 0.0, 2),
                 "totalTrades": self.total_trades,
                 "isRunning": self.is_running,
                 "lastStatus": self.last_status,
@@ -358,16 +482,23 @@ class ArbitrageBot:
                 "logs": self.logs[-20:],
             }
 
+
 class ArbitrageBotManager:
+    """시뮬레이터 인스턴스 관리.
+
+    주문 경로가 없으므로 계좌(account)를 받지 않는다. 받아두면 나중에
+    '실전 모드' 가 있는 것처럼 오해할 여지를 남긴다.
+    """
+
     def __init__(self):
         self.bots: Dict[str, ArbitrageBot] = {}
         self._lock = threading.Lock()
 
-    def create_bot(self, strategy: str, coin: str, mode: str, capital_krw: float,
-                   config: Dict[str, Any], account: Optional[bithumb.BithumbAccount] = None) -> ArbitrageBot:
+    def create_bot(self, strategy: str, coin: str, capital_krw: float,
+                   config: Dict[str, Any]) -> ArbitrageBot:
         with self._lock:
-            bot_id = f"arb-{strategy[:4]}-{int(time.time()*1000)%100000}"
-            bot = ArbitrageBot(bot_id, strategy, coin, mode, capital_krw, config, account)
+            bot_id = f"arb-{strategy[:4]}-{uuid.uuid4().hex[:6]}"
+            bot = ArbitrageBot(bot_id, strategy, coin, capital_krw, config)
             self.bots[bot_id] = bot
             bot.start()
             return bot
@@ -383,5 +514,6 @@ class ArbitrageBotManager:
     def list_bots(self) -> List[Dict[str, Any]]:
         with self._lock:
             return [b.status() for b in self.bots.values()]
+
 
 arbitrage_manager = ArbitrageBotManager()

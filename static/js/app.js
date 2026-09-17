@@ -1005,32 +1005,51 @@ async function boot() {
   };
 
   // ───────── 차익거래 (Arbitrage) 핸들러 ─────────
+  // 값을 못 받은 항목은 0 이 아니라 '—' 로 보여준다.
+  // 0 으로 그리면 '김프 0%' 처럼 실제 관측값으로 오해된다.
+  function dashWon(v) { return (v === null || v === undefined) ? "—" : won(v) + "원"; }
+  function dashPct(v) { return (v === null || v === undefined) ? "—" : pct(v); }
+  function dashUsd(v) { return (v === null || v === undefined) ? "—" : "$" + Number(v).toLocaleString(); }
+
   async function loadArbitrageRadar() {
     try {
       const data = await api("/api/arbitrage/radar");
       if (!data) return;
-      $("arbOfficialFx").textContent = won(data.officialFxRate) + "원";
-      $("arbUsdtPrice").textContent = won(data.bithumbUsdtPrice) + "원";
-      $("arbUsdtPrem").textContent = pct(data.usdtPremiumPct);
-      $("arbUsdtPrem").className = "metric-v " + cls(data.usdtPremiumPct);
+
+      const errBox = $("arbDataError");
+      if (errBox) {
+        if (data.dataOk === false && (data.errors || []).length) {
+          errBox.innerHTML = "<b>일부 지표를 받지 못했습니다.</b> 받지 못한 값은 —  로 표시합니다.<br>"
+            + data.errors.map(e => `· ${e}`).join("<br>");
+          errBox.classList.remove("hidden");
+        } else {
+          errBox.classList.add("hidden");
+        }
+      }
+
+      $("arbOfficialFx").textContent = dashWon(data.officialFxRate);
+      $("arbUsdtPrice").textContent = dashWon(data.bithumbUsdtPrice);
+      $("arbUsdtPrem").textContent = dashPct(data.usdtPremiumPct);
+      $("arbUsdtPrem").className = "metric-v " + (data.usdtPremiumPct === null ? "" : cls(data.usdtPremiumPct));
       $("arbRecommendation").textContent = data.usdtStatus;
-      $("arbRecommendation").className = "metric-v " + (data.usdtPremiumPct < -0.5 ? "up" : (data.usdtPremiumPct > 2.0 ? "down" : ""));
+      $("arbRecommendation").className = "metric-v";
 
       const tbody = $("arbRadarBody");
       if (data.coins && data.coins.length > 0) {
         tbody.innerHTML = data.coins.map(c => `
           <tr>
             <td><b>${c.coin}</b> <span class="muted small">${c.name}</span></td>
-            <td>${won(c.bithumbPrice)}원</td>
-            <td>$${Number(c.binanceUsdPrice).toLocaleString()}</td>
-            <td class="${cls(c.kimchiPremiumPct)}"><b>${pct(c.kimchiPremiumPct)}</b></td>
-            <td class="${cls(c.spatialSpreadPct)}">${pct(c.spatialSpreadPct)}</td>
-            <td><b>연 ${c.fundingRateAnnualPct}%</b> <span class="muted small">(${c.fundingRate8h}%/8h)</span></td>
+            <td>${dashWon(c.bithumbPrice)}</td>
+            <td>${dashUsd(c.binanceUsdPrice)}</td>
+            <td class="${c.kimchiPremiumPct === null ? "" : cls(c.kimchiPremiumPct)}"><b>${dashPct(c.kimchiPremiumPct)}</b></td>
+            <td class="${c.spatialSpreadPct === null ? "" : cls(c.spatialSpreadPct)}">${dashPct(c.spatialSpreadPct)}</td>
+            <td>${c.fundingRateAnnualPct === null ? "—"
+                  : `<b class="${cls(c.fundingRateAnnualPct)}">연 ${c.fundingRateAnnualPct}%</b> <span class="muted small">(${c.fundingRate8h}%/8h)</span>`}</td>
           </tr>
         `).join("");
       }
     } catch (e) {
-      console.warn("차익거래 레이더 갱신 실패:", e);
+      console.warn("지표 갱신 실패:", e);
     }
   }
 
@@ -1039,22 +1058,22 @@ async function boot() {
       const res = await api("/api/arbitrage/bots");
       const list = $("arbBotList");
       if (!res.bots || res.bots.length === 0) {
-        list.innerHTML = '<div class="empty">가동 중인 차익거래 봇이 없습니다.</div>';
+        list.innerHTML = '<div class="empty">가동 중인 시뮬레이터가 없습니다.</div>';
         $("arbActiveBotCount").textContent = "0대 가동 중";
         return;
       }
       $("arbActiveBotCount").textContent = `${res.bots.filter(b => b.isRunning).length}대 가동 중`;
       list.innerHTML = res.bots.map(b => {
         const stratNames = {
-          usdt_swap: "🟢 USDT 환차익 스왑",
-          kimkim_funding: "🟡 김프 델타뉴트럴",
-          spatial_dual: "🔴 무전송 양방향"
+          usdt_swap: "USDT 환차익 스왑",
+          kimkim_funding: "김프 델타뉴트럴 + 펀딩비",
+          spatial_dual: "무전송 양방향"
         };
         return `
           <div class="bot-card ${b.isRunning ? '' : 'paused'}" style="margin-bottom: 10px;">
             <div class="bot-card-head">
               <div>
-                <span class="badge ${b.mode === 'LIVE' ? 'badge-live' : 'badge-paper'}">${b.mode}</span>
+                <span class="badge badge-paper" title="실제 주문은 나가지 않습니다">시뮬레이션</span>
                 <b style="font-size: 0.95rem; margin-left: 6px;">${stratNames[b.strategy] || b.strategy}</b>
                 <span class="muted small">(${b.coin})</span>
               </div>
@@ -1065,11 +1084,11 @@ async function boot() {
             <div class="bot-body" style="font-size: 0.85rem; margin-top: 8px;">
               <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                 <span class="muted">자본:</span> <b>${won(b.initialKrw)}원</b>
-                <span class="muted">누적 순이익:</span> <b class="${cls(b.realizedPnl)}">${won(b.realizedPnl)}원 (${pct(b.returnPct)})</b>
+                <span class="muted">가상 손익:</span> <b class="${cls(b.realizedPnl)}">${won(b.realizedPnl)}원 (${pct(b.returnPct)})</b>
               </div>
               <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                <span class="muted">국내 잔고:</span> <span>${won(b.cashKrw)}원 / ${b.coinUnitsDomestic} ${b.coin}</span>
-                <span class="muted">해외 잔고:</span> <span>$${b.foreignCashUsdt} USDT / ${b.coinUnitsForeign} ${b.coin}</span>
+                <span class="muted">국내(가상):</span> <span>${won(b.cashKrw)}원 / ${b.coinUnitsDomestic} ${b.coin}</span>
+                <span class="muted">해외(가상):</span> <span>$${b.foreignCashUsdt} USDT / ${b.coinUnitsForeign} ${b.coin}</span>
               </div>
               <div style="padding: 6px 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 6px; font-size: 0.8rem;">
                 <b>상태:</b> ${b.lastStatus}
@@ -1114,7 +1133,7 @@ async function boot() {
     $("deployArbitrageBtn").onclick = async () => {
       const strategy = $("arbStrategyType").value;
       const coin = $("arbCoin").value;
-      const mode = $("arbMode").value;
+      const mode = "SIM";              // 실주문 경로가 없다. 서버도 LIVE 를 거부한다.
       const capitalKrw = Number($("arbCapital").value);
 
       const config = {
@@ -1131,7 +1150,7 @@ async function boot() {
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify({ strategy, coin, mode, capitalKrw, config })
         });
-        alert("차익거래 봇이 성공적으로 가동되었습니다!");
+        alert("시뮬레이션을 시작했습니다. 실제 주문은 나가지 않습니다.");
         await loadArbitrageBots();
       } catch (e) {
         alert(e.message);

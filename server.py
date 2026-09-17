@@ -425,31 +425,33 @@ def gemini_scan(interval: str = "1h"):
     return gemini_service.scan_all_coins(interval=interval)
 
 
-# ───────────────────────── 퀀트 차익거래 (Arbitrage) ─────────────────────────
+# ─────────────── 차익거래 지표 모니터 · 전략 시뮬레이터 ───────────────
 
 class ArbitrageDeployRequest(BaseModel):
     strategy: str = "usdt_swap"  # "usdt_swap" | "kimkim_funding" | "spatial_dual"
     coin: str = "USDT"
-    mode: str = "PAPER"
+    # mode 는 받기만 하고 무시한다. 이 기능에 실주문 경로가 없기 때문이다.
+    # 과거 클라이언트가 "LIVE" 를 보내도 시뮬레이션으로만 동작한다.
+    mode: str = "SIM"
     capitalKrw: float = 1_000_000.0
     config: Dict[str, Any] = {}
 
 
 @app.get("/api/arbitrage/radar")
 def arbitrage_radar():
-    """3대 무위험 차익거래 실시간 레이더 지표."""
+    """김프·펀딩비·환율 실시간 지표. 조회 실패 항목은 null 로 오고 errors 에 사유가 담긴다."""
     return arbitrage.get_arbitrage_radar()
 
 
 @app.get("/api/arbitrage/bots")
 def arbitrage_list_bots():
-    """가동 중인 차익거래 봇 목록."""
+    """가동 중인 차익거래 시뮬레이터 목록."""
     return {"bots": arbitrage_manager.list_bots()}
 
 
 @app.post("/api/arbitrage/deploy")
 def arbitrage_deploy(req: ArbitrageDeployRequest):
-    """차익거래 봇 생성 및 가동."""
+    """차익거래 시뮬레이터 생성 및 가동. 실주문은 나가지 않는다."""
     if req.capitalKrw < 10_000:
         raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
     
@@ -457,16 +459,20 @@ def arbitrage_deploy(req: ArbitrageDeployRequest):
     if req.strategy not in valid_strats:
         raise HTTPException(400, f"지원하지 않는 차익거래 전략: {req.strategy}")
 
+    if req.mode.upper() == "LIVE":
+        raise HTTPException(400,
+            "차익거래는 시뮬레이션만 지원합니다. 해외 거래소 주문 연동이 없어 "
+            "헤지 다리를 만들 수 없고, 국내 다리만 실주문으로 내면 무위험이 아니라 "
+            "헤지 없는 단방향 매매가 됩니다.")
+
     target_coin = "USDT" if req.strategy == "usdt_swap" else req.coin
     bot = arbitrage_manager.create_bot(
         strategy=req.strategy,
         coin=target_coin,
-        mode=req.mode.upper(),
         capital_krw=req.capitalKrw,
         config=req.config,
-        account=keystore.account
     )
-    return {"success": True, "bot": bot.status()}
+    return {"success": True, "bot": bot.status(), "simulated": True}
 
 
 @app.post("/api/arbitrage/stop")

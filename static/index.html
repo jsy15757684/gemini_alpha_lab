@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.4.1">
+<link rel="stylesheet" href="/static/css/style.css?v=4.5.1">
 </head>
 <body>
 
@@ -47,7 +47,7 @@
 
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
-    <button class="tab" data-panel="panel-arbitrage">⚡ 퀀트 차익거래</button>
+    <button class="tab" data-panel="panel-arbitrage">⚡ 김프·펀딩비 모니터</button>
     <button class="tab" data-panel="panel-bots">자동매매 봇</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
@@ -88,19 +88,29 @@
 
     <!-- ⚡ 퀀트 차익거래 (Arbitrage Lab) -->
     <section id="panel-arbitrage" class="panel hidden">
-      <!-- 실시간 3대 지표 레이더 전광판 -->
+      <div class="alert alert-warn" style="margin-bottom: 1rem;">
+        <b>이 탭은 지표 모니터와 전략 시뮬레이터입니다. 실제 주문은 나가지 않습니다.</b><br>
+        <span class="small">차익거래에는 해외 거래소 주문(선물 숏·동시 체결)이 필요한데 이 프로그램에는
+        그 연동이 없습니다. 바이낸스는 <b>시세 조회만</b> 씁니다. 국내 다리만 실주문으로 내면
+        헤지가 없어져 무위험이 아니라 단방향 매매가 되므로, 실전 모드를 두지 않았습니다.
+        아래 손익은 전부 <b>가상 체결</b> 기준입니다.</span>
+      </div>
+
+      <!-- 실시간 지표 -->
       <div class="card" style="margin-bottom: 1.2rem; border-color: rgba(59, 130, 246, 0.3);">
         <div class="card-head">
           <div>
-            <h2 class="card-title">⚡ 3대 무위험 퀀트 차익거래 실시간 레이더</h2>
-            <p class="muted small">서울외환시장 공시환율 · 빗썸 USDT · 바이낸스 선물 펀딩비 및 공간 스프레드를 실시간 분석합니다.</p>
+            <h2 class="card-title">⚡ 김치프리미엄 · 펀딩비 · 환율 실시간 지표</h2>
+            <p class="muted small">네이버 금융 공시환율 · 빗썸 현물 · 바이낸스 선물(시세 조회 전용)에서 받은 실데이터입니다. 조회에 실패한 항목은 추정치로 채우지 않고 <b>—</b> 로 표시합니다.</p>
           </div>
           <button class="btn btn-ghost btn-sm" id="refreshArbitrageBtn">🔄 실시간 갱신</button>
         </div>
 
+        <div id="arbDataError" class="alert alert-error hidden" style="margin-top: 12px;"></div>
+
         <div class="metrics" style="margin-top: 14px;">
           <div class="metric" style="border-left: 3px solid #3b82f6;">
-            <div class="metric-k">서울외환시장 공시환율</div>
+            <div class="metric-k">공시환율 (네이버 금융)</div>
             <div class="metric-v" id="arbOfficialFx">1,385원</div>
           </div>
           <div class="metric" style="border-left: 3px solid #10b981;">
@@ -112,7 +122,7 @@
             <div class="metric-v" id="arbUsdtPrem">0.00%</div>
           </div>
           <div class="metric" style="border-left: 3px solid #8b5cf6;">
-            <div class="metric-k">현재 시장 추천 전략</div>
+            <div class="metric-k">현재 시장 상태</div>
             <div class="metric-v" id="arbRecommendation" style="font-size: 0.95rem;">스캔 중...</div>
           </div>
         </div>
@@ -143,14 +153,14 @@
       <!-- 차익거래 봇 생성 및 가동 목록 -->
       <div class="grid-2">
         <div class="card">
-          <h2 class="card-title">🚀 차익거래 봇 생성</h2>
+          <h2 class="card-title">🧪 전략 시뮬레이터</h2>
           
           <div style="margin-bottom: 12px;">
-            <label class="label">차익거래 전략 선택</label>
+            <label class="label">시뮬레이션할 전략</label>
             <select class="input" id="arbStrategyType">
-              <option value="usdt_swap" selected>🟢 1. USDT(테더) / 원달러 환차익 스왑 (역프 매수 → 김프 매도)</option>
-              <option value="kimkim_funding">🟡 2. 김프 델타뉴트럴 펀딩비 헷지 (현물 매수 + 1배 숏, 연 15~25% 이자)</option>
-              <option value="spatial_dual">🔴 3. 무전송 양방향 차익거래 (0.05초 괴리 동시 체결)</option>
+              <option value="usdt_swap" selected>1. USDT 환차익 스왑 (역프 매수 → 김프 매도)</option>
+              <option value="kimkim_funding">2. 김프 델타뉴트럴 + 펀딩비 (현물 매수 + 해외 1배 숏)</option>
+              <option value="spatial_dual">3. 무전송 양방향 (거래소 간 괴리 동시 체결)</option>
             </select>
           </div>
 
@@ -166,16 +176,13 @@
               </select>
             </div>
             <div>
-              <label class="label">매매 모드</label>
-              <select class="input" id="arbMode">
-                <option value="PAPER" selected>모의투자 (주문 안 나감)</option>
-                <option value="LIVE">실전 (빗썸 실주문)</option>
-              </select>
+              <label class="label">실행 방식</label>
+              <input class="input" type="text" value="시뮬레이션 전용" disabled>
             </div>
           </div>
 
           <div style="margin-top: 10px;">
-            <label class="label">운용 자본 (원)</label>
+            <label class="label">가상 운용 자본 (원)</label>
             <input class="input" type="number" id="arbCapital" value="10000000" min="10000" step="100000">
           </div>
 
@@ -215,18 +222,18 @@
           </div>
 
           <button class="btn btn-primary" id="deployArbitrageBtn" style="margin-top: 14px; width: 100%;">
-            ⚡ 차익거래 봇 가동 시작
+            🧪 시뮬레이션 시작 (주문 안 나감)
           </button>
         </div>
 
         <!-- 가동 중인 차익거래 봇 목록 -->
         <div class="card">
           <div class="card-head">
-            <h2 class="card-title">가동 중인 차익거래 봇</h2>
+            <h2 class="card-title">가동 중인 시뮬레이터</h2>
             <span class="pill" id="arbActiveBotCount">0대 가동 중</span>
           </div>
           <div id="arbBotList" class="bot-list" style="margin-top: 10px;">
-            <div class="empty">가동 중인 차익거래 봇이 없습니다.</div>
+            <div class="empty">가동 중인 시뮬레이터가 없습니다.</div>
           </div>
         </div>
       </div>
@@ -603,6 +610,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.5.0"></script>
+<script src="/static/js/app.js?v=4.5.1"></script>
 </body>
 </html>
