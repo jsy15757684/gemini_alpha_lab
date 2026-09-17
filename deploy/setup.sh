@@ -15,7 +15,10 @@
 
 set -euo pipefail
 
-APP_USER="${APP_USER:-$(logname 2>/dev/null || echo ubuntu)}"
+# 서비스는 전용 시스템 계정으로 돌린다. root 로 돌리면 앱이 뚫렸을 때
+# 그대로 root 가 된다. 코드는 root 소유로 두고 이 계정에는 읽기만 준다 —
+# 앱이 자기 코드를 고칠 수 없게 하기 위해서다. 쓰기는 data/ 에만 허용한다.
+APP_USER="${APP_USER:-bithumb}"
 APP_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 SERVICE_NAME="bithumb-bot"
 PORT="${PORT:-8888}"
@@ -56,7 +59,19 @@ else
   echo "  기존 .env 유지 (권한 600 으로 조정)"
 fi
 mkdir -p data
-chown -R "$APP_USER":"$APP_USER" "$APP_DIR"
+
+if ! id "$APP_USER" >/dev/null 2>&1; then
+  useradd --system --no-create-home --shell /usr/sbin/nologin "$APP_USER"
+  echo "  서비스 전용 계정 $APP_USER 생성 (로그인 불가)"
+fi
+
+# 코드: root 소유 · 그룹 읽기만 / data: 앱 소유 쓰기 가능 / .env: 읽기만
+chown -R root:"$APP_USER" "$APP_DIR"
+chmod -R u=rwX,g=rX,o= "$APP_DIR"
+chown -R "$APP_USER":"$APP_USER" "$APP_DIR/data"
+chmod 700 "$APP_DIR/data"
+[ -f "$APP_DIR/.env" ] && { chown root:"$APP_USER" "$APP_DIR/.env"; chmod 640 "$APP_DIR/.env"; }
+chmod 750 "$APP_DIR/deploy/service-start.sh" "$APP_DIR/scripts/load_env.sh" 2>/dev/null || true
 
 log "4/5 systemd 서비스 등록"
 cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
@@ -68,6 +83,7 @@ Wants=network-online.target
 [Service]
 Type=simple
 User=${APP_USER}
+Group=${APP_USER}
 WorkingDirectory=${APP_DIR}
 Environment=PORT=${PORT}
 # .env 는 systemd 의 EnvironmentFile 대신 앱과 같은 파서로 읽는다.
@@ -89,8 +105,9 @@ SyslogIdentifier=${SERVICE_NAME}
 # 최소 권한
 NoNewPrivileges=true
 PrivateTmp=true
-ProtectSystem=full
-ProtectHome=read-only
+# 파일시스템 전체를 읽기 전용으로 두고 data/ 만 연다.
+ProtectSystem=strict
+ProtectHome=yes
 ReadWritePaths=${APP_DIR}/data
 
 [Install]
