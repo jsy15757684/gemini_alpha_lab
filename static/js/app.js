@@ -1098,7 +1098,10 @@ async function boot() {
               </div>
               <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                 <span class="muted">국내(가상):</span> <span>${won(b.cashKrw)}원 / ${b.coinUnitsDomestic} ${b.coin}</span>
-                <span class="muted">해외(가상):</span> <span>$${b.foreignCashUsdt} USDT / ${b.coinUnitsForeign} ${b.coin}</span>
+                <span class="muted">해외(가상):</span> <span>$${b.foreignCashUsdt} USDT / ${
+                  b.strategy === 'kimkim_funding'
+                    ? `숏 ${b.hedgeShortUnits} ${b.coin}`
+                    : `${b.foreignUnits} ${b.coin}`}</span>
               </div>
               <div style="padding: 6px 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 6px; font-size: 0.8rem;">
                 <b>상태:</b> ${b.lastStatus}

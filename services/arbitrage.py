@@ -217,7 +217,10 @@ class ArbitrageBot:
         self.cash_krw = float(capital_krw)
         self.foreign_cash_usdt = 0.0
         self.coin_units_domestic = 0.0
-        self.coin_units_foreign_short = 0.0
+        # 해외 쪽 수량은 전략마다 의미가 다르다. 한 변수에 담으면
+        # 'short' 라는 이름으로 롱 재고를 세게 되어 평가액이 틀어진다.
+        self.foreign_units = 0.0        # spatial_dual: 해외에 보유한 코인(롱)
+        self.hedge_short_units = 0.0    # kimkim_funding: 해외 1배 숏 수량
 
         # 손익은 '이번 포지션에 들어간 돈' 과 비교해야 한다.
         # 최초 자본과 비교하면 2회차부터 이전 회차 수익까지 다시 더해진다.
@@ -370,7 +373,7 @@ class ArbitrageBot:
                 invest = self.cash_krw
                 units = invest * (1 - self.FEE) / p_bithumb
                 self.coin_units_domestic = units
-                self.coin_units_foreign_short = units
+                self.hedge_short_units = units
                 self.cost_basis_krw = invest + self.foreign_reserve_krw
                 self.entry_binance_usd = p_binance
                 self.cash_krw = 0.0
@@ -390,7 +393,7 @@ class ArbitrageBot:
         if fr_8h is not None and self._last_funding_at:
             elapsed = time.time() - self._last_funding_at
             self._last_funding_at = time.time()
-            notional_usdt = self.coin_units_foreign_short * p_binance
+            notional_usdt = self.hedge_short_units * p_binance
             self.accrued_funding_usdt += notional_usdt * (fr_8h / 100.0) * (elapsed / 28800.0)
 
         if kimchi >= exit_at:
@@ -407,7 +410,7 @@ class ArbitrageBot:
             self.cash_krw = total * 0.5
             self.foreign_reserve_krw = total * 0.5
             self.coin_units_domestic = 0.0
-            self.coin_units_foreign_short = 0.0
+            self.hedge_short_units = 0.0
             self.cost_basis_krw = 0.0
             self.accrued_funding_usdt = 0.0
             self.total_trades += 1
@@ -422,6 +425,14 @@ class ArbitrageBot:
 
     # ── 3. 무전송 양방향 ──────────────────────────────────────────
     def _step_spatial_dual(self, radar: Dict[str, Any], fx: float, usdt_price: float):
+        """거래소 간 괴리를 양방향으로 먹는다.
+
+        '무전송' 은 코인을 옮기지 않는다는 뜻이다. 그래서 양쪽에 재고와 현금을
+        모두 들고, 비싼 쪽에서 팔고 싼 쪽에서 사서 구성을 맞바꾼다.
+
+        한 방향으로만 돌면 그쪽 재고가 소진되는 순간 영구히 멈춘다.
+        (이전 구현이 그랬다 — 국내 재고를 다 팔면 '재고 부족' 으로 대기했다.)
+        """
         item = next((c for c in radar.get("coins", []) if c["coin"] == self.coin), None)
         if not item:
             return
@@ -432,50 +443,86 @@ class ArbitrageBot:
             self.last_status = "스프레드 계산 불가 — 판단 보류"
             return
 
-        # 초기 재고 구축도 '거래' 다. 예전에는 생성 시점에 보유량과 숏을
-        # 그냥 채워 넣어, 아무 체결 없이 포지션이 생긴 것처럼 보였다.
+        p_binance_krw = p_binance * usdt_price
+
+        # 초기 재고 구축도 '거래' 다. 예전에는 생성 시점에 보유량을 그냥
+        # 채워 넣어, 아무 체결 없이 포지션이 생긴 것처럼 보였다.
+        # 양방향으로 돌려면 양쪽에 재고와 현금이 모두 있어야 한다.
         if not self._setup_done:
-            half = self.initial_krw * 0.5
-            units = half * (1 - self.FEE) / p_bithumb
-            self.coin_units_domestic = units
-            self.cash_krw = self.initial_krw - half
-            self.foreign_cash_usdt = (self.initial_krw * 0.25) / usdt_price
-            self.cash_krw -= self.initial_krw * 0.25
+            q = self.initial_krw * 0.25
+            dom_units = q * (1 - self.FEE) / p_bithumb
+            for_units = q * (1 - self.FEE) / p_binance_krw
+            self.coin_units_domestic = dom_units
+            self.foreign_units = for_units
+            self.foreign_cash_usdt = q / usdt_price
+            self.cash_krw = self.initial_krw - q * 3
             self.cost_basis_krw = self.initial_krw
             self._setup_done = True
             self.total_trades += 1
-            self.log("BUY", f"[가상 체결] 초기 재고 구축 — 국내 {units:.6f} {self.coin} 매수 "
-                            f"+ 해외 증거금 ${self.foreign_cash_usdt:,.2f} 배치")
+            self.log("BUY", f"[가상 체결] 초기 재고 구축 — 국내 {dom_units:.6f} · "
+                            f"해외 {for_units:.6f} {self.coin} · 원화 {self.cash_krw:,.0f}원 · "
+                            f"해외현금 ${self.foreign_cash_usdt:,.2f}")
             self._persist()
             return
 
-        trigger = float(self.config.get("triggerSpreadPct", 0.4))
-        if spread < trigger:
-            self.last_status = f"괴리 감시 중 (현재 {spread:+.2f}%, 기준 ≥ {trigger}%)"
-            return
-        if self.coin_units_domestic <= 0.0000001 or self.foreign_cash_usdt < 10:
-            self.last_status = f"괴리 {spread:+.2f}% 포착했으나 재고 부족 — 대기"
+        trigger = abs(float(self.config.get("triggerSpreadPct", 0.4)))
+        dust = 1e-7
+        min_krw = 5000.0
+        min_usdt = 5.0
+
+        # 국내가 비싸다 → 국내 매도 + 해외 매수
+        if spread >= trigger:
+            if self.coin_units_domestic <= dust or self.foreign_cash_usdt < min_usdt:
+                self.last_status = (f"국내 고평가 {spread:+.2f}% 포착 — 국내 재고 또는 "
+                                    f"해외 현금 부족으로 대기")
+                return
+            chunk = min(self.coin_units_domestic * 0.25,
+                        (self.foreign_cash_usdt * 0.5) / p_binance)
+            if chunk <= dust:
+                self.last_status = "체결 가능 수량이 너무 작습니다"
+                return
+            sell_krw = chunk * p_bithumb * (1 - self.FEE)
+            buy_usdt = chunk * p_binance * (1 + self.FEE)
+            margin = sell_krw - buy_usdt * usdt_price
+
+            self.coin_units_domestic -= chunk
+            self.cash_krw += sell_krw
+            self.foreign_cash_usdt -= buy_usdt
+            self.foreign_units += chunk
+            direction = "국내 매도 → 해외 매수"
+
+        # 국내가 싸다 → 국내 매수 + 해외 매도
+        elif spread <= -trigger:
+            if self.foreign_units <= dust or self.cash_krw < min_krw:
+                self.last_status = (f"국내 저평가 {spread:+.2f}% 포착 — 해외 재고 또는 "
+                                    f"원화 부족으로 대기")
+                return
+            chunk = min(self.foreign_units * 0.25,
+                        (self.cash_krw * 0.5) / p_bithumb)
+            if chunk <= dust:
+                self.last_status = "체결 가능 수량이 너무 작습니다"
+                return
+            buy_krw = chunk * p_bithumb * (1 + self.FEE)
+            sell_usdt = chunk * p_binance * (1 - self.FEE)
+            margin = sell_usdt * usdt_price - buy_krw
+
+            self.foreign_units -= chunk
+            self.foreign_cash_usdt += sell_usdt
+            self.cash_krw -= buy_krw
+            self.coin_units_domestic += chunk
+            direction = "해외 매도 → 국내 매수"
+
+        else:
+            self.last_status = (f"양방향 괴리 감시 중 (현재 {spread:+.2f}%, "
+                                f"기준 ±{trigger}%) | 국내 {self.coin_units_domestic:.6f} · "
+                                f"해외 {self.foreign_units:.6f} {self.coin}")
             return
 
-        chunk = min(self.coin_units_domestic * 0.25,
-                    (self.foreign_cash_usdt * 0.5) / p_binance)
-        if chunk <= 0.0000001:
-            self.last_status = "체결 가능 수량이 너무 작습니다"
-            return
-
-        sell_krw = chunk * p_bithumb * (1 - self.FEE)
-        buy_usdt = chunk * p_binance * (1 + self.FEE)
-        margin_krw = sell_krw - buy_usdt * usdt_price
-
-        self.coin_units_domestic -= chunk
-        self.cash_krw += sell_krw
-        self.foreign_cash_usdt -= buy_usdt
-        self.coin_units_foreign_short += chunk
-        self.realized_pnl += margin_krw
+        self.realized_pnl += margin
         self.total_trades += 1
-        self.log("ORDER", f"[가상 체결] 괴리 {spread:+.2f}% — 빗썸 매도 {chunk:.6f} {self.coin} "
-                          f"+ 해외 매수 동시 (마진 {margin_krw:+,.0f}원)")
-        self.last_status = (f"차익 실현 중 (스프레드 {spread:+.2f}%, "
+        self.log("ORDER", f"[가상 체결] 괴리 {spread:+.2f}% — {direction} "
+                          f"{chunk:.6f} {self.coin} (마진 {margin:+,.0f}원)")
+        self.last_status = (f"차익 실현 중 ({direction}, 스프레드 {spread:+.2f}%, "
                             f"누적 {self.realized_pnl:+,.0f}원)")
         self._persist()
 
@@ -504,20 +551,19 @@ class ArbitrageBot:
             if self.coin_units_domestic > 0:
                 total += self.coin_units_domestic * c
                 # 해외는 1배 숏이다. 진입가보다 내리면 이익.
-                total += (self.entry_binance_usd - b) * self.coin_units_foreign_short * u
+                total += (self.entry_binance_usd - b) * self.hedge_short_units * u
             total += self.accrued_funding_usdt * u
             return total
 
         if self.strategy == "spatial_dual":
-            if (self.coin_units_domestic > 0 or self.coin_units_foreign_short > 0) \
+            if (self.coin_units_domestic > 0 or self.foreign_units > 0) \
                and (c is None or b is None):
                 return None
             total = self.cash_krw + self.foreign_cash_usdt * u
             if self.coin_units_domestic > 0:
                 total += self.coin_units_domestic * c
-            # 주의: 이름은 short 지만 이 전략에서는 해외에서 '매수' 한 물량이다.
-            if self.coin_units_foreign_short > 0:
-                total += self.coin_units_foreign_short * b * u
+            if self.foreign_units > 0:
+                total += self.foreign_units * b * u
             return total
 
         return None
@@ -531,7 +577,8 @@ class ArbitrageBot:
             "foreignCashUsdt": self.foreign_cash_usdt,
             "foreignReserveKrw": self.foreign_reserve_krw,
             "unitsDomestic": self.coin_units_domestic,
-            "unitsForeign": self.coin_units_foreign_short,
+            "foreignUnits": self.foreign_units,
+            "hedgeShortUnits": self.hedge_short_units,
             "costBasisKrw": self.cost_basis_krw,
             "entryBinanceUsd": self.entry_binance_usd,
             "accruedFundingUsdt": self.accrued_funding_usdt,
@@ -551,7 +598,12 @@ class ArbitrageBot:
         bot.foreign_cash_usdt = float(d.get("foreignCashUsdt", 0.0))
         bot.foreign_reserve_krw = float(d.get("foreignReserveKrw", bot.foreign_reserve_krw))
         bot.coin_units_domestic = float(d.get("unitsDomestic", 0.0))
-        bot.coin_units_foreign_short = float(d.get("unitsForeign", 0.0))
+        # 구 스냅샷은 두 의미를 한 키(unitsForeign)에 담았다. 전략으로 나눈다.
+        legacy = float(d.get("unitsForeign", 0.0))
+        bot.foreign_units = float(d.get("foreignUnits",
+                                        legacy if d.get("strategy") == "spatial_dual" else 0.0))
+        bot.hedge_short_units = float(d.get("hedgeShortUnits",
+                                            legacy if d.get("strategy") == "kimkim_funding" else 0.0))
         bot.cost_basis_krw = float(d.get("costBasisKrw", 0.0))
         bot.entry_binance_usd = float(d.get("entryBinanceUsd", 0.0))
         bot.accrued_funding_usdt = float(d.get("accruedFundingUsdt", 0.0))
@@ -588,7 +640,8 @@ class ArbitrageBot:
                 "foreignCashUsdt": round(self.foreign_cash_usdt, 2),
                 "foreignReserveKrw": round(self.foreign_reserve_krw, 0),
                 "coinUnitsDomestic": round(self.coin_units_domestic, 6),
-                "coinUnitsForeign": round(self.coin_units_foreign_short, 6),
+                "foreignUnits": round(self.foreign_units, 6),
+                "hedgeShortUnits": round(self.hedge_short_units, 6),
                 "accruedFundingUsdt": round(self.accrued_funding_usdt, 4),
                 "realizedPnl": round(self.realized_pnl, 0),
                 "returnPct": round((self.realized_pnl / self.initial_krw * 100.0)
