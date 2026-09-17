@@ -120,8 +120,12 @@ sudo journalctl -u bithumb-bot -f     # 실시간 로그
 ### 업데이트
 
 ```bash
-cd ~/gemini_alpha_lab && git pull && sudo bash deploy/setup.sh
+cd /opt/gemini_alpha_lab && git pull && bash deploy/fix-perms.sh && systemctl restart bithumb-bot
 ```
+
+`git pull` 은 root 로 실행되므로 새 파일이 root 소유로 생깁니다. `fix-perms.sh`
+가 서비스 계정이 읽을 수 있도록 소유권을 되돌립니다. 빠뜨리면 업데이트 후
+서비스가 뜨지 않을 수 있습니다.
 
 ---
 
