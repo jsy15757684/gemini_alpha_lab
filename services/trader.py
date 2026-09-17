@@ -940,7 +940,11 @@ class BotManager:
         exchange: Dict[str, float] = {}
         balance_known = False
         balance_error = ""
-        need_check = any(r.get("mode") == "LIVE" and float(r.get("units", 0)) > 0
+        # 미지원 종목으로 저장된 봇도 포지션이 있으면 대조 대상이다.
+        # 사용자가 실제로 정리해야 하는지 판단하려면 거래소 보유량이 필요하다.
+        need_check = any(float(r.get("units", 0)) > 0 and
+                         (r.get("mode") == "LIVE" or
+                          bithumb.normalize_coin(r.get("coin", "")) is None)
                          for r in records)
         if need_check:
             if not (account and account.configured):
@@ -969,9 +973,20 @@ class BotManager:
             # 않는다. 시세 조회가 매 틱 실패해 루프만 도는 상태가 되고, 포지션을
             # 들고 있으면 손절 감시가 되지 않는 채로 방치된다.
             if bithumb.normalize_coin(bot.coin) is None:
+                # 거래소 실제 보유량을 알 수 있으면 함께 알린다. '장부에 있다' 와
+                # '거래소에 있다' 는 다르고, 사용자가 확인해야 할 것은 후자다.
+                if bot.pos.units <= 0:
+                    where = "보유 포지션은 없습니다."
+                elif balance_known:
+                    actual = float(exchange.get(bot.coin, 0.0))
+                    where = (f"빗썸 실제 보유량은 {actual:.8f} {bot.coin} 입니다. "
+                             + ("빗썸에서 직접 정리하세요." if actual > 0
+                                else "거래소에는 남아 있지 않으니 이 봇은 삭제하셔도 됩니다."))
+                else:
+                    where = (f"내부 장부상 {bot.pos.units:.8f} {bot.coin} 를 들고 있습니다. "
+                             f"빗썸 잔고를 조회하지 못해 대조하지 못했으니 직접 확인하세요.")
                 msg = (f"{bot.coin} 는 더 이상 지원하지 않는 종목이라 재가동하지 "
-                       f"않습니다. 포지션 {bot.pos.units:.8f} {bot.coin} 를 들고 있다면 "
-                       f"빗썸에서 직접 정리하세요.")
+                       f"않습니다. {where}")
                 bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
                 bot.is_running = False
                 held += 1

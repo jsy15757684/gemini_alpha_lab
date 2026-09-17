@@ -253,7 +253,10 @@ class BithumbAccount:
                     lock = float(item.get("locked") or 0)
                     if cur == "KRW":
                         krw_free, krw_locked = bal, lock
-                    elif cur in COINS:
+                    elif bal + lock > 0:
+                        # 취급 목록(COINS)으로 거르지 않는다. 거르면 목록에서 뺀
+                        # 종목을 '보유량 0' 으로 보고하게 되어, 실제로 들고 있는
+                        # 자산이 화면과 장부 대조에서 사라진다.
                         coins[cur] = bal + lock
                         coins_avail[cur] = bal
                 return {"apiVersion": "2.0 (JWT)", "krwAvailable": krw_free,
@@ -270,12 +273,25 @@ class BithumbAccount:
                 d = res.get("data", {})
                 coins = {}
                 coins_avail = {}
-                for c in COINS:
-                    v = d.get(f"total_{c.lower()}")
-                    v_avail = d.get(f"available_{c.lower()}")
-                    if v is not None:
-                        coins[c] = float(v)
-                        coins_avail[c] = float(v_avail) if v_avail is not None else float(v)
+                # 응답에 있는 모든 종목을 담는다 (COINS 로 거르지 않는다).
+                for k, v in d.items():
+                    if not k.startswith("total_"):
+                        continue
+                    c = k[len("total_"):].upper()
+                    if c == "KRW":
+                        continue
+                    try:
+                        total = float(v)
+                    except (TypeError, ValueError):
+                        continue
+                    if total <= 0:
+                        continue
+                    avail = d.get(f"available_{c.lower()}")
+                    coins[c] = total
+                    try:
+                        coins_avail[c] = float(avail) if avail is not None else total
+                    except (TypeError, ValueError):
+                        coins_avail[c] = total
                 return {"apiVersion": "1.0 (HMAC)",
                         "krwAvailable": float(d.get("available_krw") or 0),
                         "krwTotal": float(d.get("total_krw") or 0),
