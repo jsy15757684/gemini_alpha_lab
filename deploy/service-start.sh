@@ -20,5 +20,19 @@ if [ -z "${APP_ACCESS_PASSWORD:-}" ]; then
 fi
 
 PORT="${PORT:-8888}"
+
+# uvicorn 은 --proxy-headers 가 기본 켜짐이고 허용 목록이 127.0.0.1 이다.
+# 이 앱은 127.0.0.1 로만 접속되므로 '모든 요청이 신뢰하는 프록시에서 왔다' 가
+# 되어, 클라이언트가 보낸 X-Forwarded-For 가 그대로 request.client.host 를
+# 덮어쓴다. 그러면 로그인 시도 제한이 헤더 값만 바꿔서 무력화된다.
+# 앞단에 프록시를 둔 경우(APP_TRUST_PROXY)에만 켠다.
+if [ -n "${APP_TRUST_PROXY:-}" ] && [ "${APP_TRUST_PROXY}" != "0" ]; then
+    PROXY_ARGS="--proxy-headers --forwarded-allow-ips=${APP_FORWARDED_ALLOW_IPS:-127.0.0.1}"
+    echo "[service] 프록시 헤더 신뢰: 켬 (APP_TRUST_PROXY=${APP_TRUST_PROXY})"
+else
+    PROXY_ARGS="--no-proxy-headers"
+fi
+
 echo "[service] 127.0.0.1:${PORT} 에서 기동합니다"
-exec "$DIR/venv/bin/python3" -m uvicorn server:app --host 127.0.0.1 --port "${PORT}"
+exec "$DIR/venv/bin/python3" -m uvicorn server:app \
+     --host 127.0.0.1 --port "${PORT}" ${PROXY_ARGS}

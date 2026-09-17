@@ -517,4 +517,6 @@ def index():
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run("server:app", host="127.0.0.1", port=env_int("PORT", 8888), reload=True)
+    uvicorn.run("server:app", host="127.0.0.1", port=env_int("PORT", 8888), reload=True,
+                # 프록시 헤더를 믿지 않는다. 자세한 이유는 deploy/service-start.sh 참고.
+                proxy_headers=auth.trusted_proxy_count() > 0)

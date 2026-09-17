@@ -115,4 +115,6 @@ if command -v open >/dev/null 2>&1; then
     (sleep 2 && open "http://localhost:${PORT}") &
 fi
 
-exec "$PYTHON" -m uvicorn server:app --host 127.0.0.1 --port "${PORT}" --reload
+# uvicorn 의 프록시 헤더 처리는 기본으로 끈다 (위조된 X-Forwarded-For 가
+# 클라이언트 주소를 덮어써 로그인 시도 제한을 무력화한다).
+exec "$PYTHON" -m uvicorn server:app --host 127.0.0.1 --port "${PORT}" --reload --no-proxy-headers

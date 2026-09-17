@@ -215,16 +215,58 @@ def active_session_count() -> int:
         return len(_sessions)
 
 
-def client_ip(request) -> str:
-    """리버스 프록시 뒤에서는 X-Forwarded-For 의 첫 항목이 실제 클라이언트다."""
-    fwd = request.headers.get("x-forwarded-for") or ""
-    if fwd:
-        return fwd.split(",")[0].strip()
+def _peer_ip(request) -> str:
     return getattr(getattr(request, "client", None), "host", "") or "unknown"
 
 
+def trusted_proxy_count() -> int:
+    """앞단에 둔 신뢰 가능한 프록시 개수. 기본 0 (= 헤더를 믿지 않는다).
+
+    X-Forwarded-For 는 클라이언트가 마음대로 보낼 수 있는 헤더다. 이걸 무조건
+    믿으면 로그인 시도 제한이 무력화된다 — 헤더 값만 바꾸면 매번 '새 IP' 가
+    되어 무제한으로 시도할 수 있다. 실제로 그랬다:
+      같은 IP 8회 실패 → 429 잠금 → XFF 를 바꾸자 "남은 시도 7회" 로 초기화
+
+    그래서 기본은 소켓 주소만 쓴다. 리버스 프록시를 둔 경우에만
+    APP_TRUST_PROXY 에 그 단수를 넣는다(보통 1).
+    """
+    raw = (os.getenv("APP_TRUST_PROXY") or "").strip().lower()
+    if not raw or raw in ("0", "false", "no", "off"):
+        return 0
+    if raw in ("1", "true", "yes", "on"):
+        return 1
+    try:
+        return max(0, int(raw))
+    except ValueError:
+        logger.warning(f"APP_TRUST_PROXY 값 '{raw}' 을 읽을 수 없어 0 으로 봅니다.")
+        return 0
+
+
+def client_ip(request) -> str:
+    """실제 클라이언트 IP.
+
+    프록시를 신뢰하도록 설정한 경우에만 X-Forwarded-For 를 본다. 이때도
+    맨 앞이 아니라 '오른쪽에서 신뢰 단수만큼' 떨어진 항목을 쓴다. 맨 앞은
+    클라이언트가 직접 써 넣은 값이라 위조가 가능하고, 오른쪽 항목이 우리가
+    믿는 프록시가 기록한 값이다.
+    """
+    n = trusted_proxy_count()
+    if n <= 0:
+        return _peer_ip(request)
+    parts = [p.strip() for p in (request.headers.get("x-forwarded-for") or "").split(",")
+             if p.strip()]
+    if len(parts) >= n:
+        return parts[-n]
+    return _peer_ip(request)
+
+
 def is_https(request) -> bool:
-    proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
-    if proto:
-        return proto == "https"
+    """세션 쿠키에 Secure 를 붙일지 판단한다.
+
+    X-Forwarded-Proto 도 위조 가능한 헤더이므로 프록시를 신뢰할 때만 본다.
+    """
+    if trusted_proxy_count() > 0:
+        proto = (request.headers.get("x-forwarded-proto") or "").split(",")[0].strip().lower()
+        if proto:
+            return proto == "https"
     return request.url.scheme == "https"
