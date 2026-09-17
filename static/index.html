@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.5.5">
+<link rel="stylesheet" href="/static/css/style.css?v=4.5.6">
 </head>
 <body>
 
@@ -277,8 +277,30 @@
               <option value="gemini_hybrid">🧬 퀀트 하이브리드 (기술지표 + Gemini AI 승인)</option>
               <option value="gemini_ai">✨ Gemini AI 전용 자동매매 (순수 AI 판단)</option>
               <option value="technical">📊 전통 기술적 지표 전략 (RSI, MA, MACD 단독)</option>
+              <option value="usdt_premium">💱 USDT 환차익 (역프 매수 → 김프 매도 · 빗썸 단독)</option>
             </select>
-            
+
+            <!-- USDT 환차익 옵션 -->
+            <div id="usdtBotOptions" class="hidden" style="margin-top: 10px;">
+              <div class="form-grid" style="margin-bottom: 8px;">
+                <div>
+                  <label class="label">역프 매수선 (%)</label>
+                  <input class="input" type="number" id="bp_usdtBuyPremiumPct" value="-0.8" step="0.1">
+                </div>
+                <div>
+                  <label class="label">김프 매도선 (%)</label>
+                  <input class="input" type="number" id="bp_usdtSellPremiumPct" value="2.0" step="0.1">
+                </div>
+              </div>
+              <div class="alert alert-warn small" style="margin-top:8px;">
+                <b>무위험 차익거래가 아닙니다.</b> 손익이 두 갈래입니다 —
+                ① 프리미엄 변화 ② 원/달러 환율 변화.
+                프리미엄이 목표에 닿아도 그동안 환율이 내리면 원화 기준 손실일 수 있습니다.
+                사실상 <b>싸게 산 달러를 들고 있는 포지션</b>이며, 대상 코인은 자동으로 USDT 가 됩니다.
+                환율이 무너질 때를 대비하려면 아래 <b>손절 %</b> 를 켜세요(0 이면 꺼짐).
+              </div>
+            </div>
+
             <!-- 라오어 무한매수 옵션 -->
             <div id="raoerBotOptions" style="margin-top: 10px;">
               <div class="form-grid" style="margin-bottom: 8px;">
@@ -612,6 +634,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.5.5"></script>
+<script src="/static/js/app.js?v=4.5.6"></script>
 </body>
 </html>

@@ -146,6 +146,12 @@ class TradingBot:
             else:
                 self.log("INFO", f"🔄 [라오어 무한매수법] {self.params.splitCount}분할 매수 (1회당 {chunk_krw:,.0f}원) · "
                                  f"목표 익절 +{self.params.targetProfitPct}% · 쿼터방어 {self.params.quarterCutPct:.0f}%")
+        elif self.params.strategyType == "usdt_premium":
+            self.log("INFO", f"💱 [USDT 환차익] 역프 {self.params.usdtBuyPremiumPct}% 이하 매수 → "
+                             f"김프 {self.params.usdtSellPremiumPct}% 이상 매도 · "
+                             f"기준은 서울외환시장 공시환율")
+            self.log("INFO", "손익은 프리미엄뿐 아니라 원/달러 환율 변동에도 좌우됩니다 "
+                             "— 무위험 차익거래가 아닙니다.")
         elif self.params.strategyType == "raoer_vr":
             self.log("INFO", f"⚖️ [라오어 밸류리밸런싱 VR] 기울기 G={self.params.vrGradient} · 리밸런싱 밴드 ±{self.params.vrBandPct}%")
         elif self.params.useGemini:
@@ -291,6 +297,42 @@ class TradingBot:
                             self.last_decision = f"무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%{ai_badge})"
                         else:
                             self.last_decision = "무한매수 다음 캔들 1회차 대기 중"
+
+                elif self.params.strategyType == "usdt_premium":
+                    # USDT 환차익: 빗썸 USDT 가격 vs 서울외환시장 공시환율.
+                    # 거래소가 하나뿐이라 '한쪽만 체결' 문제가 없다.
+                    from services.arbitrage import get_official_fx_rate
+                    fx, fx_err = get_official_fx_rate()
+                    if not fx:
+                        # 환율을 모르면 프리미엄을 계산할 수 없다. 추정하지 않는다.
+                        self.last_decision = f"공시환율 조회 실패 — 판단 보류 ({fx_err})"
+                        time.sleep(poll)
+                        continue
+
+                    prem = (price - fx) / fx * 100.0
+                    buy_at = self.params.usdtBuyPremiumPct
+                    sell_at = self.params.usdtSellPremiumPct
+
+                    if not self.pos.open:
+                        if prem <= buy_at:
+                            self._enter(price, f"테더 역프 {prem:+.2f}% (매수선 {buy_at}%) · "
+                                               f"공시환율 {fx:,.1f}원")
+                        else:
+                            self.last_decision = (f"역프 감시 중 (현재 {prem:+.2f}%, "
+                                                  f"목표 ≤ {buy_at}%, 환율 {fx:,.1f}원)")
+                    else:
+                        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+                        if prem >= sell_at:
+                            self._exit(price, f"테더 김프 {prem:+.2f}% (매도선 {sell_at}%) · "
+                                              f"손익 {pnl_pct:+.2f}%")
+                        elif self.params.stopLossPct > 0 and pnl_pct <= -self.params.stopLossPct:
+                            # 프리미엄이 아니라 환율이 무너진 경우의 안전장치.
+                            # 기본은 꺼져 있다(0). 켜면 프리미엄 회복 전에 끊길 수 있다.
+                            self._exit(price, f"손절 {pnl_pct:+.2f}% (환율 하락 방어) · "
+                                              f"프리미엄 {prem:+.2f}%")
+                        else:
+                            self.last_decision = (f"김프 대기 중 (현재 {prem:+.2f}%, "
+                                                  f"목표 ≥ {sell_at}%, 평가 {pnl_pct:+.2f}%)")
 
                 elif self.params.strategyType == "raoer_vr":
                     # 라오어 밸류리밸런싱 VR:
@@ -561,7 +603,11 @@ class TradingBot:
             self.log("ORDER", f"빗썸 실주문 매도 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
 
         proceeds = units * price * (1 - fee)
-        pnl = proceeds - (units * self.pos.entryPrice)
+        # 원가는 '실제로 쓴 원화'(totalInvested)다. units x entryPrice 로 잡으면
+        # 매수 수수료가 빠져 손익이 그만큼 과대 계상된다.
+        # 실측: 100만원 매수 후 즉시 매도 → 현금은 -800원인데 손익은 -400원.
+        cost = self.pos.totalInvested if self.pos.totalInvested > 0 else units * self.pos.entryPrice
+        pnl = proceeds - cost
         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100 if self.pos.entryPrice > 0 else 0.0
 
         self.cash += proceeds
@@ -604,7 +650,12 @@ class TradingBot:
             self.log("ORDER", f"빗썸 실주문 쿼터 매도 접수 (주문번호 {res.get('orderId')})")
 
         proceeds = units_to_sell * price * (1 - fee)
-        pnl = proceeds - (units_to_sell * self.pos.entryPrice)
+        # 판 비율만큼 원가도 덜어낸다. 남은 포지션의 원가가 부풀지 않게 한다.
+        sold_ratio = (units_to_sell / self.pos.units) if self.pos.units > 0 else 1.0
+        cost = (self.pos.totalInvested * sold_ratio) if self.pos.totalInvested > 0 \
+               else units_to_sell * self.pos.entryPrice
+        self.pos.totalInvested = max(0.0, self.pos.totalInvested - cost)
+        pnl = proceeds - cost
         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
 
         self.pos.units -= units_to_sell
@@ -690,7 +741,11 @@ class TradingBot:
                 return
 
         proceeds = units_to_sell * price * (1 - fee)
-        pnl = proceeds - (units_to_sell * self.pos.entryPrice)
+        sold_ratio = (units_to_sell / self.pos.units) if self.pos.units > 0 else 1.0
+        cost = (self.pos.totalInvested * sold_ratio) if self.pos.totalInvested > 0 \
+               else units_to_sell * self.pos.entryPrice
+        self.pos.totalInvested = max(0.0, self.pos.totalInvested - cost)
+        pnl = proceeds - cost
         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
         self.pos.units -= units_to_sell
         self.cash += proceeds

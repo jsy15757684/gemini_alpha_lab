@@ -182,6 +182,11 @@ function readParams(prefix) {
       p.strategyType = "raoer_vr";
       p.vrGradient = parseFloat($("bp_vrGradient")?.value || "10.0");
       p.vrBandPct = parseFloat($("bp_vrBandPct")?.value || "15.0");
+    } else if (stratType === "usdt_premium") {
+      p.strategyType = "usdt_premium";
+      p.useGemini = false;
+      p.usdtBuyPremiumPct = parseFloat($("bp_usdtBuyPremiumPct")?.value || "-0.8");
+      p.usdtSellPremiumPct = parseFloat($("bp_usdtSellPremiumPct")?.value || "2.0");
     } else if (stratType === "gemini_ai") {
       p.strategyType = "quant_ai";
       p.useGemini = true;
@@ -261,7 +266,8 @@ async function deployBot() {
     await api("/api/bot/deploy", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        coin: $("botCoin").value, interval: $("botInterval").value, mode,
+        coin: ($("botStrategyType")?.value === "usdt_premium") ? "USDT" : $("botCoin").value,
+        interval: $("botInterval").value, mode,
         capitalKrw: parseFloat($("botCapital").value), params: readParams("bp_"),
       }),
     });
@@ -726,6 +732,19 @@ function toggleStrategyUI() {
   const quantSettings = $("quantBotSettings");
   const raoerAiSub = $("raoerAiSubOptions");
   const raoerUseAiCheck = $("bp_raoerUseAi");
+
+  const usdtOpts = $("usdtBotOptions");
+  if (usdtOpts) usdtOpts.classList.toggle("hidden", type !== "usdt_premium");
+
+  // USDT 환차익은 대상이 USDT 로 고정된다. 다른 코인을 고른 채로
+  // 가동하면 엉뚱한 종목에 환차익 로직이 걸린다.
+  const coinSel = $("botCoin");
+  if (coinSel) {
+    const fixed = type === "usdt_premium";
+    coinSel.disabled = fixed;
+    const label = coinSel.closest("div")?.querySelector(".label");
+    if (label) label.textContent = fixed ? "대상 코인 (USDT 고정)" : "코인";
+  }
 
   if (raoerOpts) raoerOpts.classList.toggle("hidden", type !== "raoer_infinite");
   if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");

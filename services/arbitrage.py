@@ -41,12 +41,40 @@ _RADAR_TTL_SEC = 2.0
 _RADAR_LOCK = threading.Lock()
 
 
+_FX_CACHE: Tuple[Optional[float], str, float] = (None, "", 0.0)
+_FX_TTL_SEC = 60.0
+_FX_LOCK = threading.Lock()
+
+
 def get_official_fx_rate() -> Tuple[Optional[float], str]:
     """서울외환시장 원/달러 기준환율.
 
     실패하면 (None, 사유) 를 돌려준다. 예전에는 1385.0 을 대신 돌려줬는데,
     그러면 화면은 정상으로 보이면서 김프가 통째로 틀어진다.
+
+    공시환율은 초 단위로 바뀌지 않는다. 봇 루프가 10초마다 부르므로
+    60초 캐시를 둬서 외부 호출을 줄인다.
     """
+    global _FX_CACHE
+    now = time.time()
+    with _FX_LOCK:
+        val, err, at = _FX_CACHE
+        if val is not None and (now - at) < _FX_TTL_SEC:
+            return val, err
+
+    rate, err = _fetch_official_fx_rate()
+    with _FX_LOCK:
+        if rate is not None:
+            _FX_CACHE = (rate, "", time.time())
+        else:
+            # 실패해도 직전 값을 버리지 않는다. 다만 오래된 값은 쓰지 않는다.
+            val, _, at = _FX_CACHE
+            if val is not None and (now - at) < _FX_TTL_SEC * 5:
+                return val, f"{err} (직전 값 사용)"
+    return rate, err
+
+
+def _fetch_official_fx_rate() -> Tuple[Optional[float], str]:
     url = ("https://m.stock.naver.com/front-api/marketIndex/prices"
            "?category=exchange&reutersCode=FX_USDKRW")
     try:

@@ -238,6 +238,14 @@ def deploy_bot(req: DeployRequest):
     if req.capitalKrw < 10_000:
         raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
 
+    # USDT 환차익은 '빗썸 USDT 가격 vs 원/달러 공시환율' 을 비교한다.
+    # 다른 코인에 걸면 코인 가격을 환율과 비교하게 되어 의미 없는 봇이 된다.
+    # 화면은 USDT 로 고정하지만 API 로 직접 호출하면 막히지 않았다.
+    if (req.params or {}).get("strategyType") == "usdt_premium" and coin != "USDT":
+        raise HTTPException(400,
+            f"USDT 환차익 전략은 대상이 USDT 여야 합니다 (요청: {coin}). "
+            f"이 전략은 빗썸 USDT 가격과 원/달러 공시환율의 차이를 이용합니다.")
+
     mode = req.mode.upper()
     if mode not in ("PAPER", "LIVE"):
         raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
