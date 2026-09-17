@@ -47,6 +47,7 @@
 
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
+    <button class="tab" data-panel="panel-arbitrage">⚡ 퀀트 차익거래</button>
     <button class="tab" data-panel="panel-bots">자동매매 봇</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
@@ -81,6 +82,152 @@
         <div id="geminiScanStatus" class="muted small" style="margin-bottom: 12px;"></div>
         <div id="geminiCards" class="gemini-grid">
           <div class="empty">Gemini AI 스캔 버튼을 누르면 실시간 분석이 시작됩니다.</div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ⚡ 퀀트 차익거래 (Arbitrage Lab) -->
+    <section id="panel-arbitrage" class="panel hidden">
+      <!-- 실시간 3대 지표 레이더 전광판 -->
+      <div class="card" style="margin-bottom: 1.2rem; border-color: rgba(59, 130, 246, 0.3);">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">⚡ 3대 무위험 퀀트 차익거래 실시간 레이더</h2>
+            <p class="muted small">서울외환시장 공시환율 · 빗썸 USDT · 바이낸스 선물 펀딩비 및 공간 스프레드를 실시간 분석합니다.</p>
+          </div>
+          <button class="btn btn-ghost btn-sm" id="refreshArbitrageBtn">🔄 실시간 갱신</button>
+        </div>
+
+        <div class="metrics" style="margin-top: 14px;">
+          <div class="metric" style="border-left: 3px solid #3b82f6;">
+            <div class="metric-k">서울외환시장 공시환율</div>
+            <div class="metric-v" id="arbOfficialFx">1,385원</div>
+          </div>
+          <div class="metric" style="border-left: 3px solid #10b981;">
+            <div class="metric-k">빗썸 USDT 테더 가격</div>
+            <div class="metric-v" id="arbUsdtPrice">1,385원</div>
+          </div>
+          <div class="metric" style="border-left: 3px solid #f59e0b;">
+            <div class="metric-k">테더 김프 / 역프리미엄</div>
+            <div class="metric-v" id="arbUsdtPrem">0.00%</div>
+          </div>
+          <div class="metric" style="border-left: 3px solid #8b5cf6;">
+            <div class="metric-k">현재 시장 추천 전략</div>
+            <div class="metric-v" id="arbRecommendation" style="font-size: 0.95rem;">스캔 중...</div>
+          </div>
+        </div>
+
+        <!-- 5종 코인별 김프 및 펀딩비 테이블 -->
+        <div style="margin-top: 16px;">
+          <h3 style="font-size: 0.88rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 코인별 실시간 김치프리미엄 &amp; 바이낸스 펀딩비</h3>
+          <div class="tbl-wrap">
+            <table>
+              <thead>
+                <tr>
+                  <th>코인</th>
+                  <th>빗썸 시세</th>
+                  <th>바이낸스 시세</th>
+                  <th>김치프리미엄</th>
+                  <th>무전송 스프레드</th>
+                  <th>선물 펀딩비 (연환산)</th>
+                </tr>
+              </thead>
+              <tbody id="arbRadarBody">
+                <tr><td colspan="6" class="empty">레이더 지표를 불러오는 중입니다...</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+
+      <!-- 차익거래 봇 생성 및 가동 목록 -->
+      <div class="grid-2">
+        <div class="card">
+          <h2 class="card-title">🚀 차익거래 봇 생성</h2>
+          
+          <div style="margin-bottom: 12px;">
+            <label class="label">차익거래 전략 선택</label>
+            <select class="input" id="arbStrategyType">
+              <option value="usdt_swap" selected>🟢 1. USDT(테더) / 원달러 환차익 스왑 (역프 매수 → 김프 매도)</option>
+              <option value="kimkim_funding">🟡 2. 김프 델타뉴트럴 펀딩비 헷지 (현물 매수 + 1배 숏, 연 15~25% 이자)</option>
+              <option value="spatial_dual">🔴 3. 무전송 양방향 차익거래 (0.05초 괴리 동시 체결)</option>
+            </select>
+          </div>
+
+          <div class="form-grid">
+            <div id="arbCoinGroup">
+              <label class="label">대상 코인</label>
+              <select class="input" id="arbCoin">
+                <option value="BTC" selected>BTC (비트코인)</option>
+                <option value="ETH">ETH (이더리움)</option>
+                <option value="SOL">SOL (솔라나)</option>
+                <option value="XRP">XRP (리플)</option>
+                <option value="DOGE">DOGE (도지코인)</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">매매 모드</label>
+              <select class="input" id="arbMode">
+                <option value="PAPER" selected>모의투자 (주문 안 나감)</option>
+                <option value="LIVE">실전 (빗썸 실주문)</option>
+              </select>
+            </div>
+          </div>
+
+          <div style="margin-top: 10px;">
+            <label class="label">운용 자본 (원)</label>
+            <input class="input" type="number" id="arbCapital" value="10000000" min="10000" step="100000">
+          </div>
+
+          <!-- 전략별 세부 임계치 옵션 -->
+          <div id="arbConfigBox" style="margin-top: 14px; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 6px;">
+            <!-- USDT 옵션 -->
+            <div id="cfg_usdt_swap" class="form-grid">
+              <div>
+                <label class="label">역프 매수선 (%)</label>
+                <input class="input" type="number" id="cfg_usdtBuy" value="-0.8" step="0.1">
+              </div>
+              <div>
+                <label class="label">김프 매도선 (%)</label>
+                <input class="input" type="number" id="cfg_usdtSell" value="2.0" step="0.5">
+              </div>
+            </div>
+
+            <!-- 김프 델타뉴트럴 옵션 -->
+            <div id="cfg_kimkim_funding" class="form-grid hidden">
+              <div>
+                <label class="label">진입 김프선 (%)</label>
+                <input class="input" type="number" id="cfg_kimchiEntry" value="1.0" step="0.5">
+              </div>
+              <div>
+                <label class="label">청산 김프선 (%)</label>
+                <input class="input" type="number" id="cfg_kimchiExit" value="5.0" step="0.5">
+              </div>
+            </div>
+
+            <!-- 무전송 양방향 옵션 -->
+            <div id="cfg_spatial_dual" class="form-grid hidden">
+              <div>
+                <label class="label">동시체결 스프레드 (%)</label>
+                <input class="input" type="number" id="cfg_spatialTrigger" value="0.4" step="0.1">
+              </div>
+            </div>
+          </div>
+
+          <button class="btn btn-primary" id="deployArbitrageBtn" style="margin-top: 14px; width: 100%;">
+            ⚡ 차익거래 봇 가동 시작
+          </button>
+        </div>
+
+        <!-- 가동 중인 차익거래 봇 목록 -->
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">가동 중인 차익거래 봇</h2>
+            <span class="pill" id="arbActiveBotCount">0대 가동 중</span>
+          </div>
+          <div id="arbBotList" class="bot-list" style="margin-top: 10px;">
+            <div class="empty">가동 중인 차익거래 봇이 없습니다.</div>
+          </div>
         </div>
       </div>
     </section>

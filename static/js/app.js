@@ -1004,20 +1004,158 @@ async function boot() {
       .catch(() => prompt("아래 IP 를 복사해 빗썸에 등록하세요:", ip));
   };
 
+  // ───────── 차익거래 (Arbitrage) 핸들러 ─────────
+  async function loadArbitrageRadar() {
+    try {
+      const data = await api("/api/arbitrage/radar");
+      if (!data) return;
+      $("arbOfficialFx").textContent = won(data.officialFxRate) + "원";
+      $("arbUsdtPrice").textContent = won(data.bithumbUsdtPrice) + "원";
+      $("arbUsdtPrem").textContent = pct(data.usdtPremiumPct);
+      $("arbUsdtPrem").className = "metric-v " + cls(data.usdtPremiumPct);
+      $("arbRecommendation").textContent = data.usdtStatus;
+      $("arbRecommendation").className = "metric-v " + (data.usdtPremiumPct < -0.5 ? "up" : (data.usdtPremiumPct > 2.0 ? "down" : ""));
+
+      const tbody = $("arbRadarBody");
+      if (data.coins && data.coins.length > 0) {
+        tbody.innerHTML = data.coins.map(c => `
+          <tr>
+            <td><b>${c.coin}</b> <span class="muted small">${c.name}</span></td>
+            <td>${won(c.bithumbPrice)}원</td>
+            <td>$${Number(c.binanceUsdPrice).toLocaleString()}</td>
+            <td class="${cls(c.kimchiPremiumPct)}"><b>${pct(c.kimchiPremiumPct)}</b></td>
+            <td class="${cls(c.spatialSpreadPct)}">${pct(c.spatialSpreadPct)}</td>
+            <td><b>연 ${c.fundingRateAnnualPct}%</b> <span class="muted small">(${c.fundingRate8h}%/8h)</span></td>
+          </tr>
+        `).join("");
+      }
+    } catch (e) {
+      console.warn("차익거래 레이더 갱신 실패:", e);
+    }
+  }
+
+  async function loadArbitrageBots() {
+    try {
+      const res = await api("/api/arbitrage/bots");
+      const list = $("arbBotList");
+      if (!res.bots || res.bots.length === 0) {
+        list.innerHTML = '<div class="empty">가동 중인 차익거래 봇이 없습니다.</div>';
+        $("arbActiveBotCount").textContent = "0대 가동 중";
+        return;
+      }
+      $("arbActiveBotCount").textContent = `${res.bots.filter(b => b.isRunning).length}대 가동 중`;
+      list.innerHTML = res.bots.map(b => {
+        const stratNames = {
+          usdt_swap: "🟢 USDT 환차익 스왑",
+          kimkim_funding: "🟡 김프 델타뉴트럴",
+          spatial_dual: "🔴 무전송 양방향"
+        };
+        return `
+          <div class="bot-card ${b.isRunning ? '' : 'paused'}" style="margin-bottom: 10px;">
+            <div class="bot-card-head">
+              <div>
+                <span class="badge ${b.mode === 'LIVE' ? 'badge-live' : 'badge-paper'}">${b.mode}</span>
+                <b style="font-size: 0.95rem; margin-left: 6px;">${stratNames[b.strategy] || b.strategy}</b>
+                <span class="muted small">(${b.coin})</span>
+              </div>
+              <div>
+                ${b.isRunning ? `<button class="btn btn-danger btn-xs" onclick="window.stopArbBot('${b.botId}')">정지</button>` : '<span class="muted small">정지됨</span>'}
+              </div>
+            </div>
+            <div class="bot-body" style="font-size: 0.85rem; margin-top: 8px;">
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                <span class="muted">자본:</span> <b>${won(b.initialKrw)}원</b>
+                <span class="muted">누적 순이익:</span> <b class="${cls(b.realizedPnl)}">${won(b.realizedPnl)}원 (${pct(b.returnPct)})</b>
+              </div>
+              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
+                <span class="muted">국내 잔고:</span> <span>${won(b.cashKrw)}원 / ${b.coinUnitsDomestic} ${b.coin}</span>
+                <span class="muted">해외 잔고:</span> <span>$${b.foreignCashUsdt} USDT / ${b.coinUnitsForeign} ${b.coin}</span>
+              </div>
+              <div style="padding: 6px 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 6px; font-size: 0.8rem;">
+                <b>상태:</b> ${b.lastStatus}
+              </div>
+            </div>
+          </div>
+        `;
+      }).join("");
+    } catch (e) {
+      console.warn("차익거래 봇 목록 조회 실패:", e);
+    }
+  }
+
+  window.stopArbBot = async function(botId) {
+    if (!confirm("해당 차익거래 봇을 정지하시겠습니까?")) return;
+    try {
+      await api("/api/arbitrage/stop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ botId })
+      });
+      await loadArbitrageBots();
+    } catch (e) {
+      alert(e.message);
+    }
+  };
+
+  // 전략 선택에 따른 옵션 표시 전환
+  if ($("arbStrategyType")) {
+    $("arbStrategyType").onchange = () => {
+      const s = $("arbStrategyType").value;
+      $("cfg_usdt_swap").classList.toggle("hidden", s !== "usdt_swap");
+      $("cfg_kimkim_funding").classList.toggle("hidden", s !== "kimkim_funding");
+      $("cfg_spatial_dual").classList.toggle("hidden", s !== "spatial_dual");
+      $("arbCoinGroup").classList.toggle("hidden", s === "usdt_swap");
+    };
+  }
+
+  if ($("refreshArbitrageBtn")) $("refreshArbitrageBtn").onclick = () => { loadArbitrageRadar(); loadArbitrageBots(); };
+
+  if ($("deployArbitrageBtn")) {
+    $("deployArbitrageBtn").onclick = async () => {
+      const strategy = $("arbStrategyType").value;
+      const coin = $("arbCoin").value;
+      const mode = $("arbMode").value;
+      const capitalKrw = Number($("arbCapital").value);
+
+      const config = {
+        usdtBuyThreshold: Number($("cfg_usdtBuy")?.value || -0.8),
+        usdtSellThreshold: Number($("cfg_usdtSell")?.value || 2.0),
+        entryKimchiPct: Number($("cfg_kimchiEntry")?.value || 1.0),
+        exitKimchiPct: Number($("cfg_kimchiExit")?.value || 5.0),
+        triggerSpreadPct: Number($("cfg_spatialTrigger")?.value || 0.4),
+      };
+
+      try {
+        await api("/api/arbitrage/deploy", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ strategy, coin, mode, capitalKrw, config })
+        });
+        alert("차익거래 봇이 성공적으로 가동되었습니다!");
+        await loadArbitrageBots();
+      } catch (e) {
+        alert(e.message);
+      }
+    };
+  }
+
   $("tabs").querySelectorAll(".tab").forEach(tab => tab.onclick = () => {
     $("tabs").querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
     tab.classList.add("active");
     document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
     $(tab.dataset.panel).classList.remove("hidden");
     if (tab.dataset.panel === "panel-gemini") loadGeminiScan();
+    if (tab.dataset.panel === "panel-arbitrage") { loadArbitrageRadar(); loadArbitrageBots(); }
     if (tab.dataset.panel === "panel-trades") loadTradeHistory();
     if (tab.dataset.panel === "panel-chart") loadChart();
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadGeminiStatus(); loadEgressIp(); }
   });
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadGeminiStatus(), loadGeminiScan()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
   timers.push(
     setInterval(loadPrices, 10000),
+    setInterval(loadArbitrageRadar, 8000),
+    setInterval(loadArbitrageBots, 6000),
     setInterval(loadBots, 8000),
     setInterval(loadTradeHistory, 10000),
     setInterval(renderFreshness, 1000),

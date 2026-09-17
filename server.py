@@ -49,9 +49,10 @@ if os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service
+from services import auth, backtest, bithumb, gemini_service, arbitrage
 from services.gemini_service import gemini_keystore
 from services.keystore import keystore
+from services.arbitrage import arbitrage_manager
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, bot_manager
 from services.envconf import env_int
@@ -422,6 +423,60 @@ def gemini_analyze(req: GeminiAnalyzeRequest):
 def gemini_scan(interval: str = "1h"):
     """5종 코인 전체 실시간 AI 스캔 및 추천 순위."""
     return gemini_service.scan_all_coins(interval=interval)
+
+
+# ───────────────────────── 퀀트 차익거래 (Arbitrage) ─────────────────────────
+
+class ArbitrageDeployRequest(BaseModel):
+    strategy: str = "usdt_swap"  # "usdt_swap" | "kimkim_funding" | "spatial_dual"
+    coin: str = "USDT"
+    mode: str = "PAPER"
+    capitalKrw: float = 1_000_000.0
+    config: Dict[str, Any] = {}
+
+
+@app.get("/api/arbitrage/radar")
+def arbitrage_radar():
+    """3대 무위험 차익거래 실시간 레이더 지표."""
+    return arbitrage.get_arbitrage_radar()
+
+
+@app.get("/api/arbitrage/bots")
+def arbitrage_list_bots():
+    """가동 중인 차익거래 봇 목록."""
+    return {"bots": arbitrage_manager.list_bots()}
+
+
+@app.post("/api/arbitrage/deploy")
+def arbitrage_deploy(req: ArbitrageDeployRequest):
+    """차익거래 봇 생성 및 가동."""
+    if req.capitalKrw < 10_000:
+        raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
+    
+    valid_strats = ("usdt_swap", "kimkim_funding", "spatial_dual")
+    if req.strategy not in valid_strats:
+        raise HTTPException(400, f"지원하지 않는 차익거래 전략: {req.strategy}")
+
+    target_coin = "USDT" if req.strategy == "usdt_swap" else req.coin
+    bot = arbitrage_manager.create_bot(
+        strategy=req.strategy,
+        coin=target_coin,
+        mode=req.mode.upper(),
+        capital_krw=req.capitalKrw,
+        config=req.config,
+        account=keystore.account
+    )
+    return {"success": True, "bot": bot.status()}
+
+
+@app.post("/api/arbitrage/stop")
+def arbitrage_stop(req: BotIdRequest):
+    """차익거래 봇 정지."""
+    ok = arbitrage_manager.stop_bot(req.botId)
+    if not ok:
+        raise HTTPException(404, f"해당 차익거래 봇을 찾을 수 없습니다: {req.botId}")
+    return {"success": True}
+
 
 
 # ───────────────────────── 정적 파일 ─────────────────────────
