@@ -965,6 +965,18 @@ class BotManager:
                 continue
             self.bots[bot.bot_id] = bot
 
+            # 지원 목록에서 빠진 코인(예: 취급 중단)으로 저장된 봇은 재가동하지
+            # 않는다. 시세 조회가 매 틱 실패해 루프만 도는 상태가 되고, 포지션을
+            # 들고 있으면 손절 감시가 되지 않는 채로 방치된다.
+            if bithumb.normalize_coin(bot.coin) is None:
+                msg = (f"{bot.coin} 는 더 이상 지원하지 않는 종목이라 재가동하지 "
+                       f"않습니다. 포지션 {bot.pos.units:.8f} {bot.coin} 를 들고 있다면 "
+                       f"빗썸에서 직접 정리하세요.")
+                bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                bot.is_running = False
+                held += 1
+                continue
+
             if not r.get("wasRunning"):
                 bot.log("INFO", "이전에 정지된 상태로 복원되었습니다. 재가동하지 않습니다.")
                 continue

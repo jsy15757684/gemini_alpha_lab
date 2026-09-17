@@ -35,7 +35,6 @@ COINS: Dict[str, str] = {
     "ETH": "이더리움",
     "SOL": "솔라나",
     "XRP": "리플",
-    "DOGE": "도지코인",
 }
 
 ARB_COINS: Dict[str, str] = {
@@ -126,7 +125,7 @@ def get_ticker(coin: str) -> Dict[str, Any]:
     prev = float(d.get("prev_closing_price") or price)
     return {
         "coin": c,
-        "name": COINS[c],
+        "name": ARB_COINS.get(c, c),
         "price": price,
         "prevClose": prev,
         "change": round(price - prev, 0),
