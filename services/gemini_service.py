@@ -138,10 +138,7 @@ class GeminiKeyStore:
                     ]
                 }
             ],
-            "generationConfig": {
-                "temperature": 0.1,
-                "response_mime_type": "application/json"
-            }
+            "generationConfig": _gen_config(256)
         }
 
         try:
@@ -160,6 +157,32 @@ class GeminiKeyStore:
                 return {"success": False, "message": f"Gemini API 오류 ({resp.status_code}): {err_msg}"}
         except Exception as e:
             return {"success": False, "message": f"Gemini 연결 시도 중 네트워크 오류: {str(e)}"}
+
+
+def _gen_config(max_output_tokens: int) -> Dict[str, Any]:
+    """Gemini generationConfig.
+
+    gemini-flash-latest 는 '사고(thinking)' 모델이고, 사고 토큰이
+    maxOutputTokens 예산을 함께 쓴다. 실측: maxOutputTokens=512 에서
+    thoughts=488 / candidates=19 → finishReason=MAX_TOKENS 로 JSON 이
+    중간에 잘렸다. 매매 지표에서 배수 하나를 고르는 작업에 긴 사고는
+    필요 없고, 끄면 응답이 온전해지고 토큰도 1/4 로 줄었다 (892 → 226).
+
+    thinkingBudget 을 지원하지 않는 모델은 이 필드를 무시한다.
+    """
+    return {
+        "temperature": 0.1,
+        "maxOutputTokens": max_output_tokens,
+        "response_mime_type": "application/json",
+        "thinkingConfig": {"thinkingBudget": 0},
+    }
+
+
+def _finish_reason(data: Dict[str, Any]) -> str:
+    try:
+        return (data.get("candidates") or [{}])[0].get("finishReason") or ""
+    except Exception:
+        return ""
 
 
 def _parse_gemini_json(raw_text: str) -> Dict[str, Any]:
@@ -354,11 +377,7 @@ def analyze_coin(coin: str, interval: str = "1h",
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 1024,
-                "response_mime_type": "application/json"
-            }
+            "generationConfig": _gen_config(2048)
         }
 
         resp = None
@@ -391,6 +410,11 @@ def analyze_coin(coin: str, interval: str = "1h",
 
         data = resp.json()
         raw_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "{}")
+        if _finish_reason(data) == "MAX_TOKENS":
+            um = data.get("usageMetadata", {})
+            logger.warning(
+                f"AI 응답이 토큰 한도에서 잘렸습니다 "
+                f"(사고 {um.get('thoughtsTokenCount')} / 응답 {um.get('candidatesTokenCount')} 토큰).")
         parsed = _parse_gemini_json(raw_text)
 
         action = str(parsed.get("action", "HOLD")).upper()
@@ -550,16 +574,19 @@ def analyze_raoer_context(coin: str, interval: str = "1h",
         url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={gemini_keystore.api_key}"
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
-            "generationConfig": {
-                "temperature": 0.1,
-                "maxOutputTokens": 512,
-                "response_mime_type": "application/json"
-            }
+            "generationConfig": _gen_config(1024)
         }
         resp = _HTTP_SESSION.post(url, json=payload, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
             raw_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
+            # 잘림은 '파싱 실패' 가 아니라 '토큰 예산 부족' 이다. 구분해서 남긴다.
+            if _finish_reason(data) == "MAX_TOKENS":
+                um = data.get("usageMetadata", {})
+                logger.warning(
+                    f"[{norm_coin}] AI 응답이 토큰 한도에서 잘렸습니다 "
+                    f"(사고 {um.get('thoughtsTokenCount')} / 응답 {um.get('candidatesTokenCount')} 토큰). "
+                    f"maxOutputTokens 를 올리거나 thinkingBudget 을 낮추세요.")
             parsed = _parse_gemini_json(raw_text)
             sm = float(parsed.get("sizingMultiplier", 1.0))
             sm = max(0.5, min(max_mult, sm))
