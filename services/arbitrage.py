@@ -2,9 +2,8 @@
 
 **이 모듈은 주문을 내지 않는다.** 실제 차익거래에 필요한 다리가 없기 때문이다.
 
-  · USDT 스왑        빗썸 USDT 실매수/매도 필요        — 미구현
-  · 델타뉴트럴 헷지  해외 거래소 선물 숏 필요          — 미구현
-  · 무전송 양방향    해외 거래소 계좌·주문 필요        — 미구현
+  · USDT 스왑      빗썸 단독 — 봇 엔진의 usdt_premium 전략으로 실매매 구현됨
+  · 무전송 양방향  해외 거래소 주문 연동 필요 — 여기서는 시뮬레이션만
 
 바이낸스는 시세(premiumIndex) 조회만 쓴다. 거래 API 연동은 없다.
 따라서 여기서 돌아가는 봇은 전부 **가상 체결 시뮬레이션**이며, 화면도 그렇게
@@ -255,16 +254,11 @@ class ArbitrageBot:
         self.cash_krw = float(capital_krw)
         self.foreign_cash_usdt = 0.0
         self.coin_units_domestic = 0.0
-        # 해외 쪽 수량은 전략마다 의미가 다르다. 한 변수에 담으면
-        # 'short' 라는 이름으로 롱 재고를 세게 되어 평가액이 틀어진다.
-        self.foreign_units = 0.0        # spatial_dual: 해외에 보유한 코인(롱)
-        self.hedge_short_units = 0.0    # kimkim_funding: 해외 1배 숏 수량
+        self.foreign_units = 0.0        # 해외에 보유한 코인
 
         # 손익은 '이번 포지션에 들어간 돈' 과 비교해야 한다.
         # 최초 자본과 비교하면 2회차부터 이전 회차 수익까지 다시 더해진다.
         self.cost_basis_krw = 0.0
-        self.entry_binance_usd = 0.0     # 헤지 다리 손익 계산용
-        self.accrued_funding_usdt = 0.0
         self._last_funding_at = 0.0
         self._setup_done = False
 
@@ -285,12 +279,6 @@ class ArbitrageBot:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
 
-        if self.strategy == "kimkim_funding":
-            # 국내 현물 절반, 해외 증거금 절반 (가상 배분)
-            self.cash_krw = capital_krw * 0.5
-            self.foreign_reserve_krw = capital_krw * 0.5
-        else:
-            self.foreign_reserve_krw = 0.0
 
     def log(self, kind: str, message: str):
         item = {"time": datetime.now().strftime("%H:%M:%S"),
@@ -336,8 +324,6 @@ class ArbitrageBot:
                                         + "; ".join(radar.get("errors", [])) + ")")
                 elif self.strategy == "usdt_swap":
                     self._step_usdt_swap(radar, fx, usdt_krw)
-                elif self.strategy == "kimkim_funding":
-                    self._step_kimkim_funding(radar, fx, usdt_krw)
                 elif self.strategy == "spatial_dual":
                     self._step_spatial_dual(radar, fx, usdt_krw)
 
@@ -390,78 +376,7 @@ class ArbitrageBot:
                 self.last_status = (f"청산 대기 (현재 {prem_pct:+.2f}%, 목표 ≥ {sell_at}%, "
                                     f"평가 {now_val - self.cost_basis_krw:+,.0f}원)")
 
-    # ── 2. 김프 델타뉴트럴 + 펀딩비 ───────────────────────────────
-    def _step_kimkim_funding(self, radar: Dict[str, Any], fx: float, usdt_price: float):
-        item = next((c for c in radar.get("coins", []) if c["coin"] == self.coin), None)
-        if not item:
-            return
-        kimchi = item.get("kimchiPremiumPct")
-        p_bithumb = item.get("bithumbPrice")
-        p_binance = item.get("binanceUsdPrice")
-        fr_8h = item.get("fundingRate8h")
-        if kimchi is None or not p_bithumb or not p_binance:
-            self.last_status = "김프 계산 불가 — 판단 보류"
-            return
-
-        entry_at = float(self.config.get("entryKimchiPct", 1.0))
-        exit_at = float(self.config.get("exitKimchiPct", 5.0))
-
-        if self.coin_units_domestic == 0 and self.cash_krw >= 5000:
-            if kimchi <= entry_at:
-                invest = self.cash_krw
-                units = invest * (1 - self.FEE_DOMESTIC) / p_bithumb
-                self.coin_units_domestic = units
-                self.hedge_short_units = units
-                self.cost_basis_krw = invest + self.foreign_reserve_krw
-                self.entry_binance_usd = p_binance
-                self.cash_krw = 0.0
-                self.accrued_funding_usdt = 0.0
-                self._last_funding_at = time.time()
-                self.total_trades += 1
-                self.log("BUY", f"[가상 체결] 김프 {kimchi:+.2f}% — 국내 현물 {units:.6f} {self.coin} 매수 "
-                                f"+ 해외 1배 숏 {units:.6f} 동시 구축 (가상)")
-                self._persist()
-                self.last_status = f"헤지 유지 중 (김프 {kimchi:+.2f}%, 수량 {units:.6f})"
-            else:
-                self.last_status = f"김프 저점 감시 (현재 {kimchi:+.2f}%, 목표 ≤ {entry_at}%)"
-            return
-
-        # 펀딩비 누적 — 경과 시간 기준. 부호를 그대로 반영한다.
-        # 숏이 받기만 하는 것이 아니다. 펀딩비가 음수면 숏이 낸다.
-        if fr_8h is not None and self._last_funding_at:
-            elapsed = time.time() - self._last_funding_at
-            self._last_funding_at = time.time()
-            notional_usdt = self.hedge_short_units * p_binance
-            self.accrued_funding_usdt += notional_usdt * (fr_8h / 100.0) * (elapsed / 28800.0)
-
-        if kimchi >= exit_at:
-            units = self.coin_units_domestic
-            domestic_proceeds = units * p_bithumb * (1 - self.FEE_DOMESTIC)
-            # 헤지 다리 손익: 숏이므로 가격이 내리면 이익이다.
-            # 이걸 빼면 '델타뉴트럴' 이라는 이름이 성립하지 않는다.
-            short_pnl_krw = (self.entry_binance_usd - p_binance) * units * usdt_price
-            funding_krw = self.accrued_funding_usdt * usdt_price
-            total = domestic_proceeds + short_pnl_krw + funding_krw
-            pnl = total - self.cost_basis_krw
-
-            self.realized_pnl += pnl
-            self.cash_krw = total * 0.5
-            self.foreign_reserve_krw = total * 0.5
-            self.coin_units_domestic = 0.0
-            self.hedge_short_units = 0.0
-            self.cost_basis_krw = 0.0
-            self.accrued_funding_usdt = 0.0
-            self.total_trades += 1
-            self.log("SELL", f"[가상 체결] 김프 {kimchi:+.2f}% — 양다리 동시 청산 | "
-                             f"현물 {domestic_proceeds:,.0f}원 · 숏 {short_pnl_krw:+,.0f}원 · "
-                             f"펀딩 {funding_krw:+,.0f}원 → 손익 {pnl:+,.0f}원")
-            self._persist()
-            self.last_status = f"청산 완료 (누적 {self.realized_pnl:+,.0f}원)"
-        else:
-            self.last_status = (f"펀딩비 누적 중 (김프 {kimchi:+.2f}%, 청산 ≥ {exit_at}%, "
-                                f"누적 펀딩 ${self.accrued_funding_usdt:+,.2f})")
-
-    # ── 3. 무전송 양방향 ──────────────────────────────────────────
+    # ── 2. 무전송 양방향 ──────────────────────────────────────────
     def _step_spatial_dual(self, radar: Dict[str, Any], fx: float, usdt_price: float):
         """거래소 간 괴리를 양방향으로 먹는다.
 
@@ -583,17 +498,6 @@ class ArbitrageBot:
             # coin_units_domestic 은 USDT 수량이다.
             return self.cash_krw + self.coin_units_domestic * u
 
-        if self.strategy == "kimkim_funding":
-            if self.coin_units_domestic > 0 and (c is None or b is None):
-                return None
-            total = self.cash_krw + self.foreign_reserve_krw
-            if self.coin_units_domestic > 0:
-                total += self.coin_units_domestic * c
-                # 해외는 1배 숏이다. 진입가보다 내리면 이익.
-                total += (self.entry_binance_usd - b) * self.hedge_short_units * u
-            total += self.accrued_funding_usdt * u
-            return total
-
         if self.strategy == "spatial_dual":
             if (self.coin_units_domestic > 0 or self.foreign_units > 0) \
                and (c is None or b is None):
@@ -614,13 +518,9 @@ class ArbitrageBot:
             "initialKrw": self.initial_krw, "config": self.config,
             "cashKrw": self.cash_krw,
             "foreignCashUsdt": self.foreign_cash_usdt,
-            "foreignReserveKrw": self.foreign_reserve_krw,
             "unitsDomestic": self.coin_units_domestic,
             "foreignUnits": self.foreign_units,
-            "hedgeShortUnits": self.hedge_short_units,
             "costBasisKrw": self.cost_basis_krw,
-            "entryBinanceUsd": self.entry_binance_usd,
-            "accruedFundingUsdt": self.accrued_funding_usdt,
             "realizedPnl": self.realized_pnl,
             "totalTrades": self.total_trades,
             "setupDone": self._setup_done,
@@ -635,17 +535,11 @@ class ArbitrageBot:
                   float(d.get("initialKrw", 1_000_000.0)), d.get("config") or {})
         bot.cash_krw = float(d.get("cashKrw", bot.cash_krw))
         bot.foreign_cash_usdt = float(d.get("foreignCashUsdt", 0.0))
-        bot.foreign_reserve_krw = float(d.get("foreignReserveKrw", bot.foreign_reserve_krw))
         bot.coin_units_domestic = float(d.get("unitsDomestic", 0.0))
         # 구 스냅샷은 두 의미를 한 키(unitsForeign)에 담았다. 전략으로 나눈다.
-        legacy = float(d.get("unitsForeign", 0.0))
-        bot.foreign_units = float(d.get("foreignUnits",
-                                        legacy if d.get("strategy") == "spatial_dual" else 0.0))
-        bot.hedge_short_units = float(d.get("hedgeShortUnits",
-                                            legacy if d.get("strategy") == "kimkim_funding" else 0.0))
+        # 구 스냅샷은 unitsForeign 한 키를 썼다.
+        bot.foreign_units = float(d.get("foreignUnits", d.get("unitsForeign", 0.0)))
         bot.cost_basis_krw = float(d.get("costBasisKrw", 0.0))
-        bot.entry_binance_usd = float(d.get("entryBinanceUsd", 0.0))
-        bot.accrued_funding_usdt = float(d.get("accruedFundingUsdt", 0.0))
         bot.realized_pnl = float(d.get("realizedPnl", 0.0))
         bot.total_trades = int(d.get("totalTrades", 0))
         bot._setup_done = bool(d.get("setupDone", False))
@@ -677,11 +571,8 @@ class ArbitrageBot:
                                    if eq is not None and self.initial_krw > 0 else None),
                 "cashKrw": round(self.cash_krw, 0),
                 "foreignCashUsdt": round(self.foreign_cash_usdt, 2),
-                "foreignReserveKrw": round(self.foreign_reserve_krw, 0),
                 "coinUnitsDomestic": round(self.coin_units_domestic, 6),
                 "foreignUnits": round(self.foreign_units, 6),
-                "hedgeShortUnits": round(self.hedge_short_units, 6),
-                "accruedFundingUsdt": round(self.accrued_funding_usdt, 4),
                 "realizedPnl": round(self.realized_pnl, 0),
                 "returnPct": round((self.realized_pnl / self.initial_krw * 100.0)
                                    if self.initial_krw > 0 else 0.0, 2),

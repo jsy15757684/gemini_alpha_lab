@@ -1149,7 +1149,6 @@ async function boot() {
       list.innerHTML = res.bots.map(b => {
         const stratNames = {
           usdt_swap: "USDT 환차익 스왑",
-          kimkim_funding: "김프 델타뉴트럴 + 펀딩비",
           spatial_dual: "무전송 양방향"
         };
         return `
@@ -1177,14 +1176,11 @@ async function boot() {
               </div>
               <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                 <span class="muted">확정 손익:</span> <b class="${cls(b.realizedPnl)}">${won(b.realizedPnl)}원 (${pct(b.returnPct)})</b>
-                <span class="muted">누적 펀딩:</span> <span>$${b.accruedFundingUsdt ?? 0}</span>
+                <span class="muted">확정 손익률:</span> <span class="${cls(b.returnPct)}">${pct(b.returnPct)}</span>
               </div>
               <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
                 <span class="muted">국내(가상):</span> <span>${won(b.cashKrw)}원 / ${b.coinUnitsDomestic} ${b.coin}</span>
-                <span class="muted">해외(가상):</span> <span>$${b.foreignCashUsdt} USDT / ${
-                  b.strategy === 'kimkim_funding'
-                    ? `숏 ${b.hedgeShortUnits} ${b.coin}`
-                    : `${b.foreignUnits} ${b.coin}`}</span>
+                <span class="muted">해외(가상):</span> <span>$${b.foreignCashUsdt} USDT / ${b.foreignUnits} ${b.coin}</span>
               </div>
               <div style="padding: 6px 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 6px; font-size: 0.8rem;">
                 <b>상태:</b> ${b.lastStatus}
@@ -1231,7 +1227,6 @@ async function boot() {
     $("arbStrategyType").onchange = () => {
       const s = $("arbStrategyType").value;
       $("cfg_usdt_swap").classList.toggle("hidden", s !== "usdt_swap");
-      $("cfg_kimkim_funding").classList.toggle("hidden", s !== "kimkim_funding");
       $("cfg_spatial_dual").classList.toggle("hidden", s !== "spatial_dual");
       $("arbCoinGroup").classList.toggle("hidden", s === "usdt_swap");
     };

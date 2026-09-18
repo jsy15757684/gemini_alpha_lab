@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.5.8">
+<link rel="stylesheet" href="/static/css/style.css?v=4.5.9">
 </head>
 <body>
 
@@ -159,8 +159,7 @@
             <label class="label">시뮬레이션할 전략</label>
             <select class="input" id="arbStrategyType">
               <option value="usdt_swap" selected>1. USDT 환차익 스왑 (역프 매수 → 김프 매도)</option>
-              <option value="kimkim_funding">2. 김프 델타뉴트럴 + 펀딩비 (현물 매수 + 해외 1배 숏)</option>
-              <option value="spatial_dual">3. 무전송 양방향 (거래소 간 괴리를 양쪽으로 반복 체결)</option>
+              <option value="spatial_dual">2. 무전송 양방향 (거래소 간 괴리를 양쪽으로 반복 체결)</option>
             </select>
           </div>
 
@@ -196,18 +195,6 @@
               <div>
                 <label class="label">김프 매도선 (%)</label>
                 <input class="input" type="number" id="cfg_usdtSell" value="2.0" step="0.5">
-              </div>
-            </div>
-
-            <!-- 김프 델타뉴트럴 옵션 -->
-            <div id="cfg_kimkim_funding" class="form-grid hidden">
-              <div>
-                <label class="label">진입 김프선 (%)</label>
-                <input class="input" type="number" id="cfg_kimchiEntry" value="1.0" step="0.5">
-              </div>
-              <div>
-                <label class="label">청산 김프선 (%)</label>
-                <input class="input" type="number" id="cfg_kimchiExit" value="5.0" step="0.5">
               </div>
             </div>
 
@@ -645,6 +632,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.5.8"></script>
+<script src="/static/js/app.js?v=4.5.9"></script>
 </body>
 </html>

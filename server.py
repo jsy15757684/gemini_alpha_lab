@@ -442,7 +442,7 @@ def gemini_scan(interval: str = "1h"):
 # ─────────────── 차익거래 지표 모니터 · 전략 시뮬레이터 ───────────────
 
 class ArbitrageDeployRequest(BaseModel):
-    strategy: str = "usdt_swap"  # "usdt_swap" | "kimkim_funding" | "spatial_dual"
+    strategy: str = "usdt_swap"  # "usdt_swap" | "spatial_dual"
     coin: str = "USDT"
     # mode 는 받기만 하고 무시한다. 이 기능에 실주문 경로가 없기 때문이다.
     # 과거 클라이언트가 "LIVE" 를 보내도 시뮬레이션으로만 동작한다.
@@ -469,7 +469,7 @@ def arbitrage_deploy(req: ArbitrageDeployRequest):
     if req.capitalKrw < 10_000:
         raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
     
-    valid_strats = ("usdt_swap", "kimkim_funding", "spatial_dual")
+    valid_strats = ("usdt_swap", "spatial_dual")
     if req.strategy not in valid_strats:
         raise HTTPException(400, f"지원하지 않는 차익거래 전략: {req.strategy}")
 
