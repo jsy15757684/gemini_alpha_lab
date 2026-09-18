@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.5.7">
+<link rel="stylesheet" href="/static/css/style.css?v=4.5.8">
 </head>
 <body>
 
@@ -297,10 +297,15 @@
                 </div>
               </div>
               <div class="alert alert-warn small" style="margin-top:8px;">
-                <b>무위험 차익거래가 아닙니다.</b> 손익이 두 갈래입니다 —
-                ① 프리미엄 변화 ② 원/달러 환율 변화.
-                프리미엄이 목표에 닿아도 그동안 환율이 내리면 원화 기준 손실일 수 있습니다.
-                사실상 <b>싸게 산 달러를 들고 있는 포지션</b>이며, 대상 코인은 자동으로 USDT 가 됩니다.
+                <b>차익거래가 아니라 원/달러 환투자입니다.</b> 손익이 ① 프리미엄 변화
+                ② 원/달러 환율 변화 두 갈래인데, <b>②가 ①보다 3배 큽니다.</b><br>
+                실측(2026-03-03~09-17, 137일): 프리미엄 변동폭 5.23%p vs 환율 변동폭 16.29%.
+                <b>어떤 매수/매도선 조합으로도 이 기간 총손익이 음수였습니다</b>
+                (-0.8%→+1.0%: 왕복 2회 <b>-7.15%</b>).
+                최악의 거래는 프리미엄이 목표대로 +2.80%p 개선됐는데도 환율이 -10.50% 빠져
+                <b>-7.95%</b> 손실이었습니다 — 전략은 맞았고 환율에 졌습니다.<br>
+                또한 프리미엄이 <b>+2% 를 넘은 날이 137일 중 0일</b>이라, 기본 매도선(+2.0%)으로는
+                사놓고 팔지 못합니다. 대상 코인은 자동으로 USDT 가 됩니다.
                 환율이 무너질 때를 대비하려면 <b>손절 %</b> 를 켜세요. 기본은 0(사용 안 함)입니다 —
                 가격이 내리면 역프가 더 깊어져 매수 신호가 강해지므로, 손절과 진입이 서로를
                 부추깁니다. 그래서 <b>손절이 걸리면 봇을 정지</b>시킵니다(자동 재진입 안 함).
@@ -640,6 +645,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.5.7"></script>
+<script src="/static/js/app.js?v=4.5.8"></script>
 </body>
 </html>
