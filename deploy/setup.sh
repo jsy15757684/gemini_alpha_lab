@@ -79,6 +79,11 @@ cat > "/etc/systemd/system/${SERVICE_NAME}.service" <<UNIT
 Description=빗썸 원화 자동매매 콘솔
 After=network-online.target
 Wants=network-online.target
+# 짧은 시간에 반복 실패해도 재시작을 포기하지 않는다 (기본은 10초에 5회 후 포기).
+# 자동매매 봇에는 이게 핵심이다 — 서비스가 죽은 채 방치되면 포지션을 아무도
+# 감시하지 않는다. 이 키는 [Unit] 소속이다. [Service] 에 두면 systemd 가
+# 'Unknown key name' 으로 무시하고, 보호가 걸린 줄 알면서 안 걸려 있게 된다.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -95,8 +100,6 @@ ExecStart=${APP_DIR}/deploy/service-start.sh
 # 죽으면 항상 다시 띄운다. 자동매매 봇에는 이게 핵심이다.
 Restart=always
 RestartSec=5
-# 짧은 시간에 반복 실패해도 포기하지 않는다 (기본은 5회 후 포기)
-StartLimitIntervalSec=0
 
 StandardOutput=journal
 StandardError=journal
@@ -113,6 +116,16 @@ ReadWritePaths=${APP_DIR}/data
 [Install]
 WantedBy=multi-user.target
 UNIT
+
+# 로그 상한. 매 회차 매수 사유(AI 판단 포함)가 저널에 쌓여 꾸준히 커진다.
+# 상한이 없으면 디스크의 10% 까지 차지한다 — 전용 서버라 200M 이면 넉넉하다.
+mkdir -p /etc/systemd/journald.conf.d
+cat > /etc/systemd/journald.conf.d/99-${SERVICE_NAME}.conf <<'JOURNALD'
+[Journal]
+SystemMaxUse=200M
+SystemKeepFree=1G
+JOURNALD
+systemctl restart systemd-journald
 
 systemctl daemon-reload
 systemctl enable "${SERVICE_NAME}" >/dev/null 2>&1
