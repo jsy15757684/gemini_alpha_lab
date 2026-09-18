@@ -18,7 +18,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from services import bithumb, botstore, tradelog
+from services import bithumb, jsonfile, botstore, tradelog
 from services import gemini_service
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 from services.envconf import env_float, env_int
@@ -857,6 +857,8 @@ class BotManager:
     def __init__(self):
         self.bots: Dict[str, TradingBot] = {}
         self._lock = threading.Lock()
+        # 상태 파일을 읽지 못해 복원을 포기했다면 그 사유. 화면에 계속 띄운다.
+        self.restore_error: Optional[str] = None
 
     def active_count(self) -> int:
         return sum(1 for b in self.bots.values() if b.is_running)
@@ -982,6 +984,7 @@ class BotManager:
                 "byCoin": coin_summary,
             },
             "trades": rows[:500],
+            "ledgerWarning": tradelog.warning(),
         }
 
     # ── 영속화 / 복원 ──
@@ -999,9 +1002,28 @@ class BotManager:
         """
         # 봇이 하나도 없어도 장부는 올려둔다. 봇을 전부 지운 뒤에도
         # 매매 일지와 누적 손익은 계속 보여야 한다.
-        tradelog.load()
+        # 일지를 못 읽어도 봇 복원은 계속한다 — 포지션 감시가 먼저다.
+        # 파일 자체는 tradelog 의 빗장이 지켜 주고, 사유는 화면에 뜬다.
+        try:
+            tradelog.load()
+        except jsonfile.StoreReadError as e:
+            logger.error(f"체결 일지 복원 실패 (봇 복원은 계속합니다): {e}")
 
-        records = botstore.load()
+        # 여기서부터가 핵심이다. '봇이 0개' 와 '봇 목록을 못 읽었다' 는
+        # 절대 같지 않다. 후자를 0 개로 취급하면 빗썸에 포지션을 남긴 채
+        # 감시 주체가 사라지고, 다음 저장이 그 기록마저 지운다.
+        try:
+            records = botstore.load()
+        except jsonfile.StoreReadError as e:
+            msg = (f"봇 상태 파일을 읽지 못해 복원을 중단했습니다 — {e} "
+                   "봇을 하나도 가동하지 않았고, 이 파일에 다시 쓰지도 않습니다. "
+                   "빗썸에 포지션이 남아 있다면 지금은 감시되지 않는 상태입니다. "
+                   "원인(주로 data/ 권한)을 고친 뒤 서비스를 재시작하세요.")
+            logger.error(msg)
+            self.restore_error = msg
+            return {"restored": 0, "resumed": 0, "held": 0,
+                    "notes": [msg], "fatal": True}
+
         if not records:
             return {"restored": 0, "resumed": 0, "held": 0, "notes": []}
 

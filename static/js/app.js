@@ -7,6 +7,9 @@ let COINS = [], INTERVALS = [], ENTRY_RULES = [], started = false, timers = [];
 const won = (n) => (n == null || isNaN(n)) ? "-" : Math.round(n).toLocaleString("ko-KR");
 const pct = (n) => (n == null || isNaN(n)) ? "-" : `${n >= 0 ? "+" : ""}${Number(n).toFixed(2)}%`;
 const cls = (n) => (n > 0 ? "up" : n < 0 ? "down" : "");
+// 서버 메시지를 그대로 innerHTML 에 넣지 않는다 (사유 문자열에 파일 경로가 들어온다)
+const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g,
+  (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const when = (ms) => new Date(ms).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
 async function api(url, options) {
@@ -342,7 +345,15 @@ async function loadBots() {
 
     // 재시작 후 대조에 걸려 보류된 봇이 있으면 알림 표시, 없으면 숨김
     const el = $("globalNotice");
-    if (restoreSummary?.held > 0 && !restoreNoticeShown) {
+    if (restoreSummary?.fatal) {
+      // 상태 파일을 못 읽어 봇을 하나도 못 띄운 경우. 닫기 버튼을 두지 않는다 —
+      // 빗썸에 포지션이 남아 있으면 지금 아무도 감시하지 않는 상태다.
+      el.classList.remove("hidden");
+      el.className = "alert alert-danger";
+      el.innerHTML = `
+        <b>⛔ 봇 상태를 복원하지 못했습니다.</b><br>
+        ${(restoreSummary.notes || []).map(n => escapeHtml(n)).join("<br>")}`;
+    } else if (restoreSummary?.held > 0 && !restoreNoticeShown) {
       el.classList.remove("hidden");
       el.className = "alert alert-danger";
       el.innerHTML = `
@@ -854,6 +865,22 @@ async function loadTradeHistory() {
     const data = await api("/api/bot/trades");
     RAW_TRADES_DATA = data || { summary: {}, trades: [] };
     const s = RAW_TRADES_DATA.summary || {};
+
+    // 장부를 못 읽었으면 숫자를 '누적' 이라고 부를 수 없다. 먼저 알린다.
+    const warnEl = $("ledgerWarning");
+    if (warnEl) {
+      if (RAW_TRADES_DATA.ledgerWarning) {
+        warnEl.classList.remove("hidden");
+        warnEl.innerHTML = `
+          <b>⛔ 체결 일지를 읽지 못했습니다.</b> 아래 숫자는 이번 재시작 이후 체결만
+          반영한 것이라 누적치가 아닙니다. 과거 기록을 덮어쓰지 않도록 저장은
+          막아 두었습니다.<br>
+          <span class="muted small">${escapeHtml(RAW_TRADES_DATA.ledgerWarning)}</span>`;
+      } else {
+        warnEl.classList.add("hidden");
+        warnEl.innerHTML = "";
+      }
+    }
 
     if ($("mTotalPnl")) {
       const pnl = s.totalRealizedPnlKrw || 0;

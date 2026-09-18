@@ -25,7 +25,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 
-from services import bithumb, botstore
+from services import bithumb, botstore, jsonfile
 from services.envconf import env_float
 
 logger = logging.getLogger(__name__)
@@ -640,7 +640,15 @@ class ArbitrageBotManager:
         실주문이 없으므로 거래소 대조는 필요 없다. 다만 지원 목록에서 빠진
         종목은 지표를 계산할 수 없으므로 재가동하지 않는다.
         """
-        records = botstore.arb_store.load()
+        try:
+            records = botstore.arb_store.load()
+        except jsonfile.StoreReadError as e:
+            # 시뮬레이터라 실계좌 위험은 없지만, 못 읽은 파일을 빈 것으로
+            # 취급해 덮어쓰면 기록이 사라진다. 복원을 포기하고 파일은 둔다.
+            logger.error(f"시뮬레이터 복원을 중단했습니다 — {e} "
+                         "원인을 고친 뒤 서비스를 재시작하세요.")
+            return {"restored": 0, "resumed": 0, "error": str(e)}
+
         if not records:
             return {"restored": 0, "resumed": 0}
 

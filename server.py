@@ -307,7 +307,17 @@ def delete_bot(req: BotIdRequest):
 
 @app.post("/api/bot/dismiss_restore_notice")
 def dismiss_restore_notice():
+    """보류 알림을 닫는다.
+
+    상태 파일을 아예 읽지 못한 경우(fatal)는 닫아 주지 않는다. 그 상황은
+    빗썸에 포지션이 남았는데 감시하는 봇이 없는 상태라, 화면에서 사라지면
+    안 된다. 재시작해서 원인이 풀려야 없어진다.
+    """
     global RESTORE_SUMMARY
+    if RESTORE_SUMMARY.get("fatal"):
+        return {"success": False,
+                "message": "봇 상태를 복원하지 못한 알림은 닫을 수 없습니다. "
+                           "원인을 고친 뒤 서비스를 재시작하세요."}
     RESTORE_SUMMARY = {"restored": len(bot_manager.bots), "resumed": bot_manager.active_count(), "held": 0, "notes": []}
     return {"success": True}
 
