@@ -453,7 +453,7 @@ class ArbitrageDeployRequest(BaseModel):
 
 @app.get("/api/arbitrage/radar")
 def arbitrage_radar():
-    """김프·펀딩비·환율 실시간 지표. 조회 실패 항목은 null 로 오고 errors 에 사유가 담긴다."""
+    """테더 프리미엄·김프·무전송 괴리 실시간 지표. 조회 실패 항목은 null 로 오고 errors 에 사유가 담긴다."""
     return arbitrage.get_arbitrage_radar()
 
 

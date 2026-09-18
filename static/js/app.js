@@ -1126,8 +1126,6 @@ async function boot() {
             <td>${dashUsd(c.binanceUsdPrice)}</td>
             <td class="${c.kimchiPremiumPct === null ? "" : cls(c.kimchiPremiumPct)}"><b>${dashPct(c.kimchiPremiumPct)}</b></td>
             <td class="${c.spatialSpreadPct === null ? "" : cls(c.spatialSpreadPct)}">${dashPct(c.spatialSpreadPct)}</td>
-            <td>${c.fundingRateAnnualPct === null ? "—"
-                  : `<b class="${cls(c.fundingRateAnnualPct)}">연 ${c.fundingRateAnnualPct}%</b> <span class="muted small">(${c.fundingRate8h}%/8h)</span>`}</td>
           </tr>
         `).join("");
       }

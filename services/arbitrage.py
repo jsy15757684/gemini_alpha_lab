@@ -1,11 +1,11 @@
-"""김프·펀딩비·환율 모니터 + 차익거래 전략 시뮬레이터.
+"""테더 프리미엄·김프·환율 모니터 + 차익거래 전략 시뮬레이터.
 
 **이 모듈은 주문을 내지 않는다.** 실제 차익거래에 필요한 다리가 없기 때문이다.
 
   · USDT 스왑      빗썸 단독 — 봇 엔진의 usdt_premium 전략으로 실매매 구현됨
   · 무전송 양방향  해외 거래소 주문 연동 필요 — 여기서는 시뮬레이션만
 
-바이낸스는 시세(premiumIndex) 조회만 쓴다. 거래 API 연동은 없다.
+바이낸스는 현물 시세 조회만 쓴다. 이 모듈에는 거래 API 연동이 없다.
 따라서 여기서 돌아가는 봇은 전부 **가상 체결 시뮬레이션**이며, 화면도 그렇게
 표시해야 한다. 한쪽 다리(빗썸)만 실주문으로 연결하면 헤지가 없는 단방향
 베팅이 되므로, 그런 형태의 '실전 모드'는 두지 않는다.
@@ -92,16 +92,20 @@ def _fetch_official_fx_rate() -> Tuple[Optional[float], str]:
 
 
 def fetch_binance_market_data() -> Tuple[Dict[str, Dict[str, float]], str]:
-    """바이낸스 선물 마크가격과 펀딩비율 (USDT 마진).
+    """바이낸스 **현물** 시세.
 
-    받지 못한 코인은 결과에 넣지 않는다. 예전에는 2024년경 고정가
-    (BTC $65,000 등)를 기본값으로 두어, 조회가 실패해도 그 값으로 김프를
-    계산했다. 현재가와 차이가 커서 없는 김프가 크게 생긴다.
+    예전에는 선물 마크가격(/fapi/v1/premiumIndex)을 썼다. 그런데 무전송
+    양방향은 현물을 거래한다. 선물 마크가격과 현물가는 베이시스만큼 다르므로,
+    지표와 실제 체결가가 어긋난다. 전략이 보는 가격으로 지표를 만든다.
+
+    받지 못한 코인은 결과에 넣지 않는다. 추정치로 채우면 없는 괴리가 생긴다.
     """
     out: Dict[str, Dict[str, float]] = {}
-    wanted = set(bithumb.COINS.keys())
+    wanted = list(bithumb.COINS.keys())
+    symbols = json.dumps([f"{c}USDT" for c in wanted], separators=(",", ":"))
     try:
-        r = requests.get("https://fapi.binance.com/fapi/v1/premiumIndex", timeout=6)
+        r = requests.get("https://api.binance.com/api/v3/ticker/price",
+                         params={"symbols": symbols}, timeout=8)
         if r.status_code != 200:
             return out, f"바이낸스 조회 실패 (HTTP {r.status_code})"
         for item in r.json():
@@ -112,13 +116,10 @@ def fetch_binance_market_data() -> Tuple[Dict[str, Dict[str, float]], str]:
             if coin not in wanted:
                 continue
             try:
-                out[coin] = {
-                    "price": float(item.get("markPrice")),
-                    "fundingRate": float(item.get("lastFundingRate", 0.0)),
-                }
-            except (TypeError, ValueError):
+                out[coin] = {"price": float(item["price"])}
+            except (KeyError, TypeError, ValueError):
                 continue
-        missing = sorted(wanted - set(out))
+        missing = sorted(set(wanted) - set(out))
         if missing:
             return out, f"바이낸스에서 받지 못한 종목: {', '.join(missing)}"
         return out, ""
@@ -127,7 +128,7 @@ def fetch_binance_market_data() -> Tuple[Dict[str, Dict[str, float]], str]:
 
 
 def get_arbitrage_radar(force: bool = False) -> Dict[str, Any]:
-    """김프·무전송 스프레드·펀딩비 실시간 지표.
+    """테더 프리미엄·김프·무전송 괴리 실시간 지표.
 
     값을 받지 못한 항목은 None 으로 두고 errors 에 사유를 남긴다.
     호출하는 쪽(봇·화면)은 None 을 '모름' 으로 다뤄야 하며 0 으로 취급하면 안 된다.
@@ -181,7 +182,6 @@ def get_arbitrage_radar(force: bool = False) -> Dict[str, Any]:
             b_p = bithumb_prices.get(c)
             bn = binance_data.get(c)
             bin_p = bn["price"] if bn else None
-            fr = bn["fundingRate"] if bn else None
 
             kimchi_pct = None
             if b_p is not None and bin_p and official_fx:
@@ -202,9 +202,6 @@ def get_arbitrage_radar(force: bool = False) -> Dict[str, Any]:
                 "binanceUsdPrice": bin_p,
                 "kimchiPremiumPct": round(kimchi_pct, 2) if kimchi_pct is not None else None,
                 "spatialSpreadPct": round(spatial_pct, 2) if spatial_pct is not None else None,
-                # 펀딩비는 음수일 수 있다 (숏이 내는 구간). 부호를 그대로 둔다.
-                "fundingRate8h": round(fr * 100.0, 4) if fr is not None else None,
-                "fundingRateAnnualPct": round(fr * 3 * 365 * 100.0, 2) if fr is not None else None,
             })
 
         result = {
@@ -259,7 +256,6 @@ class ArbitrageBot:
         # 손익은 '이번 포지션에 들어간 돈' 과 비교해야 한다.
         # 최초 자본과 비교하면 2회차부터 이전 회차 수익까지 다시 더해진다.
         self.cost_basis_krw = 0.0
-        self._last_funding_at = 0.0
         self._setup_done = False
 
         self.is_running = False
@@ -545,9 +541,6 @@ class ArbitrageBot:
         bot._setup_done = bool(d.get("setupDone", False))
         bot.created_at = d.get("createdAt", bot.created_at)
         bot.logs = list(d.get("logs") or [])
-        # 펀딩비는 경과 시간으로 쌓는다. 복원 직후를 기준점으로 잡지 않으면
-        # 서버가 꺼져 있던 시간까지 수취한 것으로 계산된다.
-        bot._last_funding_at = time.time()
         return bot
 
     def _persist(self):

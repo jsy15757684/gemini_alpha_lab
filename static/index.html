@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.5.9">
+<link rel="stylesheet" href="/static/css/style.css?v=4.5.10">
 </head>
 <body>
 
@@ -47,7 +47,7 @@
 
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
-    <button class="tab" data-panel="panel-arbitrage">⚡ 김프·펀딩비 모니터</button>
+    <button class="tab" data-panel="panel-arbitrage">⚡ USDT 차익거래</button>
     <button class="tab" data-panel="panel-bots">자동매매 봇</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
@@ -100,8 +100,8 @@
       <div class="card" style="margin-bottom: 1.2rem; border-color: rgba(59, 130, 246, 0.3);">
         <div class="card-head">
           <div>
-            <h2 class="card-title">⚡ 김치프리미엄 · 펀딩비 · 환율 실시간 지표</h2>
-            <p class="muted small">네이버 금융 공시환율 · 빗썸 현물 · 바이낸스 선물(시세 조회 전용)에서 받은 실데이터입니다. 조회에 실패한 항목은 추정치로 채우지 않고 <b>—</b> 로 표시합니다.</p>
+            <h2 class="card-title">⚡ 테더 프리미엄 · 김프 · 환율 실시간 지표</h2>
+            <p class="muted small">네이버 금융 공시환율 · 빗썸 현물 · 바이낸스 현물에서 받은 실데이터입니다. 조회에 실패한 항목은 추정치로 채우지 않고 <b>—</b> 로 표시합니다.</p>
           </div>
           <button class="btn btn-ghost btn-sm" id="refreshArbitrageBtn">🔄 실시간 갱신</button>
         </div>
@@ -127,9 +127,9 @@
           </div>
         </div>
 
-        <!-- 5종 코인별 김프 및 펀딩비 테이블 -->
+        <!-- 코인별 김프 및 무전송 괴리 테이블 -->
         <div style="margin-top: 16px;">
-          <h3 style="font-size: 0.88rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 코인별 실시간 김치프리미엄 &amp; 바이낸스 펀딩비</h3>
+          <h3 style="font-size: 0.88rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 코인별 김치프리미엄 &amp; 무전송 괴리</h3>
           <div class="tbl-wrap">
             <table>
               <thead>
@@ -139,11 +139,10 @@
                   <th>바이낸스 시세</th>
                   <th>김치프리미엄</th>
                   <th>무전송 스프레드</th>
-                  <th>선물 펀딩비 (연환산)</th>
                 </tr>
               </thead>
               <tbody id="arbRadarBody">
-                <tr><td colspan="6" class="empty">레이더 지표를 불러오는 중입니다...</td></tr>
+                <tr><td colspan="5" class="empty">지표를 불러오는 중입니다...</td></tr>
               </tbody>
             </table>
           </div>
@@ -632,6 +631,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.5.9"></script>
+<script src="/static/js/app.js?v=4.5.10"></script>
 </body>
 </html>
