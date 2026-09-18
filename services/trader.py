@@ -831,6 +831,9 @@ class TradingBot:
             "initialKrw": round(self.initial_krw, 0),
             "equityKrw": round(equity, 0),
             "cashKrw": round(self.cash, 0),
+            # 실제로 시장에 들어간 원금. 화면이 '무엇 대비 수익률인지' 를
+            # 밝히려면 배정자본(initialKrw)과 이 값이 둘 다 필요하다.
+            "investedKrw": round(self.pos.totalInvested, 0),
             "units": round(self.pos.units, 8),
             "entryPrice": round(self.pos.entryPrice, 0),
             "currentPrice": round(price, 0),

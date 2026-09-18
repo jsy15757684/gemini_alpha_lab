@@ -288,6 +288,15 @@ async function deployBot() {
   }
 }
 
+// 배정자본 중 실제로 시장에 들어간 비율. 이 값이 클수록 '배정 대비' 와
+// '평단 대비' 수익률이 가까워진다 — 두 숫자가 다른 이유가 이것이다.
+function investedPct(b) {
+  const init = Number(b.initialKrw || 0);
+  const inv = Number(b.investedKrw || 0);
+  if (!init || !inv) return "0%";
+  return `${Math.round(inv / init * 100)}%`;
+}
+
 function botCard(b) {
   const live = b.mode === "LIVE";
   const badge = !b.isRunning ? `<span class="badge badge-stop">정지됨</span>`
@@ -321,13 +330,20 @@ function botCard(b) {
     </div>
     <div class="bot-stats">
       <div><div class="stat-k">평가자산</div><div class="stat-v">${won(b.equityKrw)}</div></div>
-      <div><div class="stat-k">총 수익률</div><div class="stat-v ${cls(b.totalReturnPct)}">${pct(b.totalReturnPct)}</div></div>
+      <div title="배정자본 ${won(b.initialKrw)}원 대비 평가자산 증감. 아직 안 쓴 현금도 분모에 들어가므로, 분할매수 초반에는 '평단 대비' 보다 작게 나온다. 지금은 ${won(b.investedKrw)}원(${investedPct(b)})만 시장에 들어가 있다.">
+        <div class="stat-k">수익률 <span class="muted" style="font-weight:400;">· 배정 대비</span></div>
+        <div class="stat-v ${cls(b.totalReturnPct)}">${pct(b.totalReturnPct)}</div>
+        <div class="muted" style="font-size:0.68rem;">${investedPct(b)} 투입</div></div>
       <div><div class="stat-k">현재가 ${b.priceAgeSec != null
           ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : 'muted'}">${Math.round(b.priceAgeSec)}초 전</span>`
           : ""}</div><div class="stat-v">${won(b.currentPrice)}</div></div>
       <div><div class="stat-k">보유 / 평단</div><div class="stat-v">${b.units > 0 ? b.units.toFixed(6) : "-"} ${b.units > 0 ? `<span class="small muted">(${won(b.entryPrice)})</span>` : ""}</div></div>
-      <div><div class="stat-k">평가손익</div><div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0 ? won(b.unrealizedPnlKrw) : "-"}</div></div>
-      <div><div class="stat-k">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? '회차 (AI목표/비중)' : '진행 회차') : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? `${b.turn||0}/${b.splitCount||40} <span class="small" style="color:var(--accent); font-size:0.75rem;">(+${b.lastAiAnalysis?.dynamicTargetProfitPct || b.params?.targetProfitPct}% / ${b.lastAiAnalysis?.sizingMultiplier || 1.0}x)</span>` : `${b.turn||0} / ${b.splitCount||40}`) : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
+      <div title="산 물량만 놓고 본 손익. 익절·손절 판정이 쓰는 값이 이쪽이다.">
+        <div class="stat-k">평가손익 <span class="muted" style="font-weight:400;">· 평단 대비</span></div>
+        <div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0
+          ? `${won(b.unrealizedPnlKrw)}원 <span style="font-size:0.7rem; font-weight:400;">${pct(b.unrealizedPnlPct)}</span>`
+          : "-"}</div></div>
+      <div title="AI 가 정한 익절 목표와 매수 비중. 목표 수익률은 '평단 대비' 기준이다 — 배정 대비 수익률은 그보다 낮게 찍힌다."><div class="stat-k">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? '회차 <span class="muted" style="font-weight:400;">· 목표/비중</span>' : '진행 회차') : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? `${b.turn||0}/${b.splitCount||40} <span class="small" style="color:var(--accent); font-size:0.75rem;">(+${b.lastAiAnalysis?.dynamicTargetProfitPct || b.params?.targetProfitPct}% / ${b.lastAiAnalysis?.sizingMultiplier || 1.0}x)</span>` : `${b.turn||0} / ${b.splitCount||40}`) : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
       <div><div class="stat-k">거래 (익절)</div><div class="stat-v">${b.totalTrades}회</div></div>
       <div><div class="stat-k">승률</div><div class="stat-v">${b.totalTrades ? b.winRatePct + "%" : "-"}</div></div>
     </div>
