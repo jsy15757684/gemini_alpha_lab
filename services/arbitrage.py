@@ -231,7 +231,17 @@ class ArbitrageBot:
     실제로 돌리려면 해외 거래소 주문 연동이 선행되어야 한다.
     """
 
-    FEE = 0.0004   # 편도 0.04%
+    # 거래소마다 수수료가 다르다. 한 값으로 묶으면 해외 다리 비용이
+    # 2.5배 과소평가되어 없는 기회가 보인다 (실제로 그랬다).
+    FEE_DOMESTIC = 0.0004   # 빗썸 시장가 0.04%
+    FEE_FOREIGN = 0.0010    # 바이낸스 현물 taker 0.10% (BNB 할인 시 0.075%)
+    FEE = FEE_DOMESTIC      # 국내 단독 전략(usdt_swap)의 기본값
+
+    # 호가를 넘는 비용. 중간가로 계산하면 실제보다 유리하게 나온다.
+    # 실측(2026-09-18): 빗썸 BTC 0.008% · ETH 0.029% · SOL 0.139% · XRP 0.055%,
+    # 바이낸스는 0.000~0.010%. 종목·시점에 따라 변하니 설정값으로 둔다.
+    SLIPPAGE_DOMESTIC = 0.0005   # 0.05%
+    SLIPPAGE_FOREIGN = 0.0001    # 0.01%
 
     def __init__(self, bot_id: str, strategy: str, coin: str,
                  capital_krw: float, config: Dict[str, Any]):
@@ -399,7 +409,7 @@ class ArbitrageBot:
         if self.coin_units_domestic == 0 and self.cash_krw >= 5000:
             if kimchi <= entry_at:
                 invest = self.cash_krw
-                units = invest * (1 - self.FEE) / p_bithumb
+                units = invest * (1 - self.FEE_DOMESTIC) / p_bithumb
                 self.coin_units_domestic = units
                 self.hedge_short_units = units
                 self.cost_basis_krw = invest + self.foreign_reserve_krw
@@ -426,7 +436,7 @@ class ArbitrageBot:
 
         if kimchi >= exit_at:
             units = self.coin_units_domestic
-            domestic_proceeds = units * p_bithumb * (1 - self.FEE)
+            domestic_proceeds = units * p_bithumb * (1 - self.FEE_DOMESTIC)
             # 헤지 다리 손익: 숏이므로 가격이 내리면 이익이다.
             # 이걸 빼면 '델타뉴트럴' 이라는 이름이 성립하지 않는다.
             short_pnl_krw = (self.entry_binance_usd - p_binance) * units * usdt_price
@@ -478,8 +488,8 @@ class ArbitrageBot:
         # 양방향으로 돌려면 양쪽에 재고와 현금이 모두 있어야 한다.
         if not self._setup_done:
             q = self.initial_krw * 0.25
-            dom_units = q * (1 - self.FEE) / p_bithumb
-            for_units = q * (1 - self.FEE) / p_binance_krw
+            dom_units = q * (1 - self.FEE_DOMESTIC) / p_bithumb
+            for_units = q * (1 - self.FEE_FOREIGN) / p_binance_krw
             self.coin_units_domestic = dom_units
             self.foreign_units = for_units
             self.foreign_cash_usdt = q / usdt_price
@@ -509,8 +519,9 @@ class ArbitrageBot:
             if chunk <= dust:
                 self.last_status = "체결 가능 수량이 너무 작습니다"
                 return
-            sell_krw = chunk * p_bithumb * (1 - self.FEE)
-            buy_usdt = chunk * p_binance * (1 + self.FEE)
+            # 국내 매도는 매수호가로, 해외 매수는 매도호가로 체결된다.
+            sell_krw = chunk * p_bithumb * (1 - self.FEE_DOMESTIC - self.SLIPPAGE_DOMESTIC)
+            buy_usdt = chunk * p_binance * (1 + self.FEE_FOREIGN + self.SLIPPAGE_FOREIGN)
             margin = sell_krw - buy_usdt * usdt_price
 
             self.coin_units_domestic -= chunk
@@ -530,8 +541,8 @@ class ArbitrageBot:
             if chunk <= dust:
                 self.last_status = "체결 가능 수량이 너무 작습니다"
                 return
-            buy_krw = chunk * p_bithumb * (1 + self.FEE)
-            sell_usdt = chunk * p_binance * (1 - self.FEE)
+            buy_krw = chunk * p_bithumb * (1 + self.FEE_DOMESTIC + self.SLIPPAGE_DOMESTIC)
+            sell_usdt = chunk * p_binance * (1 - self.FEE_FOREIGN - self.SLIPPAGE_FOREIGN)
             margin = sell_usdt * usdt_price - buy_krw
 
             self.foreign_units -= chunk
