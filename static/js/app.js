@@ -187,6 +187,9 @@ function readParams(prefix) {
       p.useGemini = false;
       p.usdtBuyPremiumPct = parseFloat($("bp_usdtBuyPremiumPct")?.value || "-0.8");
       p.usdtSellPremiumPct = parseFloat($("bp_usdtSellPremiumPct")?.value || "2.0");
+      // 이 전략의 기본 손절은 0(사용 안 함)이다. 공용 기본값(1.8)이 그대로
+      // 넘어가면 손절-재매수 루프에 빠진다.
+      p.stopLossPct = parseFloat($("bp_usdtStopLossPct")?.value || "0");
     } else if (stratType === "gemini_ai") {
       p.strategyType = "quant_ai";
       p.useGemini = true;

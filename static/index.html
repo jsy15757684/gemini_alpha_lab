@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.5.6">
+<link rel="stylesheet" href="/static/css/style.css?v=4.5.7">
 </head>
 <body>
 
@@ -291,13 +291,19 @@
                   <label class="label">김프 매도선 (%)</label>
                   <input class="input" type="number" id="bp_usdtSellPremiumPct" value="2.0" step="0.1">
                 </div>
+                <div>
+                  <label class="label">손절 (%) · 0 = 사용 안 함</label>
+                  <input class="input" type="number" id="bp_usdtStopLossPct" value="0" step="0.5" min="0">
+                </div>
               </div>
               <div class="alert alert-warn small" style="margin-top:8px;">
                 <b>무위험 차익거래가 아닙니다.</b> 손익이 두 갈래입니다 —
                 ① 프리미엄 변화 ② 원/달러 환율 변화.
                 프리미엄이 목표에 닿아도 그동안 환율이 내리면 원화 기준 손실일 수 있습니다.
                 사실상 <b>싸게 산 달러를 들고 있는 포지션</b>이며, 대상 코인은 자동으로 USDT 가 됩니다.
-                환율이 무너질 때를 대비하려면 아래 <b>손절 %</b> 를 켜세요(0 이면 꺼짐).
+                환율이 무너질 때를 대비하려면 <b>손절 %</b> 를 켜세요. 기본은 0(사용 안 함)입니다 —
+                가격이 내리면 역프가 더 깊어져 매수 신호가 강해지므로, 손절과 진입이 서로를
+                부추깁니다. 그래서 <b>손절이 걸리면 봇을 정지</b>시킵니다(자동 재진입 안 함).
               </div>
             </div>
 
@@ -634,6 +640,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.5.6"></script>
+<script src="/static/js/app.js?v=4.5.7"></script>
 </body>
 </html>

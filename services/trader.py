@@ -326,10 +326,25 @@ class TradingBot:
                             self._exit(price, f"테더 김프 {prem:+.2f}% (매도선 {sell_at}%) · "
                                               f"손익 {pnl_pct:+.2f}%")
                         elif self.params.stopLossPct > 0 and pnl_pct <= -self.params.stopLossPct:
-                            # 프리미엄이 아니라 환율이 무너진 경우의 안전장치.
-                            # 기본은 꺼져 있다(0). 켜면 프리미엄 회복 전에 끊길 수 있다.
+                            # 환율이 무너진 경우의 안전장치.
+                            #
+                            # 청산 후 봇을 멈춘다. 이 전략에서는 가격이 내리면 역프가
+                            # 더 깊어져 매수 신호가 강해지므로, 손절하고 루프를 계속
+                            # 돌리면 같은 자리에 즉시 재매수한다. 실측: 1,370원에 사서
+                            # 1,329원에 손절(-30,703원)하고 곧바로 1,329원에 재매수했다.
+                            # 손실만 확정하고 수수료를 두 번 내는 동작이다.
+                            #
+                            # 손절이 걸렸다는 것은 '환율 가정이 깨졌다' 는 뜻이고,
+                            # 그 판단은 사람이 해야 한다. 자동 재진입하지 않는다.
                             self._exit(price, f"손절 {pnl_pct:+.2f}% (환율 하락 방어) · "
                                               f"프리미엄 {prem:+.2f}%")
+                            self.is_running = False
+                            self.last_decision = (f"손절 후 정지 — 환율 가정이 깨졌습니다. "
+                                                  f"재진입은 수동으로 판단하세요 "
+                                                  f"(프리미엄 {prem:+.2f}%)")
+                            self.log("WARNING", self.last_decision)
+                            self._persist()
+                            break
                         else:
                             self.last_decision = (f"김프 대기 중 (현재 {prem:+.2f}%, "
                                                   f"목표 ≥ {sell_at}%, 평가 {pnl_pct:+.2f}%)")
