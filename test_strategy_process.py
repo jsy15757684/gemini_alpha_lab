@@ -16,6 +16,27 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 os.environ.setdefault("APP_ACCESS_PASSWORD", "x" * 20)
 logging.disable(logging.CRITICAL)
 
+# ── 운영 데이터를 건드리지 않게 격리한다 ───────────────────────
+# 이 스크립트가 만드는 봇은 bot_manager.bots 에 등록되지 않는다. 그런데
+# TradingBot._persist() 는 bot_manager.persist() 를 부르고, 그게 '현재
+# 등록된 봇 전체'(= 빈 목록)를 저장한다. 운영 서버에서 그냥 실행하면
+# data/bots.json 이 빈 목록으로 덮여 가동 중인 실전 봇이 사라진다.
+# 실제로 그렇게 지워본 뒤 체결 일지로 복원해야 했다.
+#
+# 그래서 저장 경로를 임시 디렉터리로 갈아끼운 뒤에 모듈을 import 한다.
+import tempfile                                    # noqa: E402
+_SANDBOX = tempfile.mkdtemp(prefix="strategy-test-")
+
+from services import botstore                      # noqa: E402
+botstore.STORE_FILE = os.path.join(_SANDBOX, "bots.json")
+botstore._DATA_DIR = _SANDBOX
+botstore.arb_store.path = os.path.join(_SANDBOX, "arb_bots.json")
+
+from services import tradelog                      # noqa: E402
+tradelog.LOG_FILE = os.path.join(_SANDBOX, "trades.json")
+tradelog._rows.clear()
+tradelog._loaded = True        # 운영 일지를 읽지 않는다
+
 from services.arbitrage import ArbitrageBot          # noqa: E402
 from services.strategy import StrategyParams        # noqa: E402
 from services import trader                         # noqa: E402
@@ -233,3 +254,4 @@ if FAIL:
         print(f"  · {f}")
     sys.exit(1)
 print(f"전체 {STEP[0]}개 항목 통과")
+print(f"(저장은 임시 경로에만 했습니다: {_SANDBOX})")
