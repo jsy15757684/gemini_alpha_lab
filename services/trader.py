@@ -301,50 +301,79 @@ class TradingBot:
                 elif self.params.strategyType == "usdt_premium":
                     # USDT 환차익: 빗썸 USDT 가격 vs 서울외환시장 공시환율.
                     # 거래소가 하나뿐이라 '한쪽만 체결' 문제가 없다.
-                    from services.arbitrage import get_official_fx_rate
-                    fx, fx_err = get_official_fx_rate()
+                    from services.arbitrage import get_official_fx
+                    fxi = get_official_fx()
+                    fx = fxi["rate"]
                     if not fx:
                         # 환율을 모르면 프리미엄을 계산할 수 없다. 추정하지 않는다.
-                        self.last_decision = f"공시환율 조회 실패 — 판단 보류 ({fx_err})"
+                        self.last_decision = f"공시환율 조회 실패 — 판단 보류 ({fxi['error']})"
                         time.sleep(poll)
                         continue
 
                     prem = (price - fx) / fx * 100.0
                     buy_at = self.params.usdtBuyPremiumPct
                     sell_at = self.params.usdtSellPremiumPct
+                    pnl_pct = ((price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+                               if self.pos.open and self.pos.entryPrice else 0.0)
+                    fx_note = (f"환율 {fx:,.1f}원"
+                               + (f" · 기준 {fxi['asOf']}"
+                                  + (f" ({fxi['ageDays']}일 전)" if fxi["ageDays"] else "")
+                                  if fxi["stale"] else ""))
 
-                    if not self.pos.open:
+                    # 가격 기준 손절은 환율과 상관이 없다. 외환시장이 닫혀 있어도
+                    # 계속 지킨다 — 실제 손실은 환율 공시와 무관하게 쌓인다.
+                    if (self.pos.open and self.params.stopLossPct > 0
+                            and pnl_pct <= -self.params.stopLossPct):
+                        # 환율이 무너진 경우의 안전장치.
+                        #
+                        # 청산 후 봇을 멈춘다. 이 전략에서는 가격이 내리면 역프가
+                        # 더 깊어져 매수 신호가 강해지므로, 손절하고 루프를 계속
+                        # 돌리면 같은 자리에 즉시 재매수한다. 실측: 1,370원에 사서
+                        # 1,329원에 손절(-30,703원)하고 곧바로 1,329원에 재매수했다.
+                        # 손실만 확정하고 수수료를 두 번 내는 동작이다.
+                        #
+                        # 손절이 걸렸다는 것은 '환율 가정이 깨졌다' 는 뜻이고,
+                        # 그 판단은 사람이 해야 한다. 자동 재진입하지 않는다.
+                        self._exit(price, f"손절 {pnl_pct:+.2f}% (환율 하락 방어) · "
+                                          f"프리미엄 {prem:+.2f}%")
+                        self.is_running = False
+                        self.last_decision = (f"손절 후 정지 — 환율 가정이 깨졌습니다. "
+                                              f"재진입은 수동으로 판단하세요 "
+                                              f"(프리미엄 {prem:+.2f}%)")
+                        self.log("WARNING", self.last_decision)
+                        self._persist()
+                        break
+
+                    elif fxi["stale"]:
+                        # 외환시장이 닫혀 있다 (주말·공휴일). 지금 화면에 보이는
+                        # 프리미엄은 살아 있는 USDT 가격을 멈춘 환율로 나눈 값이라
+                        # 실제 괴리가 아니다.
+                        #
+                        # 실측(24개 주말): 금→월 USDT -0.242% / 공시환율 -0.222% 로
+                        # 프리미엄 자체는 -0.020%p 밖에 안 변했다. USDT 가 아직
+                        # 공시되지 않은 환율 움직임을 먼저 반영하고 있을 뿐이다.
+                        # 그 착시를 신호로 받아 매수한 17회는 다음 영업일 평균
+                        # -0.254%, 승률 12.5% 였다. 그래서 진입도 익절도 멈춘다.
+                        what = "진입·익절" if self.pos.open else "진입"
+                        self.last_decision = (
+                            f"공시환율이 멈춰 있어 {what} 판단을 보류합니다 "
+                            f"(표시 프리미엄 {prem:+.2f}%는 낡은 환율 기준이라 "
+                            f"실제 괴리가 아닙니다 · {fx_note})"
+                            + (f" · 평가 {pnl_pct:+.2f}% · 손절선은 계속 지킵니다"
+                               if self.pos.open else ""))
+
+                    elif not self.pos.open:
                         if prem <= buy_at:
                             self._enter(price, f"테더 역프 {prem:+.2f}% (매수선 {buy_at}%) · "
                                                f"공시환율 {fx:,.1f}원")
                         else:
                             self.last_decision = (f"역프 감시 중 (현재 {prem:+.2f}%, "
-                                                  f"목표 ≤ {buy_at}%, 환율 {fx:,.1f}원)")
+                                                  f"목표 ≤ {buy_at}%, {fx_note})")
+
                     else:
-                        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                         if prem >= sell_at:
                             self._exit(price, f"테더 김프 {prem:+.2f}% (매도선 {sell_at}%) · "
                                               f"손익 {pnl_pct:+.2f}%")
-                        elif self.params.stopLossPct > 0 and pnl_pct <= -self.params.stopLossPct:
-                            # 환율이 무너진 경우의 안전장치.
-                            #
-                            # 청산 후 봇을 멈춘다. 이 전략에서는 가격이 내리면 역프가
-                            # 더 깊어져 매수 신호가 강해지므로, 손절하고 루프를 계속
-                            # 돌리면 같은 자리에 즉시 재매수한다. 실측: 1,370원에 사서
-                            # 1,329원에 손절(-30,703원)하고 곧바로 1,329원에 재매수했다.
-                            # 손실만 확정하고 수수료를 두 번 내는 동작이다.
-                            #
-                            # 손절이 걸렸다는 것은 '환율 가정이 깨졌다' 는 뜻이고,
-                            # 그 판단은 사람이 해야 한다. 자동 재진입하지 않는다.
-                            self._exit(price, f"손절 {pnl_pct:+.2f}% (환율 하락 방어) · "
-                                              f"프리미엄 {prem:+.2f}%")
-                            self.is_running = False
-                            self.last_decision = (f"손절 후 정지 — 환율 가정이 깨졌습니다. "
-                                                  f"재진입은 수동으로 판단하세요 "
-                                                  f"(프리미엄 {prem:+.2f}%)")
-                            self.log("WARNING", self.last_decision)
-                            self._persist()
-                            break
                         else:
                             self.last_decision = (f"김프 대기 중 (현재 {prem:+.2f}%, "
                                                   f"목표 ≥ {sell_at}%, 평가 {pnl_pct:+.2f}%)")

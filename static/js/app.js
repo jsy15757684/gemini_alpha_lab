@@ -1154,6 +1154,32 @@ async function boot() {
       }
 
       $("arbOfficialFx").textContent = dashWon(data.officialFxRate);
+      // 이 환율이 언제 값인지 밝힌다. 주말·공휴일에는 직전 영업일 값이 그대로
+      // 남아, 24시간 도는 USDT 와 비교한 프리미엄이 착시가 된다.
+      const fxEl = $("arbFxAsOf");
+      if (fxEl) {
+        if (data.officialFxStale) {
+          const age = data.officialFxAgeDays;
+          fxEl.innerHTML = `<span class="down">⏸ 기준 ${escapeHtml(data.officialFxAsOf || "?")}`
+            + (age ? ` (${age}일 전)` : "") + ` · 외환시장 휴장</span>`;
+        } else {
+          fxEl.textContent = data.officialFxAsOf ? `기준 ${data.officialFxAsOf}` : "";
+        }
+      }
+      // 코인별 김치프리미엄도 같은 공시환율로 나눈 값이라 함께 영향을 받는다.
+      // 무전송 스프레드(빗썸↔바이낸스 가격 비)는 환율을 쓰지 않아 영향이 없다.
+      const kimEl = $("arbKimchiNote");
+      if (kimEl) {
+        kimEl.textContent = data.officialFxStale
+          ? "— 김치프리미엄 열은 멈춘 환율 기준입니다 (무전송 스프레드는 환율과 무관)" : "";
+      }
+      const premEl = $("arbUsdtPremNote");
+      if (premEl) {
+        premEl.textContent = data.officialFxStale
+          ? "환율이 멈춰 있어 실제 괴리가 아닙니다" : "";
+        premEl.className = data.officialFxStale ? "muted down" : "muted";
+        premEl.style.fontSize = "0.68rem";
+      }
       $("arbUsdtPrice").textContent = dashWon(data.bithumbUsdtPrice);
       $("arbUsdtPrem").textContent = dashPct(data.usdtPremiumPct);
       $("arbUsdtPrem").className = "metric-v " + (data.usdtPremiumPct === null ? "" : cls(data.usdtPremiumPct));

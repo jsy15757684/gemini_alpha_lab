@@ -64,7 +64,7 @@ def check(name, ok, detail=""):
 # 검증할 뿐 배포된 코드를 검증하지 못한다. 시세·환율 공급만 바꿔 끼운다.
 from services import bithumb, arbitrage          # noqa: E402
 
-_MARKET = {"price": 1380.0, "fx": 1382.0}
+_MARKET = {"price": 1380.0, "fx": 1382.0, "fxStale": False}
 
 
 def _fake_price(coin):
@@ -80,20 +80,31 @@ def _fake_candles(coin, interval, limit=200):
              "high": p, "low": p, "volume": 1.0} for i in range(60)]
 
 
-def _fake_fx():
+def _fake_fx_info():
     fx = _MARKET["fx"]
-    return (fx, "") if fx else (None, "환율 조회 실패 (시험)")
+    if not fx:
+        return {"rate": None, "asOf": None, "ageDays": None,
+                "stale": False, "error": "환율 조회 실패 (시험)"}
+    stale = _MARKET["fxStale"]
+    return {"rate": fx, "asOf": "2026-09-18", "ageDays": 2 if stale else 0,
+            "stale": stale, "error": ""}
+
+
+def _fake_fx():
+    v = _fake_fx_info()
+    return v["rate"], v["error"]
 
 
 bithumb.get_price = _fake_price
 bithumb.get_candles = _fake_candles
 arbitrage.get_official_fx_rate = _fake_fx
+arbitrage.get_official_fx = _fake_fx_info
 trader.PRICE_POLL_SEC = 0.2          # 시험을 빠르게
 
 
-def run_bot(params, price, fx, cash=1_000_000.0, ticks=6):
+def run_bot(params, price, fx, cash=1_000_000.0, ticks=6, fx_stale=False):
     """실제 TradingBot 을 가동해 주입한 시장에서 몇 틱 돌린다."""
-    _MARKET["price"], _MARKET["fx"] = price, fx
+    _MARKET["price"], _MARKET["fx"], _MARKET["fxStale"] = price, fx, fx_stale
     bot = trader.TradingBot("test", "USDT", "1h", "PAPER", cash,
                             StrategyParams.from_dict(params), None)
     bot.start()
@@ -102,9 +113,9 @@ def run_bot(params, price, fx, cash=1_000_000.0, ticks=6):
     return bot
 
 
-def feed(bot, price, fx, ticks=6):
+def feed(bot, price, fx, ticks=6, fx_stale=False):
     """가동 중인 봇에 새 시장을 주입한다."""
-    _MARKET["price"], _MARKET["fx"] = price, fx
+    _MARKET["price"], _MARKET["fx"], _MARKET["fxStale"] = price, fx, fx_stale
     for _ in range(ticks):
         time.sleep(0.25)
     return bot
@@ -138,6 +149,33 @@ b2 = run_bot(P, price=1370.0, fx=None)           # 환율 없음 (매수 조건�
 bots.append(b2)
 check("환율을 못 받으면 판단을 보류한다",
       not b2.pos.open and "환율" in b2.last_decision, b2.last_decision[:50])
+
+# ── 공시환율이 멈춰 있을 때 (주말·공휴일) ──
+# 서울외환시장은 주 5일만 열린다. 토·일에는 금요일 값이 그대로 남는데,
+# 빗썸 USDT 는 24시간 돌아서 '역프' 가 깊어 보인다. 실측(24개 주말):
+# 금→월 USDT -0.242% / 환율 -0.222% 로 프리미엄 자체는 -0.020%p 밖에
+# 안 변했다. 그 착시를 따라 매수한 17회는 다음 영업일 평균 -0.254%,
+# 승률 12.5% 였다. 그래서 낡은 환율로는 진입도 익절도 하지 않는다.
+bs = run_bot(P, price=1350.0, fx=1382.0, fx_stale=True)   # 표시 -2.32% (매수선 통과)
+bots.append(bs)
+check("환율이 멈춰 있으면 매수선을 통과해도 진입하지 않는다",
+      not bs.pos.open and "멈춰" in bs.last_decision, bs.last_decision[:60])
+
+feed(bs, price=1350.0, fx=1382.0, fx_stale=False)         # 장이 열리면
+check("환율이 살아나면 다시 진입한다", bs.pos.open,
+      f"보유 {bs.pos.units:.4f} USDT @ {bs.pos.entryPrice:,.0f}원")
+
+feed(bs, price=1420.0, fx=1382.0, fx_stale=True)          # 표시 +2.75% (매도선 통과)
+check("환율이 멈춰 있으면 매도선을 통과해도 익절하지 않는다",
+      bs.pos.open and "멈춰" in bs.last_decision, bs.last_decision[:60])
+
+bl = run_bot({**P, "stopLossPct": 2.0}, price=1370.0, fx=1382.0)
+bots.append(bl)
+entry_l = bl.pos.entryPrice
+feed(bl, price=round(entry_l * 0.97), fx=1382.0, fx_stale=True)
+check("환율이 멈춰 있어도 손절은 작동한다",
+      not bl.pos.open and any(t["action"] == "SELL" for t in bl.trade_history),
+      f"진입 {entry_l:,.0f}원 → 청산 {bl.realized_pnl:+,.0f}원")
 
 b3 = run_bot({**P, "stopLossPct": 2.0}, price=1370.0, fx=1382.0)
 bots.append(b3)

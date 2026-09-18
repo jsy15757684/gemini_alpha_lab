@@ -21,7 +21,7 @@ import json
 import uuid
 import logging
 import threading
-from datetime import datetime
+from datetime import date, datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 
@@ -40,55 +40,90 @@ _RADAR_TTL_SEC = 2.0
 _RADAR_LOCK = threading.Lock()
 
 
-_FX_CACHE: Tuple[Optional[float], str, float] = (None, "", 0.0)
+_FX_CACHE: Dict[str, Any] = {"rate": None, "asOf": None, "error": "", "at": 0.0}
 _FX_TTL_SEC = 60.0
 _FX_LOCK = threading.Lock()
 
 
-def get_official_fx_rate() -> Tuple[Optional[float], str]:
-    """서울외환시장 원/달러 기준환율.
+def seoul_today() -> "date":
+    """서울 기준 오늘 날짜. 서버는 UTC 로 돌지만 공시환율은 한국 영업일이다."""
+    return (datetime.utcnow() + timedelta(hours=9)).date()
 
-    실패하면 (None, 사유) 를 돌려준다. 예전에는 1385.0 을 대신 돌려줬는데,
-    그러면 화면은 정상으로 보이면서 김프가 통째로 틀어진다.
 
-    공시환율은 초 단위로 바뀌지 않는다. 봇 루프가 10초마다 부르므로
-    60초 캐시를 둬서 외부 호출을 줄인다.
+def get_official_fx() -> Dict[str, Any]:
+    """공시환율과 **그 값의 기준일**.
+
+    기준일이 중요하다. 서울외환시장은 주 5일만 열려서 토·일·공휴일에는
+    금요일(또는 직전 영업일) 값이 그대로 남는다. 그 값을 지금 값처럼 쓰면,
+    24시간 도는 빗썸 USDT 와 비교한 '프리미엄' 이 실제 괴리가 아니라
+    '분모가 낡아서 생긴 착시' 가 된다.
+
+    실측(2026-09, 24개 주말): 금 종가→월 종가로 빗썸 USDT 는 -0.242%,
+    공시환율은 -0.222% 움직였다. 프리미엄 자체는 -0.020%p 밖에 안 변한다.
+    즉 주말의 USDT 하락은 괴리가 아니라 **아직 공시되지 않은 환율 움직임**
+    이다. 그 착시를 신호로 받아 매수한 17회는 다음 영업일 평균 -0.254%,
+    승률 12.5% 였다.
+
+    반환: {rate, asOf, ageDays, stale, error}
+      - rate  : 환율 (실패하면 None)
+      - asOf  : 그 값의 기준일 'YYYY-MM-DD' (모르면 None)
+      - stale : 기준일이 오늘이 아니다 = 외환시장이 닫혀 있다
     """
     global _FX_CACHE
     now = time.time()
     with _FX_LOCK:
-        val, err, at = _FX_CACHE
-        if val is not None and (now - at) < _FX_TTL_SEC:
-            return val, err
+        c = dict(_FX_CACHE)
+    if c["rate"] is not None and (now - c["at"]) < _FX_TTL_SEC:
+        return _fx_view(c["rate"], c["asOf"], c["error"])
 
-    rate, err = _fetch_official_fx_rate()
-    with _FX_LOCK:
-        if rate is not None:
-            _FX_CACHE = (rate, "", time.time())
-        else:
-            # 실패해도 직전 값을 버리지 않는다. 다만 오래된 값은 쓰지 않는다.
-            val, _, at = _FX_CACHE
-            if val is not None and (now - at) < _FX_TTL_SEC * 5:
-                return val, f"{err} (직전 값 사용)"
-    return rate, err
+    rate, as_of, err = _fetch_official_fx_rate()
+    if rate is not None:
+        with _FX_LOCK:
+            _FX_CACHE = {"rate": rate, "asOf": as_of, "error": "", "at": time.time()}
+        return _fx_view(rate, as_of, "")
+
+    # 실패해도 직전 값을 버리지 않는다. 다만 오래된 값은 쓰지 않는다.
+    if c["rate"] is not None and (now - c["at"]) < _FX_TTL_SEC * 5:
+        return _fx_view(c["rate"], c["asOf"], f"{err} (직전 값 사용)")
+    return _fx_view(None, None, err)
 
 
-def _fetch_official_fx_rate() -> Tuple[Optional[float], str]:
+def _fx_view(rate: Optional[float], as_of: Optional[str], err: str) -> Dict[str, Any]:
+    age: Optional[int] = None
+    if as_of:
+        try:
+            age = (seoul_today() - date.fromisoformat(as_of)).days
+        except ValueError:
+            as_of = None
+    # 기준일을 모르면 신선하다고 믿지 않는다. 모르는 것은 낡은 것으로 다룬다.
+    stale = rate is not None and (age is None or age > 0)
+    return {"rate": rate, "asOf": as_of, "ageDays": age, "stale": stale, "error": err}
+
+
+def get_official_fx_rate() -> Tuple[Optional[float], str]:
+    """예전 호출부를 위한 얇은 래퍼 (값과 사유만 필요할 때)."""
+    v = get_official_fx()
+    return v["rate"], v["error"]
+
+
+def _fetch_official_fx_rate() -> Tuple[Optional[float], Optional[str], str]:
+    """(환율, 기준일, 사유) 를 돌려준다."""
     url = ("https://m.stock.naver.com/front-api/marketIndex/prices"
            "?category=exchange&reutersCode=FX_USDKRW")
     try:
         r = requests.get(url, timeout=4)
         if r.status_code != 200:
-            return None, f"환율 조회 실패 (HTTP {r.status_code})"
+            return None, None, f"환율 조회 실패 (HTTP {r.status_code})"
         items = r.json().get("result", [])
-        if not items:
-            return None, "환율 응답이 비어 있습니다"
+        if not isinstance(items, list) or not items:
+            return None, None, "환율 응답이 비어 있습니다"
         val = float(str(items[0].get("closePrice", "")).replace(",", ""))
         if val <= 500:
-            return None, f"환율 값이 비정상입니다 ({val})"
-        return val, ""
+            return None, None, f"환율 값이 비정상입니다 ({val})"
+        as_of = str(items[0].get("localTradedAt") or "").strip() or None
+        return val, as_of, ""
     except Exception as e:
-        return None, f"환율 조회 실패: {e}"
+        return None, None, f"환율 조회 실패: {e}"
 
 
 def fetch_binance_market_data() -> Tuple[Dict[str, Dict[str, float]], str]:
@@ -141,7 +176,8 @@ def get_arbitrage_radar(force: bool = False) -> Dict[str, Any]:
 
         errors: List[str] = []
 
-        official_fx, fx_err = get_official_fx_rate()
+        fx_info = get_official_fx()
+        official_fx, fx_err = fx_info["rate"], fx_info["error"]
         if fx_err:
             errors.append(fx_err)
 
@@ -207,6 +243,11 @@ def get_arbitrage_radar(force: bool = False) -> Dict[str, Any]:
         result = {
             "timestamp": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "officialFxRate": official_fx,
+            # 이 환율이 언제 값인지. 주말·공휴일에는 직전 영업일 값이 그대로
+            # 남아, 24시간 도는 USDT 와 비교한 프리미엄이 착시가 된다.
+            "officialFxAsOf": fx_info["asOf"],
+            "officialFxAgeDays": fx_info["ageDays"],
+            "officialFxStale": fx_info["stale"],
             "bithumbUsdtPrice": usdt_price,
             "usdtPremiumPct": round(usdt_prem_pct, 2) if usdt_prem_pct is not None else None,
             "usdtStatus": usdt_status,

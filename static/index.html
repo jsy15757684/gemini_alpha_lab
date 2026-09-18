@@ -112,6 +112,7 @@
           <div class="metric" style="border-left: 3px solid #3b82f6;">
             <div class="metric-k">공시환율 (네이버 금융)</div>
             <div class="metric-v" id="arbOfficialFx">1,385원</div>
+            <div class="muted" style="font-size:0.68rem;" id="arbFxAsOf"></div>
           </div>
           <div class="metric" style="border-left: 3px solid #10b981;">
             <div class="metric-k">빗썸 USDT 테더 가격</div>
@@ -120,6 +121,7 @@
           <div class="metric" style="border-left: 3px solid #f59e0b;">
             <div class="metric-k">테더 김프 / 역프리미엄</div>
             <div class="metric-v" id="arbUsdtPrem">0.00%</div>
+            <div class="muted" style="font-size:0.68rem;" id="arbUsdtPremNote"></div>
           </div>
           <div class="metric" style="border-left: 3px solid #8b5cf6;">
             <div class="metric-k">현재 시장 상태</div>
@@ -129,7 +131,8 @@
 
         <!-- 코인별 김프 및 무전송 괴리 테이블 -->
         <div style="margin-top: 16px;">
-          <h3 style="font-size: 0.88rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 코인별 김치프리미엄 &amp; 무전송 괴리</h3>
+          <h3 style="font-size: 0.88rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 코인별 김치프리미엄 &amp; 무전송 괴리
+            <span id="arbKimchiNote" class="down" style="font-weight:400; font-size:0.72rem;"></span></h3>
           <div class="tbl-wrap">
             <table>
               <thead>
@@ -633,6 +636,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.6.1"></script>
+<script src="/static/js/app.js?v=4.7.0"></script>
 </body>
 </html>
