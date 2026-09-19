@@ -261,7 +261,8 @@
           <div class="strategy-selector" style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
             <label class="label" style="font-weight: 600; margin-bottom: 8px;">🤖 전략 엔진 선택</label>
             <select class="input" id="botStrategyType" style="margin-bottom: 10px;">
-              <option value="raoer_infinite" selected>🔄 라오어 무한매수법 V4.0 (잔금비례 + 리버스 순환 · 최신 공식 강력 추천)</option>
+              <option value="raoer_v4" selected>🔄 라오어 무한매수법 V4.0 (잔금비례 + 리버스 순환 · 최신 공식)</option>
+              <option value="raoer_v1">🔄 라오어 무한매수법 V1.0 (고정 분할 · 원전)</option>
               <option value="raoer_vr">⚖️ 라오어 밸류리밸런싱 VR (목표 V 밴드 추종)</option>
               <option value="gemini_ai">✨ Gemini AI 전용 자동매매 (순수 AI 판단)</option>
               <option value="usdt_premium">💱 USDT 환차익 (역프 매수 → 김프 매도 · 빗썸 단독)</option>
@@ -311,13 +312,7 @@
                 💡 <b>라오어 V4.0 (최신 공식)</b>: 1회 매수금을 <code>남은 현금 ÷ 남은 회차</code>로 동적 계산하여 현금 찌꺼기가 남지 않으며, 분할 소진 시 25% 쿼터 매도 후 회차 롤백(30회차) 및 바닥 10회차 추가 매수(리버스 모드)가 자동 순환됩니다.
               </div>
               <div class="form-grid" style="margin-bottom: 8px;">
-                <div>
-                  <label class="label">무한매수 버전</label>
-                  <select class="input" id="bp_raoerVersion">
-                    <option value="v4" selected>V4.0 (최신 공식: 잔금비례 + 리버스)</option>
-                    <option value="v1">V1.0 (원전: 고정 자본 분할)</option>
-                  </select>
-                </div>
+                
                 <div>
                   <label class="label">분할 매수 횟수</label>
                   <input class="input" type="number" id="bp_splitCount" value="40" min="5" max="100" step="5">
@@ -680,6 +675,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.9.2"></script>
+<script src="/static/js/app.js?v=4.10.0"></script>
 </body>
 </html>

@@ -171,10 +171,12 @@ function readParams(prefix) {
   if (mode) p.entryMode = mode.value;
 
   if (prefix === "bp_") {
-    const stratType = $("botStrategyType") ? $("botStrategyType").value : "raoer_infinite";
-    if (stratType === "raoer_infinite") {
+    const stratType = $("botStrategyType") ? $("botStrategyType").value : "raoer_v4";
+    if (stratType === "raoer_v4" || stratType === "raoer_v1") {
+      // 엔진 메뉴가 곧 버전이다. 같은 것을 두 군데서 고르면 어긋나므로
+      // 하위 '버전' 선택 칸은 없앴다.
       p.strategyType = "raoer_infinite";
-      p.raoerVersion = $("bp_raoerVersion")?.value || "v4";
+      p.raoerVersion = stratType === "raoer_v4" ? "v4" : "v1";
       p.splitCount = parseInt($("bp_splitCount")?.value || "40", 10);
       p.targetProfitPct = parseFloat($("bp_targetProfitPct")?.value || "10.0");
       p.quarterCutPct = parseFloat($("bp_quarterCutPct")?.value || "25.0");
@@ -768,7 +770,7 @@ async function clearGeminiKey() {
 }
 
 function toggleStrategyUI() {
-  const type = $("botStrategyType")?.value || "raoer_infinite";
+  const type = $("botStrategyType")?.value || "raoer_v4";
   const raoerOpts = $("raoerBotOptions");
   const raoerVrOpts = $("raoerVrBotOptions");
   const gemOptions = $("geminiBotOptions");
@@ -815,7 +817,8 @@ function toggleStrategyUI() {
   const intervalField = $("botIntervalField");
   if (intervalField) intervalField.classList.toggle("hidden", fixed);
 
-  if (raoerOpts) raoerOpts.classList.toggle("hidden", type !== "raoer_infinite");
+  const isRaoer = (type === "raoer_v4" || type === "raoer_v1");
+  if (raoerOpts) raoerOpts.classList.toggle("hidden", !isRaoer);
   if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");
   if (gemOptions) gemOptions.classList.toggle("hidden", type !== "gemini_ai");
   // 진입 규칙·지표 설정을 쓰는 전략이 이 탭에 더는 없다. '전통 기술적 지표'
@@ -824,7 +827,7 @@ function toggleStrategyUI() {
   // 보이면 '설정했는데 반영이 안 된다' 가 되므로 항상 감춘다.
   if (quantSettings) quantSettings.classList.add("hidden");
   if (raoerAiSub && raoerUseAiCheck) {
-    raoerAiSub.classList.toggle("hidden", !raoerUseAiCheck.checked || type !== "raoer_infinite");
+    raoerAiSub.classList.toggle("hidden", !raoerUseAiCheck.checked || !isRaoer);
   }
 }
 
