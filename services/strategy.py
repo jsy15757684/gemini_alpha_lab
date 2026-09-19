@@ -26,6 +26,7 @@ class StrategyParams:
     strategyType: str = "quant_ai"
 
     # ── 라오어 무한매수법 파라미터 ──
+    raoerVersion: str = "v4"      # "v4" (최신 공식: 잔금비례 매수 + 리버스 모드) | "v1" (원전: 고정 자본 분할)
     splitCount: int = 40          # 분할 매수 횟수 (20~60, 기본 40분할)
     targetProfitPct: float = 10.0 # 무한매수 목표 익절 수익률 (+10.0%)
     quarterCutPct: float = 25.0   # 40회차 소진 시 쿼터 매도 방어율 (25%)
@@ -119,6 +120,8 @@ class StrategyParams:
         return p.validated()
 
     def validated(self) -> "StrategyParams":
+        if self.raoerVersion not in ("v4", "v1"):
+            self.raoerVersion = "v4"
         if self.raoerTrendMode not in ("off", "pause_down", "boost_up"):
             self.raoerTrendMode = "off"
         if self.strategyType not in ("quant_ai", "raoer_infinite", "raoer_vr", "usdt_premium"):
@@ -305,18 +308,21 @@ def decide_raoer_infinite(price: float, pos: Position, p: StrategyParams) -> Dec
 
         # 2) splitCount 소진 시 쿼터 매도 (25% 방어)
         if pos.turn >= p.splitCount:
+            rev_note = " (V4 리버스 모드: 쿼터 매도 후 롤백)" if p.raoerVersion == "v4" else ""
             return Decision("SELL_QUARTER",
-                            f"무한매수 {p.splitCount}분할 소진 쿼터매도 방어 ({p.quarterCutPct:.0f}% 매도, 손익 {pnl_pct:+.2f}%) [T={pos.turn}]",
+                            f"무한매수 {p.splitCount}분할 소진 쿼터매도 방어{rev_note} ({p.quarterCutPct:.0f}% 매도, 손익 {pnl_pct:+.2f}%) [T={pos.turn}]",
                             {"rule": "raoerQuarterCut", "turn": pos.turn, "pnlPct": round(pnl_pct, 2)})
 
         # 3) 분할 매수 (T+1 회차)
+        ver_tag = " [V4]" if p.raoerVersion == "v4" else ""
         return Decision("BUY_CHUNK",
-                        f"무한매수 {pos.turn + 1}/{p.splitCount}회차 분할 매수 (평단 대비 {pnl_pct:+.2f}%)",
+                        f"무한매수{ver_tag} {pos.turn + 1}/{p.splitCount}회차 분할 매수 (평단 대비 {pnl_pct:+.2f}%)",
                         {"rule": "raoerBuyChunk", "turn": pos.turn + 1, "pnlPct": round(pnl_pct, 2)})
     else:
         # 미보유 상태: 1회차 매수 시작
+        ver_tag = " [V4]" if p.raoerVersion == "v4" else ""
         return Decision("BUY_CHUNK",
-                        f"무한매수 1/{p.splitCount}회차 첫 매수 시작",
+                        f"무한매수{ver_tag} 1/{p.splitCount}회차 첫 매수 시작",
                         {"rule": "raoerFirstBuy", "turn": 1, "pnlPct": 0.0})
 
 

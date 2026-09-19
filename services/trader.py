@@ -276,7 +276,12 @@ class TradingBot:
                     # 2) 캔들 갱신 시점마다 기계적 / AI 동적 분할 매수 / 쿼터 방어
                     if cur_bar_time and cur_bar_time != self._last_bar_time:
                         self._last_bar_time = cur_bar_time
-                        base_chunk_krw = self.initial_krw / self.params.splitCount
+                        if self.params.raoerVersion == "v4":
+                            # V4.0 공식: 잔여 현금 / (N - T)
+                            rem_turns = max(1, self.params.splitCount - self.pos.turn)
+                            base_chunk_krw = self.cash / rem_turns
+                        else:
+                            base_chunk_krw = self.initial_krw / self.params.splitCount
                         sizing_mult = 1.0
                         ai_reason = ""
                         if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
@@ -306,22 +311,25 @@ class TradingBot:
 
                         chunk_krw = base_chunk_krw * sizing_mult
 
+                        version_tag = " [V4]" if self.params.raoerVersion == "v4" else ""
                         if not self.pos.open:
-                            self.last_decision = f"무한매수 1/{self.params.splitCount}회차 첫 매수{ai_reason}"
+                            self.last_decision = f"무한매수{version_tag} 1/{self.params.splitCount}회차 첫 매수{ai_reason}"
                             self._enter_chunk(price, chunk_krw, self.last_decision)
                         elif self.pos.turn < self.params.splitCount:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
-                            self.last_decision = f"무한매수 {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%){ai_reason}"
+                            self.last_decision = f"무한매수{version_tag} {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%){ai_reason}"
                             self._enter_chunk(price, chunk_krw, self.last_decision)
                         else:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
-                            self.last_decision = f"무한매수 {self.params.splitCount}회 소진 쿼터매도 방어 ({pnl_pct:+.2f}%)"
+                            rev_note = " (V4 리버스 모드: 쿼터 매도 후 롤백)" if self.params.raoerVersion == "v4" else ""
+                            self.last_decision = f"무한매수 {self.params.splitCount}회 소진 쿼터매도 방어{rev_note} ({pnl_pct:+.2f}%)"
                             self._exit_quarter(price, self.last_decision)
                     else:
                         if self.pos.open:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                             ai_badge = f" · AI 목표 +{target_tp:.1f}%" if self.params.raoerUseAi else ""
-                            self.last_decision = f"무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%{ai_badge})"
+                            ver_label = "V4 " if self.params.raoerVersion == "v4" else ""
+                            self.last_decision = f"{ver_label}무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%{ai_badge})"
                         else:
                             self.last_decision = "무한매수 다음 캔들 1회차 대기 중"
 
@@ -739,7 +747,8 @@ class TradingBot:
             self.winning_trades += 1
 
         self._record_trade("SELL_QUARTER", price, units_to_sell, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
-        self.log("SELL", f"[쿼터매도 방어] {units_to_sell:.8f} {self.coin} 매도 ({proceeds:,.0f}원 확보) | "
+        ver_tag = "[V4 리버스 모드 방어] " if self.params.raoerVersion == "v4" else "[쿼터매도 방어] "
+        self.log("SELL", f"{ver_tag}{units_to_sell:.8f} {self.coin} 매도 ({proceeds:,.0f}원 확보) | "
                          f"손익 {pnl:+,.0f}원 ({pnl_pct:+.2f}%) | 회차 조정: T={self.pos.turn} | 사유: {reason}")
         self._persist()
 

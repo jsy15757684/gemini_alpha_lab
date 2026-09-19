@@ -174,6 +174,7 @@ function readParams(prefix) {
     const stratType = $("botStrategyType") ? $("botStrategyType").value : "raoer_infinite";
     if (stratType === "raoer_infinite") {
       p.strategyType = "raoer_infinite";
+      p.raoerVersion = $("bp_raoerVersion")?.value || "v4";
       p.splitCount = parseInt($("bp_splitCount")?.value || "40", 10);
       p.targetProfitPct = parseFloat($("bp_targetProfitPct")?.value || "10.0");
       p.quarterCutPct = parseFloat($("bp_quarterCutPct")?.value || "25.0");
@@ -206,6 +207,7 @@ function readParams(prefix) {
   } else if (prefix === "tp_") {
     // 백테스트는 무한매수만 남았다 (지표 계열을 실매매에서 뺐으니 여기서도 뺐다).
     p.strategyType = "raoer_infinite";
+    p.raoerVersion = $("tp_raoerVersion")?.value || "v4";
     p.splitCount = parseInt($("tp_splitCount")?.value || "40", 10);
     p.targetProfitPct = parseFloat($("tp_targetProfitPct")?.value || "10.0");
     p.quarterCutPct = parseFloat($("tp_quarterCutPct")?.value || "25.0");
@@ -300,10 +302,11 @@ function botCard(b) {
 
   let stratBadge = "";
   if (b.strategyType === "raoer_infinite") {
+    const vTag = (b.params?.raoerVersion || "v4").toUpperCase();
     if (b.params?.raoerUseAi) {
-      stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:#60a5fa; border:1px solid rgba(59,130,246,.4);">✨ AI 스마트 무한매수 (T=${b.turn||0}/${b.splitCount||40})</span>`;
+      stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:#60a5fa; border:1px solid rgba(59,130,246,.4);">✨ AI 무한매수 ${vTag} (T=${b.turn||0}/${b.splitCount||40})</span>`;
     } else {
-      stratBadge = `<span class="badge" style="background:rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(16,185,129,.4);">🔄 무한매수 (T=${b.turn||0}/${b.splitCount||40})</span>`;
+      stratBadge = `<span class="badge" style="background:rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(16,185,129,.4);">🔄 무한매수 ${vTag} (T=${b.turn||0}/${b.splitCount||40})</span>`;
     }
   } else if (b.strategyType === "raoer_vr") {
     stratBadge = `<span class="badge" style="background:rgba(245,158,11,.18); color:#fbbf24; border:1px solid rgba(245,158,11,.4);">⚖️ 밸류리밸런싱 VR</span>`;
@@ -483,7 +486,8 @@ async function runBacktest() {
 // 실제로는 무한매수가 맞게 돌았는데 화면만 다른 전략처럼 보였다.
 function btStrategyLabel(p) {
   if (p?.strategyType === "raoer_infinite") {
-    return `무한매수 ${p.splitCount}분할 · 목표 익절 +${p.targetProfitPct}% · `
+    const vTag = (p.raoerVersion || "v4").toUpperCase();
+    return `무한매수 ${vTag} · ${p.splitCount}분할 · 목표 익절 +${p.targetProfitPct}% · `
       + `쿼터방어 ${p.quarterCutPct}%`
       + (p.raoerTrendMode && p.raoerTrendMode !== "off" ? ` · 추세 ${p.raoerTrendMode}` : "");
   }

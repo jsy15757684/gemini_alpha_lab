@@ -301,7 +301,17 @@
 
             <!-- 라오어 무한매수 옵션 -->
             <div id="raoerBotOptions" style="margin-top: 10px;">
+              <div class="alert alert-info small" style="margin-bottom: 10px; background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: #93c5fd; padding: 8px 12px; border-radius: 6px;">
+                💡 <b>라오어 V4.0 (최신 공식)</b>: 1회 매수금을 <code>남은 현금 ÷ 남은 회차</code>로 동적 계산하여 현금 찌꺼기가 남지 않으며, 분할 소진 시 25% 쿼터 매도 후 회차 롤백(30회차) 및 바닥 10회차 추가 매수(리버스 모드)가 자동 순환됩니다.
+              </div>
               <div class="form-grid" style="margin-bottom: 8px;">
+                <div>
+                  <label class="label">무한매수 버전</label>
+                  <select class="input" id="bp_raoerVersion">
+                    <option value="v4" selected>V4.0 (최신 공식: 잔금비례 + 리버스)</option>
+                    <option value="v1">V1.0 (원전: 고정 자본 분할)</option>
+                  </select>
+                </div>
                 <div>
                   <label class="label">분할 매수 횟수</label>
                   <input class="input" type="number" id="bp_splitCount" value="40" min="5" max="100" step="5">
@@ -555,6 +565,13 @@
 
           <div id="raoerBtOptions">
             <div class="form-grid">
+              <div>
+                <label class="label">무한매수 버전</label>
+                <select class="input" id="tp_raoerVersion">
+                  <option value="v4" selected>V4.0 (최신 공식)</option>
+                  <option value="v1">V1.0 (원전)</option>
+                </select>
+              </div>
               <div>
                 <label class="label">분할 매수 횟수</label>
                 <input class="input" type="number" id="tp_splitCount" value="40" min="5" max="100" step="5">

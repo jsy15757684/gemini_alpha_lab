@@ -314,6 +314,18 @@ check("쿼터매도가 남은 포지션의 원가를 부풀리지 않는다",
       rq.pos.totalInvested <= rq.pos.units * rq.pos.entryPrice * 1.02,
       f"원가 {rq.pos.totalInvested:,.0f}원 · 평가 {rq.pos.units * rq.pos.entryPrice:,.0f}원")
 
+# V4 리버스 모드: 쿼터매도로 확보한 현금으로 다음 봉에서 추가 매수 순환
+cash_after_quarter = rq.cash
+units_after_quarter = rq.pos.units
+next_bar(rq, rq.pos.entryPrice * 0.98)
+check("V4 리버스 모드: 쿼터매도로 확보한 현금으로 바닥 추가 매수 가동",
+      rq.pos.units > units_after_quarter and rq.pos.turn == turn_at_full,
+      f"T={rq.pos.turn} · 보유 {units_after_quarter:.6f} → {rq.pos.units:.6f}")
+check("V4 잔금 비례 공식: 마지막 회차 매수 시 현금 잔여 찌꺼기가 5,000원 미만이다",
+      rq.cash < 5000.0, f"잔여 현금 {rq.cash:,.0f}원")
+check("라오어 기본 버전이 V4다", StrategyParams().raoerVersion == "v4", StrategyParams().raoerVersion)
+check("이상한 버전값은 v4로 교정한다", StrategyParams.from_dict({"raoerVersion": "unknown"}).raoerVersion == "v4")
+
 print()
 print("── 제거한 전략이 되살아나지 않는다 ──")
 # '전통 기술적 지표' 와 '퀀트 하이브리드' 를 화면에서 뺐다. 하이브리드는

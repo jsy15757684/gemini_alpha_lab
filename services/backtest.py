@@ -108,7 +108,11 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
 
             # 2) 분할 매수 (T < splitCount) 또는 쿼터 방어
             if not pos.open or pos.turn < p.splitCount:
-                chunk_krw = initial_krw / p.splitCount
+                if p.raoerVersion == "v4":
+                    rem_turns = max(1, p.splitCount - pos.turn)
+                    chunk_krw = cash / rem_turns
+                else:
+                    chunk_krw = initial_krw / p.splitCount
 
                 # 추세 조절. 판정 기준은 strategy.py 에 적어둔 대로 고정이다.
                 trend = _trend_of(bars, i, p)
@@ -139,6 +143,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
                 if units_to_sell > 0:
                     proceeds = units_to_sell * price * (1 - fee)
                     pnl = proceeds - (units_to_sell * pos.entryPrice)
+                    rev_label = " · V4 리버스 모드" if p.raoerVersion == "v4" else ""
                     trades.append({
                         "entryTime": entry_time, "exitTime": bar["time"],
                         "entryPrice": round(pos.entryPrice, 2), "exitPrice": round(price, 2),
@@ -146,7 +151,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
                         "returnPct": round((price - pos.entryPrice) / pos.entryPrice * 100, 2),
                         "pnlKrw": round(pnl, 0),
                         "entryReason": f"무한매수 {p.splitCount}회차 도달",
-                        "exitReason": f"소진 방어 ({p.quarterCutPct:.0f}% 쿼터매도)",
+                        "exitReason": f"소진 방어 ({p.quarterCutPct:.0f}% 쿼터매도{rev_label})",
                         "rule": "raoerQuarterCut",
                         "result": "WIN" if pnl > 0 else "LOSS",
                     })
