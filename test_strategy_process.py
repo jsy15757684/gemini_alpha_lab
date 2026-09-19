@@ -214,6 +214,41 @@ time.sleep(0.5)
 #   6) 데이터 없으면 판단 보류
 
 print()
+print("── USDT 환차익 스왑 시뮬레이터 (usdt_swap) ──")
+# 봇 엔진(usdt_premium)과 같은 주말 규칙을 지켜야 한다. 두 구현이 같은
+# 현상을 다르게 다루면 어느 쪽 숫자를 믿어야 하는지 알 수 없어진다.
+FX_SW = 1388.0
+
+
+def sw_radar(prem, stale, as_of="2026-09-18", age=1):
+    return {"usdtPremiumPct": prem, "officialFxStale": stale,
+            "officialFxAsOf": as_of if stale else None,
+            "officialFxAgeDays": age if stale else 0}
+
+
+def mk_sw(cap=10_000_000.0):
+    return ArbitrageBot("t", "usdt_swap", "USDT", cap,
+                        {"usdtBuyThreshold": -0.8, "usdtSellThreshold": 2.0})
+
+w = mk_sw()
+w._step_usdt_swap(sw_radar(-1.15, True), FX_SW, 1372.0)   # 매수선 통과 but 환율 멈춤
+check("환율이 멈춰 있으면 시뮬레이터도 가상 매수하지 않는다",
+      w.coin_units_domestic == 0 and "멈춰" in w.last_status, w.last_status[:58])
+
+w._step_usdt_swap(sw_radar(-1.15, False), FX_SW, 1372.0)  # 장이 열리면
+check("환율이 살아나면 가상 매수한다", w.coin_units_domestic > 0,
+      f"보유 {w.coin_units_domestic:,.2f} USDT")
+
+w._step_usdt_swap(sw_radar(2.5, True), FX_SW, 1425.0)     # 매도선 통과 but 환율 멈춤
+check("환율이 멈춰 있으면 가상 익절도 하지 않는다",
+      w.coin_units_domestic > 0 and "멈춰" in w.last_status, w.last_status[:58])
+
+w._step_usdt_swap(sw_radar(2.5, False), FX_SW, 1425.0)    # 장이 열리면
+check("환율이 살아나면 가상 익절한다",
+      w.coin_units_domestic == 0 and w.realized_pnl != 0,
+      f"실현 {w.realized_pnl:+,.0f}원")
+
+print()
 print("── 무전송 양방향 (spatial_dual) ──")
 USDT = 1380.0
 BN = 76000.0

@@ -376,6 +376,28 @@ class ArbitrageBot:
             self.last_status = "테더 프리미엄 계산 불가 — 판단 보류"
             return
 
+        # 봇 엔진(usdt_premium)과 같은 규칙을 지킨다. 두 구현이 같은 현상을
+        # 다르게 다루면 어느 쪽 숫자를 믿어야 하는지 알 수 없어진다.
+        #
+        # 서울외환시장은 주 5일만 열려서 토·일·공휴일에는 직전 영업일 값이
+        # 그대로 남는다. 24시간 도는 빗썸 USDT 와 비교한 프리미엄은 그때
+        # 실제 괴리가 아니라 분모가 낡아서 생기는 착시다. 실측(24개 주말):
+        # 금→월 USDT -0.242% / 공시환율 -0.222% 로 프리미엄 자체는
+        # -0.020%p 밖에 안 변한다. 그 착시를 신호로 받아 매수한 17회는
+        # 다음 영업일 평균 -0.254%, 승률 12.5% 였다.
+        #
+        # 무전송 양방향(spatial_dual)은 빗썸÷바이낸스 가격비만 보고 환율을
+        # 쓰지 않으므로 이 게이트를 걸지 않는다.
+        if radar.get("officialFxStale"):
+            as_of = radar.get("officialFxAsOf") or "?"
+            age = radar.get("officialFxAgeDays")
+            self.last_status = (
+                f"공시환율이 멈춰 있어 판단을 보류합니다 "
+                f"(표시 프리미엄 {prem_pct:+.2f}%는 낡은 환율 기준이라 실제 괴리가 "
+                f"아닙니다 · 기준 {as_of}"
+                + (f", {age}일 전" if age else "") + " · 외환시장 휴장)")
+            return
+
         buy_at = float(self.config.get("usdtBuyThreshold", -0.8))
         sell_at = float(self.config.get("usdtSellThreshold", 2.0))
 

@@ -983,6 +983,23 @@ async function loadTradeHistory() {
   }
 }
 
+// 체결사유에서 AI 설명 본문을 잘라낸다.
+//
+// 저장된 사유는 이렇게 길다:
+//   무한매수 27/40회차 매수 (평단 대비 +0.76%) [AI 1.0x 배수: RSI 46.9 및
+//   MACD 음수권 회복 흐름의 단기 기술적 반등 국면으로, 표준 1.0배 매수
+//   유지 및 빠른 현금화를 위한 목표 익절률 7.5% 설정]
+//
+// 일지 표에서는 '[AI 1.0x 배수]' 까지만 보여준다. 한 줄에 열이 10개라
+// 설명 본문이 들어가면 나머지 숫자를 못 읽는다. 원문은 지우지 않는다 —
+// 장부에 그대로 남고, 칸에 마우스를 올리면 전문이 뜨고, CSV 에도 전문이
+// 나간다. 봇 로그에도 남아 있다.
+function shortReason(reason) {
+  const r = String(reason || "");
+  // '[AI 0.5x 배수: ...]' → '[AI 0.5x 배수]'  (콜론 뒤를 버린다)
+  return r.replace(/\[(AI\s*[^\]:]*?)\s*:\s*[^\]]*\]/g, "[$1]");
+}
+
 function renderTradeRecords() {
   const host = $("tradesTableBody");
   if (!host) return;
@@ -1029,7 +1046,7 @@ function renderTradeRecords() {
         <td>${won(t.amountKrw)}원</td>
         <td class="${pnl != null ? cls(pnl) : ''}">${pnl != null ? (pnl >= 0 ? '+' : '') + won(pnl) + '원' : '-'}</td>
         <td class="${pnlPct != null ? cls(pnlPct) : ''}">${pnlPct != null ? pct(pnlPct) : '-'}</td>
-        <td class="reason">${t.reason || '-'}</td>
+        <td class="reason" title="${escapeHtml(t.reason || '')}">${escapeHtml(shortReason(t.reason)) || '-'}</td>
       </tr>
     `;
   }).join("");

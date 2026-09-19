@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.5.10">
+<link rel="stylesheet" href="/static/css/style.css?v=4.7.2">
 </head>
 <body>
 
@@ -381,7 +381,12 @@
             먼저 백테스트와 모의투자로 전략을 확인하세요.
           </div>
 
-          <button class="btn btn-primary btn-block" id="deployBtn">봇 가동</button>
+          <!-- 전략별 경고문이 길어서 이 버튼이 화면 밖으로 밀렸다. 실제로
+               '띄웠다' 고 했는데 서버에는 배포 요청이 오지 않은 일이 있었다.
+               경고문은 그대로 다 보여주고, 버튼만 화면에 붙여 둔다. -->
+          <div class="deploy-actions">
+            <button class="btn btn-primary btn-block" id="deployBtn">봇 가동</button>
+          </div>
           <div class="alert alert-error hidden" id="deployError"></div>
         </div>
 
@@ -636,6 +641,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.7.1"></script>
+<script src="/static/js/app.js?v=4.7.2"></script>
 </body>
 </html>
