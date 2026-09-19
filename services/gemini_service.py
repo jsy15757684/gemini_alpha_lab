@@ -45,6 +45,11 @@ class GeminiKeyStore:
         self._load_disk()
 
     def _load_dotenv_if_needed(self):
+        # server.py 와 별개로 .env 를 직접 읽는 두 번째 경로다. 그래서
+        # APP_SKIP_DOTENV 를 여기서도 지켜야 한다 — 안 그러면 '키 없이 띄웠다'
+        # 고 믿는 격리 실행에 Gemini 키만 살아서 들어온다 (실제로 그랬다).
+        if (os.getenv("APP_SKIP_DOTENV") or "").strip().lower() in ("1", "true", "yes", "on"):
+            return
         if not self._env_key:
             env_path = os.path.join(os.path.dirname(CURRENT_DIR), ".env")
             if os.path.exists(env_path):

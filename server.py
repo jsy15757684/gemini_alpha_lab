@@ -23,8 +23,16 @@ CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, CURRENT_DIR)
 
 # .env 파일이 있으면 환경변수로 자동 로드 (직접 실행 및 supervisor 대비)
+#
+# APP_SKIP_DOTENV=1 이면 읽지 않는다. 화면 확인용 로컬 인스턴스를 띄울 때
+# 실계좌 키가 섞여 들어가는 것을 막기 위한 장치다. 호출부가 미리
+# os.environ 에서 키를 지워도 여기서 .env 를 다시 주입하면 무의미해진다
+# — 실제로 그렇게 실계좌 인증 호출이 한 번 나갔다(화이트리스트가 막았다).
+_skip_dotenv = (os.getenv("APP_SKIP_DOTENV") or "").strip().lower() in ("1", "true", "yes", "on")
 _env_file = os.path.join(CURRENT_DIR, ".env")
-if os.path.exists(_env_file):
+if _skip_dotenv:
+    print("APP_SKIP_DOTENV=1 — .env 를 읽지 않습니다 (격리 실행)")
+elif os.path.exists(_env_file):
     try:
         with open(_env_file, "r", encoding="utf-8") as _f:
             for _line in _f:
