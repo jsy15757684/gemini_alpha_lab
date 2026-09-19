@@ -809,7 +809,10 @@ function toggleStrategyUI() {
   if (raoerOpts) raoerOpts.classList.toggle("hidden", type !== "raoer_infinite");
   if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");
   if (gemOptions) gemOptions.classList.toggle("hidden", !(type === "gemini_ai" || type === "gemini_hybrid"));
-  if (quantSettings) quantSettings.classList.toggle("hidden", !(type === "technical" || type === "gemini_hybrid" || type === "gemini_ai"));
+  // 지표 설정은 Gemini 계열에만 쓴다. '전통 기술적 지표 전략' 단독 선택지는
+  // 없앴다 — 진입조건 36개 조합 중 단순보유(+13.05%)를 이긴 것이 없었다.
+  // 지표 엔진 자체는 남아 있다 (하이브리드가 AI 승인 전에 이걸로 걸러낸다).
+  if (quantSettings) quantSettings.classList.toggle("hidden", !(type === "gemini_hybrid" || type === "gemini_ai"));
   if (raoerAiSub && raoerUseAiCheck) {
     raoerAiSub.classList.toggle("hidden", !raoerUseAiCheck.checked || type !== "raoer_infinite");
   }
