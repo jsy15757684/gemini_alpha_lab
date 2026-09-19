@@ -214,6 +214,68 @@ time.sleep(0.5)
 #   6) 데이터 없으면 판단 보류
 
 print()
+print("── 무한매수 추세 조절 (raoerTrendMode) ──")
+# 판정 기준은 재서 고르지 않았다. 통상적 정의를 그대로 쓴다:
+#   상승 = 종가 > 30봉 평균 && 평균선 상승
+#   하락 = 종가 < 30봉 평균 && 평균선 하락
+from services import backtest as _bt                      # noqa: E402
+from services.strategy import compute_indicators as _ci   # noqa: E402
+
+
+def _bars(seq):
+    P = StrategyParams.from_dict({"strategyType": "raoer_infinite", "slowMa": 5})
+    return _ci([{"time": i * 3600_000, "open": p, "close": p, "high": p,
+                 "low": p, "volume": 1.0} for i, p in enumerate(seq)], P), P
+
+
+up_bars, P5 = _bars([100 + i * 2 for i in range(30)])          # 계속 오름
+down_bars, _ = _bars([200 - i * 2 for i in range(30)])          # 계속 내림
+flat_bars, _ = _bars([100.0] * 30)                               # 추세 없음 (종가 = 평균)
+
+check("상승추세를 상승으로 읽는다", _bt._trend_of(up_bars, len(up_bars) - 1, P5) == "up",
+      _bt._trend_of(up_bars, len(up_bars) - 1, P5))
+check("하락추세를 하락으로 읽는다", _bt._trend_of(down_bars, len(down_bars) - 1, P5) == "down",
+      _bt._trend_of(down_bars, len(down_bars) - 1, P5))
+check("추세가 없으면 중립으로 둔다", _bt._trend_of(flat_bars, len(flat_bars) - 1, P5) == "flat",
+      _bt._trend_of(flat_bars, len(flat_bars) - 1, P5))
+
+_C = [{"time": i * 3600_000, "open": p, "close": p, "high": p, "low": p, "volume": 1.0}
+      for i, p in enumerate([100 + i * 2 for i in range(80)])]
+
+
+def _bt_run(mode):
+    return _bt.run("BTC", "1h", {"strategyType": "raoer_infinite", "splitCount": 20,
+                                 "targetProfitPct": 10.0, "quarterCutPct": 25.0,
+                                 "raoerUseAi": False, "raoerTrendMode": mode,
+                                 "raoerMaxMultiplier": 2.0, "slowMa": 5}, candles=_C)
+
+
+off_r, boost_r = _bt_run("off"), _bt_run("boost_up")
+check("상승장에서 boost_up 이 더 많이 담는다",
+      boost_r["totalReturnPct"] > off_r["totalReturnPct"],
+      f"off {off_r['totalReturnPct']:+.2f}% → boost {boost_r['totalReturnPct']:+.2f}%")
+
+_D = [{"time": i * 3600_000, "open": p, "close": p, "high": p, "low": p, "volume": 1.0}
+      for i, p in enumerate([200 - i * 2 for i in range(80)])]
+pause_r = _bt.run("BTC", "1h", {"strategyType": "raoer_infinite", "splitCount": 20,
+                                "targetProfitPct": 10.0, "quarterCutPct": 25.0,
+                                "raoerUseAi": False, "raoerTrendMode": "pause_down",
+                                "slowMa": 5}, candles=_D)
+off_d = _bt.run("BTC", "1h", {"strategyType": "raoer_infinite", "splitCount": 20,
+                              "targetProfitPct": 10.0, "quarterCutPct": 25.0,
+                              "raoerUseAi": False, "raoerTrendMode": "off",
+                              "slowMa": 5}, candles=_D)
+check("하락장에서 pause_down 이 매수를 줄인다",
+      pause_r["totalTrades"] <= off_d["totalTrades"]
+      and pause_r["maxDrawdownPct"] <= off_d["maxDrawdownPct"],
+      f"낙폭 {off_d['maxDrawdownPct']:.2f}% → {pause_r['maxDrawdownPct']:.2f}%")
+
+check("기본값은 off 다 (켜는 것은 사용자의 선택)",
+      StrategyParams().raoerTrendMode == "off", StrategyParams().raoerTrendMode)
+check("이상한 값은 off 로 교정한다",
+      StrategyParams.from_dict({"raoerTrendMode": "무엇"}).raoerTrendMode == "off", "off")
+
+print()
 print("── USDT 환차익 스왑 시뮬레이터 (usdt_swap) ──")
 # 봇 엔진(usdt_premium)과 같은 주말 규칙을 지켜야 한다. 두 구현이 같은
 # 현상을 다르게 다루면 어느 쪽 숫자를 믿어야 하는지 알 수 없어진다.

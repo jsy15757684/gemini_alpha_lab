@@ -20,6 +20,26 @@ from services.strategy import Decision, Position, StrategyParams, compute_indica
 logger = logging.getLogger(__name__)
 
 
+def _trend_of(bars: List[Dict[str, Any]], i: int, p) -> str:
+    """상승/하락/중립. 문턱을 재서 고르지 않는다 — 통상적 정의 그대로 쓴다.
+
+    상승 = 종가가 장기MA 위 && 장기MA 가 직전보다 높다
+    하락 = 종가가 장기MA 아래 && 장기MA 가 직전보다 낮다
+    """
+    if i < 1:
+        return "flat"
+    ma = bars[i].get("smaSlow")
+    ma_prev = bars[i - 1].get("smaSlow")
+    if ma is None or ma_prev is None:
+        return "flat"
+    close = bars[i]["close"]
+    if close > ma and ma > ma_prev:
+        return "up"
+    if close < ma and ma < ma_prev:
+        return "down"
+    return "flat"
+
+
 def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
         initial_krw: float = 1_000_000.0,
         candles: List[Dict[str, Any]] = None,
@@ -89,6 +109,17 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
             # 2) 분할 매수 (T < splitCount) 또는 쿼터 방어
             if not pos.open or pos.turn < p.splitCount:
                 chunk_krw = initial_krw / p.splitCount
+
+                # 추세 조절. 판정 기준은 strategy.py 에 적어둔 대로 고정이다.
+                trend = _trend_of(bars, i, p)
+                if p.raoerTrendMode == "pause_down" and trend == "down":
+                    equity.append({"time": bar["time"],
+                                   "value": round(cash + pos.units * price, 0),
+                                   "close": round(price, 2)})
+                    continue
+                if p.raoerTrendMode == "boost_up" and trend == "up":
+                    chunk_krw *= p.raoerMaxMultiplier
+
                 invest = min(cash, chunk_krw)
                 if invest >= 5000:
                     new_units = invest * (1 - fee) / price

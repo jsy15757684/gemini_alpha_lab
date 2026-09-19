@@ -34,6 +34,16 @@ class StrategyParams:
     raoerMaxProfitPct: float = 20.0   # 강세장 최대 익절선 (%)
     raoerMaxMultiplier: float = 2.0   # 저점 과매도 시 집중 매수 최대 배수 (1.5~2.5배)
 
+    # 추세에 따라 회차 매수를 조절한다. 기준은 재는 것이 아니라 먼저 정했다 —
+    # 과거 데이터로 문턱을 고르면 그 순간 과최적화다(192조합 실험이 보여줬다).
+    #   상승추세 = 종가가 slowMa(기본 30봉) 위 && slowMa 가 직전보다 높다
+    #   하락추세 = 종가가 slowMa 아래 && slowMa 가 직전보다 낮다
+    #   그 외 = 중립
+    # "off"        : 추세를 보지 않는다 (라오어 원전, 기본값)
+    # "pause_down" : 하락추세면 새 회차를 쉰다 (떨어지는 칼날 회피)
+    # "boost_up"   : 상승추세면 회차 금액을 raoerMaxMultiplier 배로 (급등장 열세 대응)
+    raoerTrendMode: str = "off"
+
     # ── 라오어 밸류 리밸런싱 (VR) 파라미터 ──
     vrGradient: float = 10.0      # VR 기울기 G (10~20)
     vrBandPct: float = 15.0       # VR 리밸런싱 밴드 (±15%)
@@ -107,6 +117,8 @@ class StrategyParams:
         return p.validated()
 
     def validated(self) -> "StrategyParams":
+        if self.raoerTrendMode not in ("off", "pause_down", "boost_up"):
+            self.raoerTrendMode = "off"
         if self.strategyType not in ("quant_ai", "raoer_infinite", "raoer_vr", "usdt_premium"):
             self.strategyType = "quant_ai"
         self.splitCount = max(5, min(100, self.splitCount))

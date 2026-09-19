@@ -18,7 +18,7 @@ import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from services import bithumb, jsonfile, botstore, tradelog
+from services import backtest, bithumb, jsonfile, botstore, tradelog
 from services import gemini_service
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 from services.envconf import env_float, env_int
@@ -276,6 +276,27 @@ class TradingBot:
                         if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
                             sizing_mult = self.last_ai_analysis.get("sizingMultiplier", 1.0)
                             ai_reason = f" [AI {sizing_mult}x 배수: {self.last_ai_analysis.get('reason', '')}]"
+
+                        # 추세 조절. 판정 기준은 strategy.py 에 적어둔 대로 고정이고,
+                        # 백테스트(backtest._trend_of)와 같은 정의를 쓴다.
+                        #
+                        # 실측(검증 구간 288조합 · 국면 112구간): boost_up 은 급등장에서
+                        # +2.07%p 벌고 급락장에서 -2.39%p 잃는다. 낙폭도 급락장에서
+                        # 14.78% → 17.74% 로 커진다. 공짜 개선이 아니라 국면에 건 방향
+                        # 베팅이라, 기본값은 off 다.
+                        trend = ""
+                        if self.params.raoerTrendMode != "off":
+                            trend = backtest._trend_of(bars, i, self.params)
+                            if self.params.raoerTrendMode == "pause_down" and trend == "down":
+                                self.last_decision = (
+                                    f"하락추세라 {self.pos.turn + 1}회차 매수를 쉽니다 "
+                                    f"(종가 {price:,.0f} < {self.params.slowMa}봉 평균, 평균선 하락){ai_reason}")
+                                self._persist()
+                                time.sleep(poll)
+                                continue
+                            if self.params.raoerTrendMode == "boost_up" and trend == "up":
+                                sizing_mult *= self.params.raoerMaxMultiplier
+                                ai_reason += f" [상승추세 {self.params.raoerMaxMultiplier}x]"
 
                         chunk_krw = base_chunk_krw * sizing_mult
 

@@ -181,6 +181,7 @@ function readParams(prefix) {
       p.raoerMinProfitPct = parseFloat($("bp_raoerMinProfitPct")?.value || "5.0");
       p.raoerMaxProfitPct = parseFloat($("bp_raoerMaxProfitPct")?.value || "20.0");
       p.raoerMaxMultiplier = parseFloat($("bp_raoerMaxMultiplier")?.value || "2.0");
+      p.raoerTrendMode = $("bp_raoerTrendMode")?.value || "off";
     } else if (stratType === "raoer_vr") {
       p.strategyType = "raoer_vr";
       p.vrGradient = parseFloat($("bp_vrGradient")?.value || "10.0");

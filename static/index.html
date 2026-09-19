@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.7.2">
+<link rel="stylesheet" href="/static/css/style.css?v=4.8.0">
 </head>
 <body>
 
@@ -316,6 +316,29 @@
                   <label class="label">쿼터 방어 매도률 (%)</label>
                   <input class="input" type="number" id="bp_quarterCutPct" value="25" min="5" max="50" step="5">
                 </div>
+                <div>
+                  <label class="label">추세 조절</label>
+                  <select class="input" id="bp_raoerTrendMode">
+                    <option value="off" selected>사용 안 함 (라오어 원전)</option>
+                    <option value="boost_up">상승추세면 2배 매수</option>
+                    <option value="pause_down">하락추세면 회차 쉼</option>
+                  </select>
+                </div>
+              </div>
+
+              <div class="alert alert-warn small" id="raoerTrendNote" style="margin-top:8px;">
+                <b>추세 조절은 공짜 개선이 아닙니다 — 국면에 거는 방향 베팅입니다.</b><br>
+                상승/하락 판정은 <b>종가와 30봉 평균선</b>으로 합니다(과최적화를 피하려고
+                문턱을 재서 고르지 않고 통상적 정의를 그대로 씁니다).<br>
+                검증 구간 288조합 실측 — <b>상승추세 2배 매수</b>: 수익률 +1.78%p,
+                <b>최대낙폭도 +1.70%p</b> (조합의 77%에서 수익률 개선).
+                국면별로 보면 급등장 +2.07%p / 급락장 <b>-2.39%p</b>, 급락장 낙폭
+                14.78% → <b>17.74%</b> 입니다. 측정 구간이 상승장에 치우쳐(112구간 중
+                급등 39·급락 24) 합계가 플러스로 나온 것이고,
+                <b>하락장이 길면 부호가 뒤집힙니다.</b><br>
+                <b>하락추세면 회차 쉼</b>은 수익률을 <b>-1.85%p 깎았고</b> 벤치마크를
+                이긴 조합이 0%였습니다(낙폭은 -0.77%p 줄었습니다). 낙폭만 줄이려는
+                경우가 아니면 권하지 않습니다.
               </div>
 
               <!-- AI 스마트 무한매수 토글 -->
@@ -641,6 +664,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.7.2"></script>
+<script src="/static/js/app.js?v=4.8.0"></script>
 </body>
 </html>
