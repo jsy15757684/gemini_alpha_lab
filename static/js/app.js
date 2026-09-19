@@ -264,6 +264,7 @@ async function deployBot() {
   const btn = $("deployBtn");
   setAlert($("deployError"), null);
   const mode = $("botMode").value;
+  const isUsdt = $("botStrategyType")?.value === "usdt_premium";
   if (mode === "LIVE" && !confirm(
       "실전 모드로 가동합니다.\n\n빗썸 계좌에서 실제 원화로 주문이 나가며 손실이 발생할 수 있습니다.\n계속하시겠습니까?"))
     return;
@@ -272,8 +273,10 @@ async function deployBot() {
     await api("/api/bot/deploy", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        coin: ($("botStrategyType")?.value === "usdt_premium") ? "USDT" : $("botCoin").value,
-        interval: $("botInterval").value, mode,
+        coin: isUsdt ? "USDT" : $("botCoin").value,
+        // 캔들을 안 쓰는 전략이라 화면에서 칸을 숨겼다. 서버는 유효한 값을
+        // 요구하므로 고정값을 보낸다 (캔들 갱신 주기로만 쓰인다).
+        interval: isUsdt ? "1h" : $("botInterval").value, mode,
         capitalKrw: parseFloat($("botCapital").value), params: readParams("bp_"),
       }),
     });
@@ -768,13 +771,39 @@ function toggleStrategyUI() {
 
   // USDT 환차익은 대상이 USDT 로 고정된다. 다른 코인을 고른 채로
   // 가동하면 엉뚱한 종목에 환차익 로직이 걸린다.
+  //
+  // USDT 는 자동매매 종목 목록(/api/coins)에 없다 — 차익거래 전용이라
+  // 빼 뒀다. 그래서 칸을 잠그기만 하면 라벨은 'USDT 고정' 인데 화면에는
+  // 비트코인이 그대로 남아, 무엇이 걸리는지 알 수 없었다.
+  // 이 전략을 고를 때만 USDT 를 넣어 실제로 보여주고, 빠져나가면 되돌린다.
   const coinSel = $("botCoin");
+  const fixed = type === "usdt_premium";
   if (coinSel) {
-    const fixed = type === "usdt_premium";
+    let usdtOpt = coinSel.querySelector('option[value="USDT"]');
+    if (fixed) {
+      if (!usdtOpt) {
+        usdtOpt = document.createElement("option");
+        usdtOpt.value = "USDT";
+        usdtOpt.textContent = "테더 (USDT)";
+        coinSel.appendChild(usdtOpt);
+      }
+      if (coinSel.value !== "USDT") {
+        coinSel.dataset.prevCoin = coinSel.value;
+        coinSel.value = "USDT";
+      }
+    } else if (usdtOpt) {
+      usdtOpt.remove();
+      coinSel.value = coinSel.dataset.prevCoin || coinSel.options[0]?.value || "";
+    }
     coinSel.disabled = fixed;
     const label = coinSel.closest("div")?.querySelector(".label");
     if (label) label.textContent = fixed ? "대상 코인 (USDT 고정)" : "코인";
   }
+
+  // 이 전략은 캔들을 판단에 쓰지 않는다 — 현재가와 공시환율만 본다.
+  // 고를 이유가 없는 칸을 남겨두면 '설정했는데 반영이 안 된다' 로 읽힌다.
+  const intervalField = $("botIntervalField");
+  if (intervalField) intervalField.classList.toggle("hidden", fixed);
 
   if (raoerOpts) raoerOpts.classList.toggle("hidden", type !== "raoer_infinite");
   if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");
