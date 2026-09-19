@@ -312,13 +312,23 @@ class TradingBot:
 
                         chunk_krw = base_chunk_krw * sizing_mult
 
+                        # 1회 매수금 상한. V4 잔금비례가 후반에 눈덩이처럼 커지는
+                        # 것을 막는다 (실측: 0.5x 지속 시 마지막 회차가 기본
+                        # 분할금의 3.6배). 상한은 AI 배수 상한과 같은 값이다.
+                        cap = self.params.raoer_chunk_cap(self.initial_krw)
+                        cap_note = ""
+                        if chunk_krw > cap:
+                            cap_note = (f" [1회 상한 {cap:,.0f}원 적용 · "
+                                        f"산출 {chunk_krw:,.0f}원]")
+                            chunk_krw = cap
+
                         version_tag = " [V4]" if self.params.raoerVersion == "v4" else ""
                         if not self.pos.open:
-                            self.last_decision = f"무한매수{version_tag} 1/{self.params.splitCount}회차 첫 매수{ai_reason}"
+                            self.last_decision = f"무한매수{version_tag} 1/{self.params.splitCount}회차 첫 매수{ai_reason}{cap_note}"
                             self._enter_chunk(price, chunk_krw, self.last_decision)
                         elif self.pos.turn < self.params.splitCount:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
-                            self.last_decision = f"무한매수{version_tag} {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%){ai_reason}"
+                            self.last_decision = f"무한매수{version_tag} {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%){ai_reason}{cap_note}"
                             self._enter_chunk(price, chunk_krw, self.last_decision)
                         else:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0

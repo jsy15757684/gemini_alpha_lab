@@ -124,6 +124,10 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
                 if p.raoerTrendMode == "boost_up" and trend == "up":
                     chunk_krw *= p.raoerMaxMultiplier
 
+                # 실전 엔진과 같은 1회 매수금 상한을 적용한다. 다르면 백테스트로
+                # 고른 설정이 실제 동작과 어긋난다.
+                chunk_krw = min(chunk_krw, p.raoer_chunk_cap(initial_krw))
+
                 invest = min(cash, chunk_krw)
                 if invest >= 5000:
                     new_units = invest * (1 - fee) / price

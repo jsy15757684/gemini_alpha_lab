@@ -119,6 +119,26 @@ class StrategyParams:
                 continue
         return p.validated()
 
+    def raoer_chunk_cap(self, initial_krw: float) -> float:
+        """1회 매수금 상한. 기본 분할금 × raoerMaxMultiplier.
+
+        V4 잔금비례는 '잔여현금 ÷ 잔여회차' 라서, AI 가 계속 비중을 줄이면
+        현금이 덜 줄어 후반 회차 금액이 눈덩이처럼 커진다. 실측(40분할
+        400,000원): AI 가 계속 0.5x 면 마지막 회차가 35,571원 — 기본 분할금
+        10,000원의 3.6배다. 가장 깊은 하락 구간에서 한 번에 크게 담는 셈이라
+        분할매수의 취지와 정반대가 된다.
+
+        상한값은 과거 데이터로 고르지 않았다. 이미 있는 AI 배수 상한
+        (raoerMaxMultiplier, 기본 2.0)을 그대로 쓴다 — 새 문턱을 만들지 않는다.
+        추세 조절의 boost_up 도 같은 배수를 쓰므로 그 기능은 상한에 걸리지 않는다.
+
+        상한 때문에 회차를 다 쓰고도 현금이 남을 수 있다. 그 현금은 다음
+        사이클이나 쿼터매도 롤백 이후에 쓰인다 — 남기는 쪽이 한 번에 크게
+        담는 것보다 낫다고 보았다.
+        """
+        base = initial_krw / max(1, self.splitCount)
+        return base * max(1.0, self.raoerMaxMultiplier)
+
     def validated(self) -> "StrategyParams":
         if self.raoerVersion not in ("v4", "v1"):
             self.raoerVersion = "v4"

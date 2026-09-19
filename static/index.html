@@ -302,6 +302,12 @@
             <!-- 라오어 무한매수 옵션 -->
             <div id="raoerBotOptions" style="margin-top: 10px;">
               <div class="alert alert-info small" style="margin-bottom: 10px; background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: #93c5fd; padding: 8px 12px; border-radius: 6px;">
+                💡 <b>1회 매수금 상한</b>: 잔금비례가 후반에 커지는 것을 막기 위해 한 회차 매수금을
+                <b>기본 분할금 × AI 배수 상한</b>(40분할 400,000원 · 2.0배면 20,000원) 이하로 묶습니다.
+                실측상 AI가 계속 0.5배로 줄이면 마지막 회차가 기본 분할금의 3.6배까지 커졌습니다 —
+                가장 깊은 하락 구간에서 한 번에 크게 담는 셈이라 분할의 취지와 반대입니다.
+                상한 때문에 회차를 다 쓰고도 현금이 남을 수 있고, 그 현금은 다음 사이클이나
+                쿼터매도 롤백 이후에 쓰입니다.<br><br>
                 💡 <b>라오어 V4.0 (최신 공식)</b>: 1회 매수금을 <code>남은 현금 ÷ 남은 회차</code>로 동적 계산하여 현금 찌꺼기가 남지 않으며, 분할 소진 시 25% 쿼터 매도 후 회차 롤백(30회차) 및 바닥 10회차 추가 매수(리버스 모드)가 자동 순환됩니다.
               </div>
               <div class="form-grid" style="margin-bottom: 8px;">
@@ -674,6 +680,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.9.1"></script>
+<script src="/static/js/app.js?v=4.9.2"></script>
 </body>
 </html>

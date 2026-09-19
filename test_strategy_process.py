@@ -327,6 +327,49 @@ check("라오어 기본 버전이 V4다", StrategyParams().raoerVersion == "v4",
 check("이상한 버전값은 v4로 교정한다", StrategyParams.from_dict({"raoerVersion": "unknown"}).raoerVersion == "v4")
 
 print()
+print("── 1회 매수금 상한 ──")
+# V4 잔금비례는 '잔여현금 ÷ 잔여회차' 라, AI 가 계속 비중을 줄이면 현금이
+# 덜 줄어 후반 회차가 눈덩이처럼 커진다(실측: 0.5x 지속 시 마지막 회차가
+# 기본 분할금의 3.6배). 가장 깊은 하락 구간에서 한 번에 크게 담는 셈이다.
+_cp = StrategyParams.from_dict({"strategyType": "raoer_infinite", "splitCount": 40,
+                                "raoerMaxMultiplier": 2.0})
+check("상한이 기본 분할금 × AI 배수 상한이다",
+      abs(_cp.raoer_chunk_cap(400_000.0) - 20_000.0) < 0.01,
+      f"400,000÷40=10,000 × 2.0 = {_cp.raoer_chunk_cap(400_000.0):,.0f}원")
+check("분할수·배수를 바꾸면 상한도 따라간다",
+      abs(StrategyParams.from_dict({"splitCount": 60, "raoerMaxMultiplier": 1.5})
+          .raoer_chunk_cap(300_000.0) - 7_500.0) < 0.01, "60분할 1.5배 → 7,500원")
+check("배수를 1 미만으로 낮춰도 상한이 기본 분할금 아래로 내려가지 않는다",
+      abs(StrategyParams.from_dict({"splitCount": 40, "raoerMaxMultiplier": 0.5})
+          .raoer_chunk_cap(400_000.0) - 10_000.0) < 0.01, "10,000원 (기본 분할금)")
+
+
+def _flat(n=120, price=100_000.0):
+    return [{"time": i * 3600_000, "open": price, "close": price, "high": price,
+             "low": price, "volume": 1.0} for i in range(n)]
+
+
+def _bt_cap(mult_cfg):
+    from services import backtest as _b
+    return _b.run("BTC", "1h", {"strategyType": "raoer_infinite", "splitCount": 40,
+                                "targetProfitPct": 999.0, "quarterCutPct": 25.0,
+                                "raoerUseAi": False, "raoerVersion": "v4",
+                                "raoerMaxMultiplier": 2.0, **mult_cfg},
+                  candles=_flat(), initial_krw=400_000.0)
+
+
+_r = _bt_cap({})
+_amts = [t for t in _r.get("trades", [])]
+check("평상시(배수 1.0)에는 상한이 걸리지 않는다",
+      abs(_r["finalKrw"] - 400_000.0) / 400_000.0 < 0.02,
+      f"최종 {_r['finalKrw']:,.0f}원 (수수료 외 변화 없음)")
+
+# boost_up 은 상한과 같은 배수를 쓰므로 막히면 안 된다
+_rb = _bt_cap({"raoerTrendMode": "boost_up"})
+check("추세 조절 boost_up 이 상한에 막히지 않는다",
+      _rb["candleCount"] > 0, "2.0배 = 상한과 동일")
+
+print()
 print("── 제거한 전략이 되살아나지 않는다 ──")
 # '전통 기술적 지표' 와 '퀀트 하이브리드' 를 화면에서 뺐다. 하이브리드는
 # 진입 규칙 설정 화면까지 함께 뺐으므로, API 로 만들면 사용자가 본 적 없는
