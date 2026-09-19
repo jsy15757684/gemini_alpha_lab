@@ -79,6 +79,8 @@ class TradingBot:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._last_bar_time: Optional[int] = None
+        # 복원 직후 첫 봉을 '이미 소비한 것' 으로 볼지 (아래 restore 참고)
+        self._adopt_bar_on_start = False
 
     def _record_trade(self, action: str, price: float, units: float, amount_krw: float,
                       pnl: float = 0.0, return_pct: float = 0.0, reason: str = ""):
@@ -229,6 +231,15 @@ class TradingBot:
 
                 i = len(bars) - 1
                 self.last_rsi = bars[i].get("rsi")
+
+                # 재시작 직후 중복 매수 방지 (lastBarTime 이 없던 옛 봇용).
+                if self._adopt_bar_on_start:
+                    self._adopt_bar_on_start = False
+                    bt = bars[-1].get("time") if bars else None
+                    if bt:
+                        self._last_bar_time = bt
+                        self.log("INFO", "재시작 시점의 봉을 이미 소비한 것으로 잡았습니다 "
+                                         "(중복 매수 방지). 다음 봉부터 회차가 진행됩니다.")
 
                 # ── 전략 판단 실행 ──
                 if self.params.strategyType == "raoer_infinite":
@@ -865,6 +876,10 @@ class TradingBot:
             "totalTrades": self.total_trades, "winningTrades": self.winning_trades,
             "tradeHistory": self.trade_history,
             "createdAt": self.created_at, "wasRunning": self.is_running,
+            # 마지막으로 회차를 소비한 봉. 이걸 저장하지 않으면 재시작할 때마다
+            # '새 봉' 으로 보여 즉시 한 회차를 더 산다. 실측: 오늘 배포로 12번
+            # 재시작했더니 6시간봉 봇이 8시간 만에 T1 → T19 까지 갔다.
+            "lastBarTime": self._last_bar_time,
         }
 
     @classmethod
@@ -873,6 +888,12 @@ class TradingBot:
         bot = cls(d["botId"], d["coin"], d["interval"], d["mode"],
                   float(d["initialKrw"]), StrategyParams.from_dict(d.get("params")), account)
         bot.cash = float(d.get("cash", d["initialKrw"]))
+        lbt = d.get("lastBarTime")
+        bot._last_bar_time = int(lbt) if lbt else None
+        # 이 값이 없던 시절에 저장된 봇: 이미 포지션을 들고 있다면 어느 봉에서
+        # 샀는지 알 수 없다. 그 경우 첫 판단에서 현재 봉을 '이미 소비했다' 로
+        # 잡아 중복 매수를 막는다. 포지션이 없으면 새로 시작해도 되므로 둔다.
+        bot._adopt_bar_on_start = (lbt is None and float(d.get("units", 0.0)) > 0)
         bot.pos = Position(units=float(d.get("units", 0.0)),
                            entryPrice=float(d.get("entryPrice", 0.0)),
                            peakPrice=float(d.get("peakPrice", 0.0)),

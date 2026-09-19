@@ -327,6 +327,44 @@ check("라오어 기본 버전이 V4다", StrategyParams().raoerVersion == "v4",
 check("이상한 버전값은 v4로 교정한다", StrategyParams.from_dict({"raoerVersion": "unknown"}).raoerVersion == "v4")
 
 print()
+print("── 재시작이 회차를 먹지 않는다 ──")
+# 실측: 오늘 배포로 12번 재시작했더니 6시간봉 봇이 8시간 만에 T1 → T19 로
+# 갔다. 매수 시각이 재시작 시각과 초 단위로 일치했다. 재시작하면
+# _last_bar_time 이 비어 '새 봉' 으로 보였기 때문이다.
+rr = run_raoer(1_000_000.0)
+bots.append(rr)
+next_bar(rr, 990_000.0)
+snap = rr.snapshot()
+rr.stop(liquidate=False)
+check("마지막으로 회차를 소비한 봉을 저장한다",
+      snap.get("lastBarTime") is not None, f"lastBarTime={snap.get('lastBarTime')}")
+
+rr2 = trader.TradingBot.restore(snap, None)
+turn_before = rr2.pos.turn
+rr2.start()
+for _ in range(8):
+    time.sleep(0.25)
+check("재시작해도 같은 봉에서 또 사지 않는다",
+      rr2.pos.turn == turn_before,
+      f"T={turn_before} 유지 (예전에는 재시작마다 +1 이었다)")
+next_bar(rr2, 980_000.0)
+check("다음 봉이 오면 정상적으로 회차가 진행된다",
+      rr2.pos.turn == turn_before + 1, f"T={turn_before} → {rr2.pos.turn}")
+rr2.stop(liquidate=False)
+
+# lastBarTime 이 없던 옛 봇
+old_snap = dict(snap)
+old_snap.pop("lastBarTime", None)
+rr3 = trader.TradingBot.restore(old_snap, None)
+t3 = rr3.pos.turn
+rr3.start()
+for _ in range(8):
+    time.sleep(0.25)
+check("이 값이 없던 옛 봇도 재시작 직후 중복 매수하지 않는다",
+      rr3.pos.turn == t3, f"T={t3} 유지")
+rr3.stop(liquidate=False)
+
+print()
 print("── 1회 매수금 상한 ──")
 # V4 잔금비례는 '잔여현금 ÷ 잔여회차' 라, AI 가 계속 비중을 줄이면 현금이
 # 덜 줄어 후반 회차가 눈덩이처럼 커진다(실측: 0.5x 지속 시 마지막 회차가
