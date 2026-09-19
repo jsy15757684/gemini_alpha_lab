@@ -57,7 +57,7 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service, arbitrage
+from services import auth, backtest, bithumb, gemini_service, arbitrage, spread_recorder
 from services.gemini_service import gemini_keystore
 from services.keystore import keystore
 from services.arbitrage import arbitrage_manager
@@ -112,6 +112,15 @@ def _startup_log():
         arbitrage_manager.restore()
     except Exception as e:
         logger.error(f"차익거래 시뮬레이터 복원 실패: {e}")
+
+    # 거래소 간 괴리를 계속 기록한다. 주문은 내지 않고 공개 호가만 읽는다.
+    # 무전송 양방향을 구현할지 판단할 근거를 자금 0원으로 모으기 위한 것이다.
+    # APP_SPREAD_RECORDER=0 으로 끌 수 있다.
+    if (os.getenv("APP_SPREAD_RECORDER") or "1").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            spread_recorder.start()
+        except Exception as e:
+            logger.error(f"괴리 기록기 시작 실패 (서버는 계속 뜹니다): {e}")
 
 
 # ───────────────────────── 인증 ─────────────────────────
