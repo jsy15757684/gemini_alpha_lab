@@ -264,6 +264,12 @@ class TradingBot:
                             ai_note = f" (AI 가변목표 +{target_tp:.1f}%)" if self.params.raoerUseAi else ""
                             self.last_decision = f"무한매수 목표 익절 (+{pnl_pct:.2f}% ≥ +{target_tp:.1f}%){ai_note}"
                             self._exit(price, self.last_decision)
+                            # 이 봉은 소비했다고 기록한다. 안 그러면 다음 틱(수초 뒤)에
+                            # cur_bar_time != _last_bar_time 이 여전히 참이라, **막 익절한
+                            # 그 봉에서 새 회차를 곧바로 매수한다.** 방금 +10% 를 찍은
+                            # 가격, 즉 그 봉의 고점에서 새 사이클을 시작하는 셈이다.
+                            # 백테스트는 다음 봉을 기다리므로 실전과 백테스트가 어긋났다.
+                            self._last_bar_time = cur_bar_time
                             time.sleep(poll)
                             continue
 

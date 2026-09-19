@@ -204,15 +204,11 @@ function readParams(prefix) {
       p.useGemini = false;
     }
   } else if (prefix === "tp_") {
-    const stratType = $("btStrategyType") ? $("btStrategyType").value : "raoer_infinite";
-    if (stratType === "raoer_infinite") {
-      p.strategyType = "raoer_infinite";
-      p.splitCount = parseInt($("tp_splitCount")?.value || "40", 10);
-      p.targetProfitPct = parseFloat($("tp_targetProfitPct")?.value || "10.0");
-      p.quarterCutPct = parseFloat($("tp_quarterCutPct")?.value || "25.0");
-    } else {
-      p.strategyType = "quant_ai";
-    }
+    // 백테스트는 무한매수만 남았다 (지표 계열을 실매매에서 뺐으니 여기서도 뺐다).
+    p.strategyType = "raoer_infinite";
+    p.splitCount = parseInt($("tp_splitCount")?.value || "40", 10);
+    p.targetProfitPct = parseFloat($("tp_targetProfitPct")?.value || "10.0");
+    p.quarterCutPct = parseFloat($("tp_quarterCutPct")?.value || "25.0");
   }
   return p;
 }
@@ -482,6 +478,21 @@ async function runBacktest() {
   }
 }
 
+// 결과 머리글에 무엇으로 돌렸는지 적는다. 예전에는 진입 규칙만 찍어서,
+// 무한매수로 돌린 결과에도 'RSI 상향돌파 또는 거래량 급증' 이 붙었다 —
+// 실제로는 무한매수가 맞게 돌았는데 화면만 다른 전략처럼 보였다.
+function btStrategyLabel(p) {
+  if (p?.strategyType === "raoer_infinite") {
+    return `무한매수 ${p.splitCount}분할 · 목표 익절 +${p.targetProfitPct}% · `
+      + `쿼터방어 ${p.quarterCutPct}%`
+      + (p.raoerTrendMode && p.raoerTrendMode !== "off" ? ` · 추세 ${p.raoerTrendMode}` : "");
+  }
+  const rules = (p?.entryRules || []).map(k =>
+    (ENTRY_RULES.find(x => x.key === k) || {}).label || k);
+  return rules.length
+    ? `진입: ${rules.join(p.entryMode === "all" ? " AND " : " 또는 ")}` : "";
+}
+
 function renderBacktest(r) {
   const rows = (r.trades || []).slice().reverse().map(t => `
     <tr>
@@ -495,9 +506,7 @@ function renderBacktest(r) {
   $("btResult").innerHTML = `<div class="card">
     <div class="card-head">
       <h2 class="card-title">${r.coin}/KRW · ${r.interval} · 캔들 ${r.candleCount}개
-        <span class="muted small">진입: ${(r.params.entryRules || []).map(k =>
-          (ENTRY_RULES.find(x => x.key === k) || {}).label || k).join(
-            r.params.entryMode === "all" ? " AND " : " 또는 ")}</span></h2>
+        <span class="muted small">${btStrategyLabel(r.params)}</span></h2>
       <span class="muted small">${when(r.periodFrom)} ~ ${when(r.periodTo)}</span>
     </div>
     <div class="metrics">
@@ -815,15 +824,6 @@ function toggleStrategyUI() {
   }
 }
 
-function toggleBtStrategyUI() {
-  const type = $("btStrategyType")?.value || "raoer_infinite";
-  const raoerBtOpts = $("raoerBtOptions");
-  const quantBtSettings = $("quantBtSettings");
-
-  if (raoerBtOpts) raoerBtOpts.classList.toggle("hidden", type !== "raoer_infinite");
-  if (quantBtSettings) quantBtSettings.classList.toggle("hidden", type === "raoer_infinite");
-}
-
 // ───────── 계정 ─────────
 
 async function loadAccount() {
@@ -1102,9 +1102,7 @@ async function boot() {
 
   ENTRY_RULES = meta.entryRules || [];
   renderEntryRules("botRules", "bp_");
-  renderEntryRules("btRules", "tp_");
   renderParams("botParams", "bp_");
-  renderParams("btParams", "tp_");
 
   // 전략 선택기 UI 바인딩
   if ($("botStrategyType")) {
@@ -1114,10 +1112,6 @@ async function boot() {
     $("bp_raoerUseAi").onchange = toggleStrategyUI;
   }
   toggleStrategyUI();
-  if ($("btStrategyType")) {
-    $("btStrategyType").onchange = toggleBtStrategyUI;
-    toggleBtStrategyUI();
-  }
   if ($("geminiMinConf")) {
     $("geminiMinConf").oninput = () => {
       $("geminiConfVal").textContent = $("geminiMinConf").value + "%";

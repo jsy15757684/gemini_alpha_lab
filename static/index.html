@@ -546,13 +546,12 @@
           </div>
         </div>
 
-        <!-- 백테스트 전략 선택 -->
+        <!-- 백테스트 전략 -->
+        <!-- 선택기를 없앴다. 지표 계열(전통 기술적 지표 · 퀀트 하이브리드)을
+             실매매에서 뺐으니 백테스트에 남겨둘 이유도 없어졌고, 남은 전략이
+             하나뿐인 드롭다운은 혼란만 준다. -->
         <div style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
-          <label class="label" style="font-weight: 600; margin-bottom: 8px;">전략 모드</label>
-          <select class="input" id="btStrategyType" style="margin-bottom: 10px;">
-            <option value="raoer_infinite" selected>🔄 라오어 무한매수법 (레버리지 40분할 + 10% 익절)</option>
-            <option value="quant_ai">📊 퀀트 기술적 지표 전략 (RSI, MA, MACD)</option>
-          </select>
+          <label class="label" style="font-weight: 600; margin-bottom: 8px;">🔄 라오어 무한매수법 (레버리지 분할 + 목표 익절)</label>
 
           <div id="raoerBtOptions">
             <div class="form-grid">
@@ -572,10 +571,6 @@
           </div>
         </div>
 
-        <div id="quantBtSettings" class="hidden">
-          <div class="rules" id="btRules"></div>
-          <div class="params" id="btParams"></div>
-        </div>
         <button class="btn btn-primary btn-block" id="runBacktestBtn">백테스트 실행</button>
         <div class="alert alert-error hidden" id="btError"></div>
       </div>
@@ -662,6 +657,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.8.2"></script>
+<script src="/static/js/app.js?v=4.8.4"></script>
 </body>
 </html>

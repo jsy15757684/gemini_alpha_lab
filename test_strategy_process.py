@@ -73,10 +73,15 @@ def _fake_price(coin):
     return _MARKET["price"]
 
 
+# 회차 매수는 '새 봉이 떴을 때' 만 일어난다. 그래서 봉 시각을 움직일 수 있어야
+# 한다. _BAR_SHIFT 를 올리면 다음 조회에서 새 봉이 하나 더 생긴 것처럼 보인다.
+_BAR_SHIFT = 0
+
+
 def _fake_candles(coin, interval, limit=200):
     p = _MARKET["price"] or 1380.0
     now = 1_700_000_000_000
-    return [{"time": now + i * 3600_000, "open": p, "close": p,
+    return [{"time": now + (i + _BAR_SHIFT) * 3600_000, "open": p, "close": p,
              "high": p, "low": p, "volume": 1.0} for i in range(60)]
 
 
@@ -100,6 +105,9 @@ bithumb.get_candles = _fake_candles
 arbitrage.get_official_fx_rate = _fake_fx
 arbitrage.get_official_fx = _fake_fx_info
 trader.PRICE_POLL_SEC = 0.2          # 시험을 빠르게
+# 회차 매수는 캔들을 다시 받아 '새 봉' 을 확인해야 일어난다. 운영값(1시간봉
+# 600초)이면 시험 안에서 봉이 바뀌지 않는다. 주기만 줄인다 — 판단 로직은 그대로다.
+trader.CANDLE_REFRESH_SECONDS = {k: 0.2 for k in trader.CANDLE_REFRESH_SECONDS}
 
 
 def run_bot(params, price, fx, cash=1_000_000.0, ticks=6, fx_stale=False):
@@ -212,6 +220,99 @@ time.sleep(0.5)
 #   4) 기준 미달      → 감시 대기
 #   5) 총 수량 보존 (수수료는 현금에서만 나간다)
 #   6) 데이터 없으면 판단 보류
+
+print()
+print("── 라오어 무한매수 (raoer_infinite) · 실제 봇 루프 ──")
+# 실전 자금이 걸린 전략인데 공정 검증이 없었다. 원전의 규칙 네 가지를
+# 실제 봇 루프로 확인한다.
+#   1) 1회 매수금 = 운용자본 / 분할수
+#   2) 새 봉마다 한 회차씩 매수 (같은 봉에서 두 번 사지 않는다)
+#   3) 평단 대비 목표 익절률 도달 시 전량 매도 · 회차 초기화
+#   4) 분할수 소진 시 쿼터매도 방어 + 회차 롤백
+# splitCount 는 코드가 최소 5로 교정한다(strategy.py). 시험도 5를 쓴다.
+RP = {"strategyType": "raoer_infinite", "splitCount": 5, "targetProfitPct": 10.0,
+      "quarterCutPct": 25.0, "raoerUseAi": False, "feePct": 0.04}
+
+
+def run_raoer(price, cash=400_000.0, params=None, ticks=6):
+    _MARKET["price"], _MARKET["fx"], _MARKET["fxStale"] = price, 1382.0, False
+    bot = trader.TradingBot("rt", "BTC", "1h", "PAPER", cash,
+                            StrategyParams.from_dict(params or RP), None)
+    bot.start()
+    for _ in range(ticks):
+        time.sleep(0.25)
+    return bot
+
+
+def next_bar(bot, price, ticks=6):
+    """새 봉을 만들어 준다 — 회차 매수는 봉이 바뀔 때만 일어난다."""
+    global _BAR_SHIFT
+    _BAR_SHIFT += 1
+    _MARKET["price"] = price
+    for _ in range(ticks):
+        time.sleep(0.25)
+    return bot
+
+
+rb = run_raoer(1_000_000.0)
+bots.append(rb)
+check("1회 매수금이 운용자본 ÷ 분할수 다",
+      abs(rb.pos.totalInvested - 80_000.0) < 1.0 and rb.pos.turn == 1,
+      f"T={rb.pos.turn} · 투입 {rb.pos.totalInvested:,.0f}원 (400,000 ÷ 5)")
+
+before_turn, before_inv = rb.pos.turn, rb.pos.totalInvested
+for _ in range(8):
+    time.sleep(0.25)
+check("같은 봉에서는 두 번 사지 않는다",
+      rb.pos.turn == before_turn and abs(rb.pos.totalInvested - before_inv) < 1.0,
+      f"T={rb.pos.turn} 유지")
+
+next_bar(rb, 900_000.0)      # 값이 내려도 회차 매수는 계속된다 (평단 낮춤)
+check("새 봉이 뜨면 다음 회차를 매수한다 (하락해도 계속)",
+      rb.pos.turn == 2 and rb.pos.entryPrice < 1_000_000.0,
+      f"T={rb.pos.turn} · 평단 {rb.pos.entryPrice:,.0f}원")
+
+entry_before = rb.pos.entryPrice
+next_bar(rb, entry_before * 1.15)     # 평단 대비 +15% → 목표 +10% 통과
+sells = [t for t in rb.trade_history if t["action"] == "SELL"]
+check("평단 대비 목표 익절률에 닿으면 전량 매도한다",
+      len(sells) == 1 and rb.pos.units == 0,
+      f"매도 {len(sells)}건 · 보유 {rb.pos.units}")
+check("익절 후 회차가 초기화된다", rb.pos.turn == 0, f"T={rb.pos.turn}")
+# 막 익절한 그 봉에서 새 사이클을 시작하면, 방금 +10% 를 찍은 고점에 사게 된다.
+# 백테스트는 다음 봉을 기다린다. 실전도 같아야 한다.
+check("익절한 봉에서 곧바로 재매수하지 않는다",
+      rb.pos.units == 0 and rb.pos.turn == 0,
+      f"보유 {rb.pos.units} · T={rb.pos.turn}")
+check("익절 손익이 현금 증감과 일치한다",
+      abs(rb.realized_pnl - (rb.cash - 400_000.0)) < 1.0,
+      f"손익 {rb.realized_pnl:+,.0f}원 / 현금증감 {rb.cash - 400_000.0:+,.0f}원")
+next_bar(rb, entry_before * 1.15)     # 다음 봉에서는 새 사이클을 시작한다
+check("다음 봉에서 새 사이클을 시작한다", rb.pos.turn == 1 and rb.pos.units > 0,
+      f"T={rb.pos.turn} · 보유 {rb.pos.units:.6f}")
+
+# 분할 소진 → 쿼터매도 방어
+rq = run_raoer(1_000_000.0)
+bots.append(rq)
+for k in range(1, 9):                  # 5분할을 계속 떨어지는 값으로 확실히 소진
+    if rq.pos.turn >= 5:
+        break
+    next_bar(rq, 1_000_000.0 - k * 20_000.0)
+check("분할수를 소진하면 더 사지 않는다", rq.pos.turn == 5, f"T={rq.pos.turn}/5")
+turn_at_full, units_at_full = rq.pos.turn, rq.pos.units
+next_bar(rq, rq.pos.entryPrice * 0.99)
+qcuts = [t for t in rq.trade_history if t["action"] == "SELL_QUARTER"]
+check("소진 후 다음 봉에서 쿼터매도 방어가 나간다",
+      len(qcuts) == 1 and rq.pos.units < units_at_full,
+      f"쿼터매도 {len(qcuts)}건 · 보유 {units_at_full:.6f} → {rq.pos.units:.6f}")
+check("쿼터매도가 판 비율이 설정과 같다 (25%)",
+      abs(rq.pos.units - units_at_full * 0.75) / units_at_full < 0.01,
+      f"{(1 - rq.pos.units / units_at_full) * 100:.1f}% 매도")
+check("쿼터매도 후 회차가 롤백된다",
+      rq.pos.turn < turn_at_full, f"T={turn_at_full} → {rq.pos.turn}")
+check("쿼터매도가 남은 포지션의 원가를 부풀리지 않는다",
+      rq.pos.totalInvested <= rq.pos.units * rq.pos.entryPrice * 1.02,
+      f"원가 {rq.pos.totalInvested:,.0f}원 · 평가 {rq.pos.units * rq.pos.entryPrice:,.0f}원")
 
 print()
 print("── 제거한 전략이 되살아나지 않는다 ──")
