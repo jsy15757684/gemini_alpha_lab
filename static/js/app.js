@@ -256,20 +256,60 @@ async function loadPrices() {
 
 // ───────── 봇 ─────────
 
+let currentMarket = "crypto"; // "crypto" | "stock"
+let STOCKS = [
+  { code: "TQQQ", name: "ProShares UltraPro QQQ (나스닥 3배)" },
+  { code: "SOXL", name: "Direxion Daily Semiconductor Bull 3X (반도체 3배)" },
+  { code: "UPRO", name: "ProShares UltraPro S&P500 (S&P500 3배)" },
+];
+
+function setMarket(market) {
+  currentMarket = market;
+  const isStock = market === "stock";
+  const btnCrypto = $("btnMarketCrypto");
+  const btnStock = $("btnMarketStock");
+  if (btnCrypto && btnStock) {
+    btnCrypto.className = isStock ? "btn btn-sm btn-ghost" : "btn btn-sm btn-primary";
+    btnStock.className = isStock ? "btn btn-sm btn-primary" : "btn btn-sm btn-ghost";
+  }
+  if ($("lblBotCoin")) $("lblBotCoin").textContent = isStock ? "미국 ETF 종목" : "코인";
+  if ($("lblBotCapital")) $("lblBotCapital").textContent = isStock ? "운용 자본 ($ USD)" : "운용 자본 (원)";
+  if ($("botCapital")) {
+    $("botCapital").value = isStock ? "1000" : "1000000";
+    $("botCapital").min = isStock ? "10" : "10000";
+    $("botCapital").step = isStock ? "10" : "10000";
+  }
+  if ($("optBotLive")) {
+    $("optBotLive").textContent = isStock ? "실전 (나무증권 실주문)" : "실전 (빗썸 실주문)";
+  }
+
+  const list = isStock ? STOCKS : COINS;
+  if ($("botCoin")) {
+    $("botCoin").innerHTML = list.map(c => `<option value="${c.code}">${c.name} (${c.code})</option>`).join("");
+  }
+}
+
 async function deployBot() {
   const btn = $("deployBtn");
   setAlert($("deployError"), null);
   const mode = $("botMode").value;
+  const isStock = currentMarket === "stock";
   const isUsdt = $("botStrategyType")?.value === "usdt_premium";
-  if (mode === "LIVE" && !confirm(
-      "실전 모드로 가동합니다.\n\n빗썸 계좌에서 실제 원화로 주문이 나가며 손실이 발생할 수 있습니다.\n계속하시겠습니까?"))
-    return;
+
+  if (mode === "LIVE") {
+    const brokerName = isStock ? "농협 나무증권" : "빗썸";
+    const currName = isStock ? "미국 달러(USD)" : "원화";
+    if (!confirm(
+        `실전 모드로 가동합니다.\n\n${brokerName} 계좌에서 실제 ${currName}로 주문이 나가며 손실이 발생할 수 있습니다.\n계속하시겠습니까?`))
+      return;
+  }
   btn.disabled = true; btn.textContent = "가동 중…";
   try {
     await api("/api/bot/deploy", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         coin: isUsdt ? "USDT" : $("botCoin").value,
+        broker: isStock ? "namuh" : "bithumb",
         // 캔들을 안 쓰는 전략이라 화면에서 칸을 숨겼다. 서버는 유효한 값을
         // 요구하므로 고정값을 보낸다 (캔들 갱신 주기로만 쓰인다).
         interval: isUsdt ? "1h" : $("botInterval").value, mode,
@@ -298,9 +338,22 @@ function investedPct(b) {
 
 function botCard(b) {
   const live = b.mode === "LIVE";
+  const isNamuh = b.broker === "namuh";
+  const isUsd = b.currency === "USD" || isNamuh;
+  const fmtCurr = (v) => isUsd
+    ? `$${Number(v||0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+    : won(v);
+  const fmtPnl = (v) => isUsd
+    ? `${Number(v||0) >= 0 ? '+' : ''}$${Number(v||0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
+    : `${Number(v||0) >= 0 ? '+' : ''}${won(v)}원`;
+  const fmtUnits = (u) => isUsd ? Number(u||0).toFixed(4) : Number(u||0).toFixed(6);
+
   const badge = !b.isRunning ? `<span class="badge badge-stop">정지됨</span>`
     : live ? `<span class="badge badge-live">실전</span>`
            : `<span class="badge badge-paper">모의</span>`;
+  const brokerBadge = isNamuh
+    ? `<span class="badge" style="background:rgba(16,185,129,.2); color:#34d399; border:1px solid rgba(16,185,129,.4);">🇺🇸 나무증권</span>`
+    : `<span class="badge" style="background:rgba(249,115,22,.2); color:#fb923c; border:1px solid rgba(249,115,22,.4);">🪙 빗썸</span>`;
 
   let stratBadge = "";
   if (b.strategyType === "raoer_infinite") {
@@ -322,7 +375,7 @@ function botCard(b) {
     `<div class="logline"><span class="t">${l.time}</span><span class="lv-${l.level}">${l.message}</span></div>`).join("");
   return `<div class="bot">
     <div class="bot-head">
-      <div><span class="bot-title">${b.coinName} (${b.coin})</span> ${badge} ${stratBadge}
+      <div><span class="bot-title">${b.coinName} (${b.coin})</span> ${brokerBadge} ${badge} ${stratBadge}
         <span class="muted small">${b.interval}</span></div>
       <div class="inline">
         ${b.isRunning ? `<button class="btn btn-ghost btn-sm" data-stop="${b.botId}">정지</button>` : ""}
@@ -330,19 +383,19 @@ function botCard(b) {
       </div>
     </div>
     <div class="bot-stats">
-      <div><div class="stat-k">평가자산</div><div class="stat-v">${won(b.equityKrw)}</div></div>
-      <div title="배정자본 ${won(b.initialKrw)}원 대비 평가자산 증감. 아직 안 쓴 현금도 분모에 들어가므로, 분할매수 초반에는 '평단 대비' 보다 작게 나온다. 지금은 ${won(b.investedKrw)}원(${investedPct(b)})만 시장에 들어가 있다.">
+      <div><div class="stat-k">평가자산</div><div class="stat-v">${fmtCurr(b.equityKrw)}</div></div>
+      <div title="배정자본 ${fmtCurr(b.initialKrw)} 대비 평가자산 증감. 분할매수 초반에는 '평단 대비' 보다 작게 나온다. 지금은 ${fmtCurr(b.investedKrw)}(${investedPct(b)})만 시장에 들어가 있다.">
         <div class="stat-k">수익률 <span class="muted" style="font-weight:400;">· 배정 대비</span></div>
         <div class="stat-v ${cls(b.totalReturnPct)}">${pct(b.totalReturnPct)}</div>
         <div class="muted" style="font-size:0.68rem;">${investedPct(b)} 투입</div></div>
       <div><div class="stat-k">현재가 ${b.priceAgeSec != null
           ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : 'muted'}">${Math.round(b.priceAgeSec)}초 전</span>`
-          : ""}</div><div class="stat-v">${won(b.currentPrice)}</div></div>
-      <div><div class="stat-k">보유 / 평단</div><div class="stat-v">${b.units > 0 ? b.units.toFixed(6) : "-"} ${b.units > 0 ? `<span class="small muted">(${won(b.entryPrice)})</span>` : ""}</div></div>
+          : ""}</div><div class="stat-v">${fmtCurr(b.currentPrice)}</div></div>
+      <div><div class="stat-k">보유 / 평단</div><div class="stat-v">${b.units > 0 ? fmtUnits(b.units) : "-"} ${b.units > 0 ? `<span class="small muted">(${fmtCurr(b.entryPrice)})</span>` : ""}</div></div>
       <div title="산 물량만 놓고 본 손익. 익절·손절 판정이 쓰는 값이 이쪽이다.">
         <div class="stat-k">평가손익 <span class="muted" style="font-weight:400;">· 평단 대비</span></div>
         <div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0
-          ? `${won(b.unrealizedPnlKrw)}원 <span style="font-size:0.7rem; font-weight:400;">${pct(b.unrealizedPnlPct)}</span>`
+          ? `${fmtPnl(b.unrealizedPnlKrw)} <span style="font-size:0.7rem; font-weight:400;">${pct(b.unrealizedPnlPct)}</span>`
           : "-"}</div></div>
       <div title="AI 가 정한 익절 목표와 매수 비중. 목표 수익률은 '평단 대비' 기준이다 — 배정 대비 수익률은 그보다 낮게 찍힌다."><div class="stat-k">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? '회차 <span class="muted" style="font-weight:400;">· 목표/비중</span>' : '진행 회차') : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? `${b.turn||0}/${b.splitCount||40} <span class="small" style="color:var(--accent); font-size:0.75rem;">(+${b.lastAiAnalysis?.dynamicTargetProfitPct || b.params?.targetProfitPct}% / ${b.lastAiAnalysis?.sizingMultiplier || 1.0}x)</span>` : `${b.turn||0} / ${b.splitCount||40}`) : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
       <div><div class="stat-k">거래 (익절)</div><div class="stat-v">${b.totalTrades}회</div></div>
@@ -416,7 +469,10 @@ async function loadBots() {
 // 정지·삭제는 되돌릴 수 없다. 무엇이 얼마나 팔리는지 숫자로 보여준다.
 // "청산합니다" 만으로는 그냥 넘기기 쉽다.
 function liquidationNotice(b, action) {
-  const name = `${b.coin} 봇 (${b.mode === "LIVE" ? "실전" : "모의투자"})`;
+  const isNamuh = b.broker === "namuh";
+  const isUsd = b.currency === "USD" || isNamuh;
+  const brokerTitle = isNamuh ? "나무증권 (해외주식)" : "빗썸";
+  const name = `${b.coin} 봇 (${brokerTitle} · ${b.mode === "LIVE" ? "실전" : "모의투자"})`;
   const held = Number(b.units || 0) > 0;
 
   if (!held) {
@@ -425,18 +481,20 @@ function liquidationNotice(b, action) {
   const value = Number(b.currentPrice || 0) * Number(b.units || 0);
   const pnl = Number(b.unrealizedPnlKrw || 0);
   const pnlPct = Number(b.unrealizedPnlPct || 0);
+  const fmtCurr = (v) => isUsd ? `$${Number(v||0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}` : `${won(v)}원`;
+  const fmtUnits = (u) => isUsd ? Number(u||0).toFixed(4) : Number(u||0).toFixed(8);
   const lines = [
     name,
     "",
-    `보유 수량 : ${Number(b.units).toFixed(8)} ${b.coin}`,
-    `평단가    : ${won(b.entryPrice)}원`,
-    `현재가    : ${won(b.currentPrice)}원`,
-    `평가 금액 : ${won(value)}원`,
-    `평가 손익 : ${pnl >= 0 ? "+" : ""}${won(pnl)}원 (${pnlPct >= 0 ? "+" : ""}${Number(pnlPct).toFixed(2)}%)`,
+    `보유 수량 : ${fmtUnits(b.units)} ${b.coin}`,
+    `평단가    : ${fmtCurr(b.entryPrice)}`,
+    `현재가    : ${fmtCurr(b.currentPrice)}`,
+    `평가 금액 : ${fmtCurr(value)}`,
+    `평가 손익 : ${pnl >= 0 ? "+" : ""}${fmtCurr(pnl)} (${pnlPct >= 0 ? "+" : ""}${Number(pnlPct).toFixed(2)}%)`,
     "",
   ];
   if (b.mode === "LIVE") {
-    lines.push("⚠️ 위 물량 전부를 빗썸에 시장가 매도 주문으로 냅니다.");
+    lines.push(`⚠️ 위 물량 전부를 ${brokerTitle}에 시장가 매도 주문으로 냅니다.`);
     lines.push("   되돌릴 수 없고, 평가 손익이 그대로 확정됩니다.");
     if (b.strategyType === "raoer_infinite" && Number(b.turn || 0) > 1) {
       lines.push("");
@@ -909,6 +967,107 @@ async function keyAction(save) {
   }
 }
 
+// ───────── 나무증권 계정 ─────────
+
+async function loadNamuhAccount() {
+  try {
+    const a = await api("/api/namuh/account");
+    const pill = $("namuhPill");
+    if (pill) {
+      if (!a.connected) {
+        pill.className = "pill"; pill.textContent = "나무증권 미연동";
+      } else if (a.balanceOk) {
+        const usdFmt = Number(a.usdAvailable || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        pill.className = "pill ok"; pill.textContent = `나무증권 연동 · $${usdFmt}`;
+      } else {
+        pill.className = "pill bad"; pill.textContent = "나무증권 인증 실패";
+      }
+    }
+
+    const stEl = $("namuhStatus");
+    if (stEl) {
+      stEl.innerHTML = [
+        ["연동 상태", a.connected ? "등록됨" : "미등록"],
+        ["앱 키", a.maskedKey || "-"],
+        ["계좌번호", a.accountNo ? `${a.accountNo.slice(0, 4)}****` : "-"],
+        ["보관 위치", a.source === "env" ? "환경변수" : a.source === "disk" ? "서버 파일(평문)" : "-"],
+        ["인증 확인", a.connected ? (a.balanceOk ? "성공 (OAuth2 토큰 정상)" : "실패") : "-"],
+      ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("")
+        + `<div class="muted small" style="margin-top:.5rem">${a.storageNote || ''}</div>`;
+    }
+
+    if (a.connected && a.editable) {
+      $("clearNamuhKeyBtn")?.classList.remove("hidden");
+    } else {
+      $("clearNamuhKeyBtn")?.classList.add("hidden");
+    }
+
+    const balBox = $("namuhBalanceBox");
+    if (balBox) {
+      if (!a.connected) {
+        balBox.innerHTML = `<div class="empty">나무증권 API 키를 등록하면 표시됩니다.</div>`;
+      } else if (!a.balanceOk) {
+        balBox.innerHTML = `<div class="alert alert-error">${escapeHtml(a.error || '계좌 조회 실패')}</div>`;
+      } else {
+        const holdings = a.holdings || [];
+        const usdAvail = Number(a.usdAvailable || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        const usdTot = Number(a.usdTotal || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        balBox.innerHTML = `
+          <div class="kv">
+            <div class="kv-row"><span class="kv-k">주문가능 외화 (USD)</span><span class="kv-v" style="font-weight:700; color:var(--accent);">$${usdAvail}</span></div>
+            <div class="kv-row"><span class="kv-k">총 외화 예수금</span><span class="kv-v">$${usdTot}</span></div>
+            ${holdings.length ? holdings.map(h => `
+              <div class="kv-row">
+                <span class="kv-k"><b>${h.symbol}</b> (${h.name || h.symbol})</span>
+                <span class="kv-v">${Number(h.quantity || 0).toFixed(4)}주 @ $${Number(h.avgPrice || 0).toFixed(2)}</span>
+              </div>`).join("") : `<div class="kv-row"><span class="kv-k">보유 ETF</span><span class="kv-v muted">보유 주식 없음</span></div>`}
+          </div>`;
+      }
+    }
+  } catch (e) { console.error("나무증권 계정 조회 실패:", e); }
+}
+
+async function namuhKeyAction(save) {
+  const appKey = $("namuhAppKeyInput")?.value.trim() || "";
+  const appSecret = $("namuhAppSecretInput")?.value.trim() || "";
+  const accountNo = $("namuhAccountNoInput")?.value.trim() || "";
+  if (!appKey || !appSecret) return setAlert($("namuhKeyResult"), "App Key 와 App Secret 을 모두 입력하세요.");
+
+  const btn = save ? $("saveNamuhKeyBtn") : $("testNamuhKeyBtn");
+  if (btn) btn.disabled = true;
+  setAlert($("namuhKeyResult"), null);
+  try {
+    const r = await api(save ? "/api/namuh/save" : "/api/namuh/test", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ appKey, appSecret, accountNo }),
+    });
+    if (save || r.success) {
+      setAlert($("namuhKeyResult"),
+        `연결 성공 — 주문가능 $${Number(r.usdAvailable || 0).toFixed(2)}` +
+        (save ? " · 저장했습니다." : ""), "ok");
+      if ($("namuhAppSecretInput")) $("namuhAppSecretInput").value = "";
+      await loadNamuhAccount();
+    } else {
+      setAlert($("namuhKeyResult"), r.message || "연결 실패");
+    }
+  } catch (e) {
+    setAlert($("namuhKeyResult"), e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function clearNamuhKey() {
+  if (!confirm("나무증권 API 키를 삭제하시겠습니까?")) return;
+  try {
+    await api("/api/namuh/clear", { method: "POST" });
+    setAlert($("namuhKeyResult"), "나무증권 키가 삭제되었습니다.", "ok");
+    await loadNamuhAccount();
+  } catch (e) {
+    setAlert($("namuhKeyResult"), e.message);
+  }
+}
+
 // ───────── 매매 일지 & 수익 정산 ─────────
 
 let RAW_TRADES_DATA = { summary: {}, trades: [] };
@@ -961,13 +1120,15 @@ async function loadTradeHistory() {
       } else {
         coinBody.innerHTML = byCoin.map(c => {
           const pnl = c.realizedPnlKrw || 0;
+          const isUsd = c.currency === "USD";
+          const pnlStr = isUsd ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}` : `${pnl >= 0 ? '+' : ''}${won(pnl)}원`;
           return `
             <tr>
               <td><b>${c.coinName || c.coin}</b> <span class="muted small">(${c.coin})</span></td>
               <td>${c.totalTrades || 0}회</td>
               <td>${c.winningTrades || 0}회</td>
               <td class="${(c.winRatePct || 0) >= 50 ? 'up' : ''}">${(c.winRatePct || 0).toFixed(1)}%</td>
-              <td class="${cls(pnl)}">${pnl >= 0 ? "+" : ""}${won(pnl)}원</td>
+              <td class="${cls(pnl)}">${pnlStr}</td>
             </tr>
           `;
         }).join("");
@@ -1042,6 +1203,11 @@ function renderTradeRecords() {
 
     const pnl = t.pnlKrw != null && isSell ? t.pnlKrw : null;
     const pnlPct = t.returnPct != null && isSell ? t.returnPct : null;
+    const isUsd = t.currency === "USD" || t.broker === "namuh";
+    const fmtPrice = isUsd ? `$${Number(t.price||0).toFixed(2)}` : `${won(t.price)}원`;
+    const fmtUnits = isUsd ? Number(t.units||0).toFixed(4) : Number(t.units||0).toFixed(8);
+    const fmtAmt = isUsd ? `$${Number(t.amountKrw||0).toFixed(2)}` : `${won(t.amountKrw)}원`;
+    const fmtPnlVal = pnl != null ? (isUsd ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}` : `${pnl >= 0 ? '+' : ''}${won(pnl)}원`) : '-';
 
     return `
       <tr>
@@ -1049,10 +1215,10 @@ function renderTradeRecords() {
         <td><b>${t.coinName || t.coin}</b> <span class="muted small">(${t.coin})</span></td>
         <td><span class="badge ${t.mode === 'LIVE' ? 'badge-live' : 'badge-paper'}">${t.mode}</span></td>
         <td>${actBadge}</td>
-        <td>${won(t.price)}원</td>
-        <td>${Number(t.units).toFixed(8)}</td>
-        <td>${won(t.amountKrw)}원</td>
-        <td class="${pnl != null ? cls(pnl) : ''}">${pnl != null ? (pnl >= 0 ? '+' : '') + won(pnl) + '원' : '-'}</td>
+        <td>${fmtPrice}</td>
+        <td>${fmtUnits}</td>
+        <td>${fmtAmt}</td>
+        <td class="${pnl != null ? cls(pnl) : ''}">${fmtPnlVal}</td>
         <td class="${pnlPct != null ? cls(pnlPct) : ''}">${pnlPct != null ? pct(pnlPct) : '-'}</td>
         <td class="reason" title="${escapeHtml(t.reason || '')}">${escapeHtml(shortReason(t.reason)) || '-'}</td>
       </tr>
@@ -1177,6 +1343,20 @@ async function boot() {
     navigator.clipboard.writeText(ip).then(() => alert(`IP ${ip} 복사 완료`))
       .catch(() => prompt("아래 IP 를 복사해 빗썸에 등록하세요:", ip));
   };
+
+  // 나무증권 UI 및 키 바인딩
+  if ($("btnMarketCrypto")) $("btnMarketCrypto").onclick = () => setMarket("crypto");
+  if ($("btnMarketStock")) $("btnMarketStock").onclick = () => setMarket("stock");
+  if ($("testNamuhKeyBtn")) $("testNamuhKeyBtn").onclick = () => namuhKeyAction(false);
+  if ($("saveNamuhKeyBtn")) $("saveNamuhKeyBtn").onclick = () => namuhKeyAction(true);
+  if ($("clearNamuhKeyBtn")) $("clearNamuhKeyBtn").onclick = clearNamuhKey;
+
+  try {
+    const sData = await api("/api/namuh/stocks");
+    if (sData && sData.stocks) {
+      STOCKS = sData.stocks.map(s => ({ code: s.code, name: s.name }));
+    }
+  } catch (e) { console.warn("나무증권 종목 조회 실패:", e); }
 
   // ───────── 차익거래 (Arbitrage) 핸들러 ─────────
   // 값을 못 받은 항목은 0 이 아니라 '—' 로 보여준다.
@@ -1387,16 +1567,17 @@ async function boot() {
     if (tab.dataset.panel === "panel-arbitrage") { loadArbitrageRadar(); loadArbitrageBots(); }
     if (tab.dataset.panel === "panel-trades") loadTradeHistory();
     if (tab.dataset.panel === "panel-chart") loadChart();
-    if (tab.dataset.panel === "panel-account") { loadAccount(); loadGeminiStatus(); loadEgressIp(); }
+    if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadGeminiStatus(); loadEgressIp(); }
   });
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
   timers.push(
     setInterval(loadPrices, 10000),
     setInterval(loadArbitrageRadar, 8000),
     setInterval(loadArbitrageBots, 6000),
     setInterval(loadBots, 8000),
     setInterval(loadTradeHistory, 10000),
+    setInterval(loadNamuhAccount, 30000),
     setInterval(renderFreshness, 1000),
   );
 

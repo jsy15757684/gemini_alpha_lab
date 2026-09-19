@@ -19,7 +19,8 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from services import backtest, bithumb, jsonfile, botstore, tradelog
-from services import gemini_service
+from services import gemini_service, namuh
+from services.namuh import NamuhAccount, NAMUH_STOCKS
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 from services.envconf import env_float, env_int
 
@@ -50,14 +51,31 @@ class TooManyBots(Exception):
 class TradingBot:
     def __init__(self, bot_id: str, coin: str, interval: str, mode: str,
                  capital_krw: float, params: StrategyParams,
-                 account: Optional[bithumb.BithumbAccount] = None):
+                 account: Optional[bithumb.BithumbAccount] = None,
+                 namuh_account: Optional[namuh.NamuhAccount] = None,
+                 broker: str = "bithumb"):
         self.bot_id = bot_id
-        self.coin = coin
+        self.coin = coin.upper().strip()
         self.interval = interval
         self.mode = mode                     # "PAPER" | "LIVE"
+        self.broker = broker
+        if self.coin in NAMUH_STOCKS or self.broker == "namuh":
+            self.broker = "namuh"
+            self.market = "US_STOCK"
+            self.currency = "USD"
+            self.curr_symbol = "$"
+            self.coin_name = NAMUH_STOCKS.get(self.coin, {}).get("name", self.coin)
+        else:
+            self.broker = "bithumb"
+            self.market = "CRYPTO"
+            self.currency = "KRW"
+            self.curr_symbol = "원"
+            self.coin_name = bithumb.COINS.get(self.coin, self.coin)
+
         self.initial_krw = float(capital_krw)
         self.params = params
         self.account = account
+        self.namuh_account = namuh_account
 
         self.cash = float(capital_krw)
         self.pos = Position()
@@ -82,6 +100,18 @@ class TradingBot:
         # 복원 직후 첫 봉을 '이미 소비한 것' 으로 볼지 (아래 restore 참고)
         self._adopt_bar_on_start = False
 
+    def _fetch_price(self) -> float:
+        if self.broker == "namuh":
+            acc = self.namuh_account or namuh.NamuhAccount()
+            return acc.get_price(self.coin)
+        return bithumb.get_price(self.coin)
+
+    def _fetch_candles(self, limit: int = 200) -> List[Dict[str, Any]]:
+        if self.broker == "namuh":
+            acc = self.namuh_account or namuh.NamuhAccount()
+            return acc.get_candles(self.coin, self.interval, limit=limit)
+        return bithumb.get_candles(self.coin, self.interval, limit=limit)
+
     def _record_trade(self, action: str, price: float, units: float, amount_krw: float,
                       pnl: float = 0.0, return_pct: float = 0.0, reason: str = ""):
         """체결된 매매 기록을 보관한다."""
@@ -90,15 +120,17 @@ class TradingBot:
                 "id": f"t-{int(time.time()*1000)}-{uuid.uuid4().hex[:4]}",
                 "botId": self.bot_id,
                 "coin": self.coin,
-                "coinName": bithumb.COINS.get(self.coin, self.coin),
+                "coinName": self.coin_name,
+                "broker": self.broker,
+                "currency": self.currency,
                 "mode": self.mode,
                 "action": action,
                 "turn": self.pos.turn,
                 "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                "price": round(price, 0),
-                "units": round(units, 8),
-                "amountKrw": round(amount_krw, 0),
-                "pnlKrw": round(pnl, 0),
+                "price": round(price, 2 if self.currency == "USD" else 0),
+                "units": round(units, 4 if self.currency == "USD" else 8),
+                "amountKrw": round(amount_krw, 2 if self.currency == "USD" else 0),
+                "pnlKrw": round(pnl, 2 if self.currency == "USD" else 0),
                 "returnPct": round(return_pct, 2),
                 "reason": reason,
             }
@@ -132,17 +164,19 @@ class TradingBot:
         self.is_running = True
         # 루프 첫 틱 전에 상태를 조회하면 현재가가 0 으로 보였다. 시작 시점에 채운다.
         try:
-            self.last_price = bithumb.get_price(self.coin)
+            self.last_price = self._fetch_price()
             self.last_price_at = time.time()
-        except bithumb.BithumbError as e:
-            self.log("WARNING", f"시작 시점 시세 조회 실패: {e.message}")
+        except Exception as e:
+            self.log("WARNING", f"시작 시점 시세 조회 실패: {e}")
         mode_label = "실전(LIVE)" if self.mode == "LIVE" else "모의투자(PAPER)"
-        self.log("INFO", f"{mode_label} 봇 시작 · {self.coin}/KRW · {self.interval} 캔들 · "
-                         f"운용자본 {self.initial_krw:,.0f}원")
+        broker_label = "나무증권(미국주식)" if self.broker == "namuh" else "빗썸(원화마켓)"
+        curr_lbl = "$" if self.currency == "USD" else "원"
+        self.log("INFO", f"{mode_label} [{broker_label}] 봇 시작 · {self.coin_name}({self.coin}) · {self.interval} 캔들 · "
+                         f"운용자본 {self.initial_krw:,.2f}{curr_lbl}")
         
         if self.params.strategyType == "raoer_infinite":
             v_title = "라오어 V4.0" if self.params.raoerVersion == "v4" else "라오어 V1.0"
-            formula_desc = "잔금비례: 잔여현금 ÷ 잔여회차" if self.params.raoerVersion == "v4" else f"고정 1회 {self.initial_krw / self.params.splitCount:,.0f}원"
+            formula_desc = "잔금비례: 잔여현금 ÷ 잔여회차" if self.params.raoerVersion == "v4" else f"고정 1회 {self.initial_krw / self.params.splitCount:,.2f}{curr_lbl}"
             if self.params.raoerUseAi:
                 self.log("INFO", f"🔄✨ [{v_title} AI 스마트 무한매수] {self.params.splitCount}분할 ({formula_desc} · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
                                  f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
@@ -178,10 +212,10 @@ class TradingBot:
         self.is_running = False
         if liquidate and self.pos.open:
             try:
-                price = bithumb.get_price(self.coin)
+                price = self._fetch_price()
                 self._exit(price, "사용자 정지 명령 (시장가 청산)")
-            except bithumb.BithumbError as e:
-                self.log("ERROR", f"청산 실패 — 포지션이 남아 있습니다: {e.message}")
+            except Exception as e:
+                self.log("ERROR", f"청산 실패 — 포지션이 남아 있습니다: {e}")
         self.log("WARNING", "봇이 정지되었습니다.")
         self._persist()
 
@@ -200,23 +234,23 @@ class TradingBot:
 
                 if not bars or (now - bars_at) >= candle_ttl:
                     try:
-                        candles = bithumb.get_candles(self.coin, self.interval, limit=200)
+                        candles = self._fetch_candles(limit=200)
                         bars = compute_indicators(candles, self.params)
                         bars_at = now
-                    except bithumb.BithumbError as e:
+                    except Exception as e:
                         if not bars:
-                            self.log("WARNING", f"캔들을 받지 못해 판단을 보류합니다: {e.message}")
+                            self.log("WARNING", f"캔들을 받지 못해 판단을 보류합니다: {e}")
                             time.sleep(poll)
                             continue
-                        self.log("WARNING", f"캔들 갱신 실패, 직전 값 사용: {e.message}")
+                        self.log("WARNING", f"캔들 갱신 실패, 직전 값 사용: {e}")
 
                 try:
-                    price = bithumb.get_price(self.coin)
-                except bithumb.BithumbError as e:
+                    price = self._fetch_price()
+                except Exception as e:
                     self.price_failures += 1
                     if self.price_failures in (1, 5, 20) or self.price_failures % 60 == 0:
                         self.log("WARNING", f"시세 수신 실패 {self.price_failures}회 — "
-                                            f"추정치로 매매하지 않고 보류합니다: {e.message}")
+                                            f"추정치로 매매하지 않고 보류합니다: {e}")
                     time.sleep(poll)
                     continue
 
@@ -570,86 +604,113 @@ class TradingBot:
     # ── 체결 ──
     def _enter(self, price: float, reason: str):
         invest = self.cash
-        if invest < 5000:
+        min_invest = 10.0 if self.currency == "USD" else 5000.0
+        if invest < min_invest:
             return
         fee = self.params.feePct / 100.0
         units = invest * (1 - fee) / price
 
         if self.mode == "LIVE":
-            if not (self.account and self.account.configured):
-                self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
-                return
+            if self.broker == "namuh":
+                if not (self.namuh_account and self.namuh_account.configured):
+                    self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
+                    return
+                try:
+                    res = self.namuh_account.market_buy(self.coin, invest)
+                    units = float(res.get("units") or units)
+                    self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
+                except namuh.NamuhError as e:
+                    self.log("ERROR", f"나무증권 실주문 매수 실패: {e.message}")
+                    return
+            else:
+                if not (self.account and self.account.configured):
+                    self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
+                    return
 
-            bal_before = 0.0
-            try:
-                b = self.account.get_balance()
-                bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
-            except Exception:
-                pass
+                bal_before = 0.0
+                try:
+                    b = self.account.get_balance()
+                    bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
+                except Exception:
+                    pass
 
-            try:
-                res = self.account.market_buy(self.coin, invest)
-            except bithumb.BithumbError as e:
-                self.log("ERROR", f"실주문 매수 실패 — 포지션 변경 없음: {e.message}")
-                return
-            self.log("ORDER", f"빗썸 실주문 매수 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
+                try:
+                    res = self.account.market_buy(self.coin, invest)
+                except bithumb.BithumbError as e:
+                    self.log("ERROR", f"실주문 매수 실패 — 포지션 변경 없음: {e.message}")
+                    return
+                self.log("ORDER", f"빗썸 실주문 매수 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
 
-            try:
-                time.sleep(0.5)
-                b = self.account.get_balance()
-                bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
-                delta = bal_after - bal_before
-                if delta > 0 and abs(delta - units) / max(units, 1e-8) < 0.2:
-                    units = delta
-                    self.log("INFO", f"실체결 보유량 동기화: {units:.8f} {self.coin}")
-            except Exception as e:
-                logger.warning(f"매수 후 잔고 조회 실패 (이론 수량 {units:.8f} 유지): {e}")
+                try:
+                    time.sleep(0.5)
+                    b = self.account.get_balance()
+                    bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
+                    delta = bal_after - bal_before
+                    if delta > 0 and abs(delta - units) / max(units, 1e-8) < 0.2:
+                        units = delta
+                        self.log("INFO", f"실체결 보유량 동기화: {units:.8f} {self.coin}")
+                except Exception as e:
+                    logger.warning(f"매수 후 잔고 조회 실패 (이론 수량 {units:.8f} 유지): {e}")
 
         self.pos = Position(units=units, entryPrice=price, peakPrice=price, turn=1, totalInvested=invest)
         self.cash = 0.0
         self._record_trade("BUY", price, units, invest, pnl=0.0, return_pct=0.0, reason=reason)
-        self.log("BUY", f"매수 {units:.8f} {self.coin} @ {price:,.0f}원 "
-                        f"({invest:,.0f}원) | 사유: {reason}")
+        p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
+        inv_str = f"{invest:,.2f}$" if self.currency == "USD" else f"{invest:,.0f}원"
+        self.log("BUY", f"매수 {units:.4f} {self.coin} @ {p_str} ({inv_str}) | 사유: {reason}")
         self._persist()
 
     def _enter_chunk(self, price: float, invest_krw: float, reason: str):
         """라오어 무한매수 분할 매수."""
         invest = min(self.cash, invest_krw)
-        if invest < 5000:
-            self.log("WARNING", f"분할 매수 잔여 현금 부족 ({self.cash:,.0f}원 < 5,000원). 매수 보류.")
+        min_invest = 10.0 if self.currency == "USD" else 5000.0
+        if invest < min_invest:
+            self.log("WARNING", f"분할 매수 잔여 현금 부족 ({self.cash:,.2f}{self.curr_symbol} < {min_invest:,.0f}{self.curr_symbol}). 매수 보류.")
             return
         fee = self.params.feePct / 100.0
         new_units = invest * (1 - fee) / price
 
         if self.mode == "LIVE":
-            if not (self.account and self.account.configured):
-                self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
-                return
+            if self.broker == "namuh":
+                if not (self.namuh_account and self.namuh_account.configured):
+                    self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
+                    return
+                try:
+                    res = self.namuh_account.market_buy(self.coin, invest)
+                    new_units = float(res.get("units") or new_units)
+                    self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
+                except namuh.NamuhError as e:
+                    self.log("ERROR", f"나무증권 실주문 분할 매수 실패: {e.message}")
+                    return
+            else:
+                if not (self.account and self.account.configured):
+                    self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
+                    return
 
-            bal_before = 0.0
-            try:
-                b = self.account.get_balance()
-                bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
-            except Exception:
-                pass
+                bal_before = 0.0
+                try:
+                    b = self.account.get_balance()
+                    bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
+                except Exception:
+                    pass
 
-            try:
-                res = self.account.market_buy(self.coin, invest)
-            except bithumb.BithumbError as e:
-                self.log("ERROR", f"실주문 분할 매수 실패: {e.message}")
-                return
-            self.log("ORDER", f"빗썸 실주문 분할 매수 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
+                try:
+                    res = self.account.market_buy(self.coin, invest)
+                except bithumb.BithumbError as e:
+                    self.log("ERROR", f"실주문 분할 매수 실패: {e.message}")
+                    return
+                self.log("ORDER", f"빗썸 실주문 분할 매수 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
 
-            try:
-                time.sleep(0.5)
-                b = self.account.get_balance()
-                bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
-                delta = bal_after - bal_before
-                if delta > 0 and abs(delta - new_units) / max(new_units, 1e-8) < 0.2:
-                    new_units = delta
-                    self.log("INFO", f"실체결 수량 동기화: {new_units:.8f} {self.coin}")
-            except Exception as e:
-                logger.warning(f"분할 매수 후 잔고 동기화 실패: {e}")
+                try:
+                    time.sleep(0.5)
+                    b = self.account.get_balance()
+                    bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
+                    delta = bal_after - bal_before
+                    if delta > 0 and abs(delta - new_units) / max(new_units, 1e-8) < 0.2:
+                        new_units = delta
+                        self.log("INFO", f"실체결 수량 동기화: {new_units:.8f} {self.coin}")
+                except Exception as e:
+                    logger.warning(f"분할 매수 후 잔고 동기화 실패: {e}")
 
         u0 = self.pos.units
         p0 = self.pos.entryPrice
@@ -664,8 +725,11 @@ class TradingBot:
         self.cash = max(0.0, self.cash - invest)
 
         self._record_trade("BUY_CHUNK", price, new_units, invest, pnl=0.0, return_pct=0.0, reason=reason)
-        self.log("BUY", f"[{self.pos.turn}/{self.params.splitCount}회차 분할매수] {new_units:.8f} {self.coin} @ {price:,.0f}원 "
-                        f"({invest:,.0f}원) | 평단가 {p_avg:,.0f}원 (총 {u_total:.8f} {self.coin}) | 사유: {reason}")
+        p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
+        inv_str = f"{invest:,.2f}$" if self.currency == "USD" else f"{invest:,.0f}원"
+        avg_str = f"{p_avg:,.2f}$" if self.currency == "USD" else f"{p_avg:,.0f}원"
+        self.log("BUY", f"[{self.pos.turn}/{self.params.splitCount}회차 분할매수] {new_units:.4f} {self.coin} @ {p_str} "
+                        f"({inv_str}) | 평단가 {avg_str} (총 {u_total:.4f} {self.coin}) | 사유: {reason}")
         self._persist()
 
     def _exit(self, price: float, reason: str):
@@ -675,33 +739,44 @@ class TradingBot:
         fee = self.params.feePct / 100.0
 
         if self.mode == "LIVE":
-            if not (self.account and self.account.configured):
-                self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
-                return
-
-            sell_units = units
-            try:
-                bal = self.account.get_balance()
-                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
-                if actual_coin <= 0:
-                    self.log("WARNING", f"거래소에 {self.coin} 잔고가 없습니다 (외부 매도 또는 잔고 0). 내부 포지션을 정리합니다.")
-                    self.pos = Position()
-                    self._persist()
+            if self.broker == "namuh":
+                if not (self.namuh_account and self.namuh_account.configured):
+                    self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
-                # 거래소 실제 잔고가 이 봇의 장부보다 적을 때만 실제 잔고로 제한 (타 봇/외부 물량 침범 금지)
-                if actual_coin < sell_units:
-                    self.log("INFO", f"매도 수량 제한: 장부 {units:.8f} → 실제 잔고 {actual_coin:.8f} {self.coin}")
-                    sell_units = actual_coin
-            except Exception as e:
-                logger.warning(f"매도 전 잔고 확인 실패 (장부 수량으로 시도): {e}")
+                try:
+                    res = self.namuh_account.market_sell(self.coin, units)
+                    self.log("ORDER", f"나무증권 실주문 매도 접수 (주문번호 {res.get('orderId')})")
+                except namuh.NamuhError as e:
+                    self.log("ERROR", f"나무증권 실주문 매도 실패: {e.message}")
+                    return
+            else:
+                if not (self.account and self.account.configured):
+                    self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
+                    return
 
-            try:
-                res = self.account.market_sell(self.coin, sell_units)
-                units = sell_units
-            except bithumb.BithumbError as e:
-                self.log("ERROR", f"실주문 매도 실패 — 포지션 유지: {e.message}")
-                return
-            self.log("ORDER", f"빗썸 실주문 매도 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
+                sell_units = units
+                try:
+                    bal = self.account.get_balance()
+                    actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
+                    if actual_coin <= 0:
+                        self.log("WARNING", f"거래소에 {self.coin} 잔고가 없습니다 (외부 매도 또는 잔고 0). 내부 포지션을 정리합니다.")
+                        self.pos = Position()
+                        self._persist()
+                        return
+                    # 거래소 실제 잔고가 이 봇의 장부보다 적을 때만 실제 잔고로 제한 (타 봇/외부 물량 침범 금지)
+                    if actual_coin < sell_units:
+                        self.log("INFO", f"매도 수량 제한: 장부 {units:.8f} → 실제 잔고 {actual_coin:.8f} {self.coin}")
+                        sell_units = actual_coin
+                except Exception as e:
+                    logger.warning(f"매도 전 잔고 확인 실패 (장부 수량으로 시도): {e}")
+
+                try:
+                    res = self.account.market_sell(self.coin, sell_units)
+                    units = sell_units
+                except bithumb.BithumbError as e:
+                    self.log("ERROR", f"실주문 매도 실패 — 포지션 유지: {e.message}")
+                    return
+                self.log("ORDER", f"빗썸 실주문 매도 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
 
         proceeds = units * price * (1 - fee)
         # 원가는 '실제로 쓴 원화'(totalInvested)다. units x entryPrice 로 잡으면
@@ -719,8 +794,10 @@ class TradingBot:
         self._record_trade("SELL", price, units, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
         self.pos = Position()
 
-        self.log("SELL", f"전량 매도 {units:.8f} {self.coin} @ {price:,.0f}원 | "
-                         f"손익 {pnl:+,.0f}원 ({pnl_pct:+.2f}%) | 사유: {reason}")
+        p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
+        pnl_str = f"{pnl:+,.2f}$" if self.currency == "USD" else f"{pnl:+,.0f}원"
+        self.log("SELL", f"전량 매도 {units:.4f} {self.coin} @ {p_str} | "
+                         f"손익 {pnl_str} ({pnl_pct:+.2f}%) | 사유: {reason}")
         self._persist()
 
     def _exit_quarter(self, price: float, reason: str):
@@ -732,23 +809,34 @@ class TradingBot:
         fee = self.params.feePct / 100.0
 
         if self.mode == "LIVE":
-            if not (self.account and self.account.configured):
-                self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
-                return
-            try:
-                bal = self.account.get_balance()
-                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
-                if actual_coin < units_to_sell:
-                    units_to_sell = actual_coin
-            except Exception as e:
-                logger.warning(f"쿼터 매도 전 잔고 확인 실패: {e}")
+            if self.broker == "namuh":
+                if not (self.namuh_account and self.namuh_account.configured):
+                    self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
+                    return
+                try:
+                    res = self.namuh_account.market_sell(self.coin, units_to_sell)
+                    self.log("ORDER", f"나무증권 실주문 쿼터 매도 접수 (주문번호 {res.get('orderId')})")
+                except namuh.NamuhError as e:
+                    self.log("ERROR", f"나무증권 실주문 쿼터 매도 실패: {e.message}")
+                    return
+            else:
+                if not (self.account and self.account.configured):
+                    self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
+                    return
+                try:
+                    bal = self.account.get_balance()
+                    actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
+                    if actual_coin < units_to_sell:
+                        units_to_sell = actual_coin
+                except Exception as e:
+                    logger.warning(f"쿼터 매도 전 잔고 확인 실패: {e}")
 
-            try:
-                res = self.account.market_sell(self.coin, units_to_sell)
-            except bithumb.BithumbError as e:
-                self.log("ERROR", f"실주문 쿼터 매도 실패: {e.message}")
-                return
-            self.log("ORDER", f"빗썸 실주문 쿼터 매도 접수 (주문번호 {res.get('orderId')})")
+                try:
+                    res = self.account.market_sell(self.coin, units_to_sell)
+                except bithumb.BithumbError as e:
+                    self.log("ERROR", f"실주문 쿼터 매도 실패: {e.message}")
+                    return
+                self.log("ORDER", f"빗썸 실주문 쿼터 매도 접수 (주문번호 {res.get('orderId')})")
 
         proceeds = units_to_sell * price * (1 - fee)
         # 판 비율만큼 원가도 덜어낸다. 남은 포지션의 원가가 부풀지 않게 한다.
@@ -770,8 +858,11 @@ class TradingBot:
 
         self._record_trade("SELL_QUARTER", price, units_to_sell, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
         ver_tag = "[V4 리버스 모드 방어] " if self.params.raoerVersion == "v4" else "[쿼터매도 방어] "
-        self.log("SELL", f"{ver_tag}{units_to_sell:.8f} {self.coin} 매도 ({proceeds:,.0f}원 확보) | "
-                         f"손익 {pnl:+,.0f}원 ({pnl_pct:+.2f}%) | 회차 조정: T={self.pos.turn} | 사유: {reason}")
+        p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
+        proc_str = f"{proceeds:,.2f}$" if self.currency == "USD" else f"{proceeds:,.0f}원"
+        pnl_str = f"{pnl:+,.2f}$" if self.currency == "USD" else f"{pnl:+,.0f}원"
+        self.log("SELL", f"{ver_tag}{units_to_sell:.4f} {self.coin} 매도 ({proc_str} 확보) | "
+                         f"손익 {pnl_str} ({pnl_pct:+.2f}%) | 회차 조정: T={self.pos.turn} | 사유: {reason}")
         self._persist()
 
     def _enter_partial(self, price: float, invest_krw: float, reason: str):
@@ -865,6 +956,7 @@ class TradingBot:
         return {
             "botId": self.bot_id, "coin": self.coin, "interval": self.interval,
             "mode": self.mode, "initialKrw": self.initial_krw,
+            "broker": self.broker, "market": self.market, "currency": self.currency,
             "params": self.params.to_dict(),
             "cash": self.cash,
             "units": self.pos.units, "entryPrice": self.pos.entryPrice,
@@ -884,9 +976,12 @@ class TradingBot:
 
     @classmethod
     def restore(cls, d: Dict[str, Any],
-                account: Optional[bithumb.BithumbAccount]) -> "TradingBot":
+                account: Optional[bithumb.BithumbAccount],
+                namuh_account: Optional[namuh.NamuhAccount] = None) -> "TradingBot":
+        broker = d.get("broker", "namuh" if d.get("coin") in NAMUH_STOCKS else "bithumb")
         bot = cls(d["botId"], d["coin"], d["interval"], d["mode"],
-                  float(d["initialKrw"]), StrategyParams.from_dict(d.get("params")), account)
+                  float(d["initialKrw"]), StrategyParams.from_dict(d.get("params")),
+                  account=account, namuh_account=namuh_account, broker=broker)
         bot.cash = float(d.get("cash", d["initialKrw"]))
         lbt = d.get("lastBarTime")
         bot._last_bar_time = int(lbt) if lbt else None
@@ -915,7 +1010,11 @@ class TradingBot:
         return {
             "botId": self.bot_id,
             "coin": self.coin,
-            "coinName": bithumb.COINS.get(self.coin, self.coin),
+            "coinName": self.coin_name,
+            "broker": self.broker,
+            "market": self.market,
+            "currency": self.currency,
+            "currSymbol": self.curr_symbol,
             "interval": self.interval,
             "mode": self.mode,
             "strategyType": self.params.strategyType,
@@ -923,23 +1022,23 @@ class TradingBot:
             "turn": self.pos.turn,
             "splitCount": self.params.splitCount,
             "targetProfitPct": self.params.targetProfitPct,
-            "currency": "KRW",
             "isRunning": self.is_running,
             "createdAt": self.created_at,
-            "initialKrw": round(self.initial_krw, 0),
-            "equityKrw": round(equity, 0),
-            "cashKrw": round(self.cash, 0),
+            "initialKrw": round(self.initial_krw, 2 if self.currency == "USD" else 0),
+            "equityKrw": round(equity, 2 if self.currency == "USD" else 0),
+            "cashKrw": round(self.cash, 2 if self.currency == "USD" else 0),
             # 실제로 시장에 들어간 원금. 화면이 '무엇 대비 수익률인지' 를
             # 밝히려면 배정자본(initialKrw)과 이 값이 둘 다 필요하다.
-            "investedKrw": round(self.pos.totalInvested, 0),
-            "units": round(self.pos.units, 8),
-            "entryPrice": round(self.pos.entryPrice, 0),
-            "currentPrice": round(price, 0),
-            "unrealizedPnlKrw": round(unreal, 0),
+            "investedKrw": round(self.pos.totalInvested, 2 if self.currency == "USD" else 0),
+            "units": round(self.pos.units, 4 if self.currency == "USD" else 8),
+            "entryPrice": round(self.pos.entryPrice, 2 if self.currency == "USD" else 0),
+            "currentPrice": round(price, 2 if self.currency == "USD" else 0),
+            "unrealizedPnlKrw": round(unreal, 2 if self.currency == "USD" else 0),
             "unrealizedPnlPct": round((price - self.pos.entryPrice) / self.pos.entryPrice * 100, 2)
                                 if self.pos.open and self.pos.entryPrice else 0.0,
-            "realizedPnlKrw": round(self.realized_pnl, 0),
-            "totalReturnPct": round((equity - self.initial_krw) / self.initial_krw * 100, 2),
+            "realizedPnlKrw": round(self.realized_pnl, 2 if self.currency == "USD" else 0),
+            "totalReturnPct": round((equity - self.initial_krw) / self.initial_krw * 100, 2)
+                              if self.initial_krw > 0 else 0.0,
             "totalTrades": self.total_trades,
             "winRatePct": round(self.winning_trades / self.total_trades * 100, 2)
                           if self.total_trades else 0.0,
@@ -972,12 +1071,15 @@ class BotManager:
                     return bid
 
     def deploy(self, coin: str, interval: str, mode: str, capital_krw: float,
-               params: Dict[str, Any], account: Optional[bithumb.BithumbAccount]) -> TradingBot:
+               params: Dict[str, Any], account: Optional[bithumb.BithumbAccount],
+               namuh_account: Optional[namuh.NamuhAccount] = None,
+               broker: str = "bithumb") -> TradingBot:
         if self.active_count() >= MAX_ACTIVE_BOTS:
             raise TooManyBots(f"동시 가동 봇 상한({MAX_ACTIVE_BOTS}개)에 도달했습니다. "
                               f"기존 봇을 정지한 뒤 다시 시도하세요.")
         p = StrategyParams.from_dict(params)
-        bot = TradingBot(self._new_id(coin), coin, interval, mode, capital_krw, p, account)
+        bot = TradingBot(self._new_id(coin), coin, interval, mode, capital_krw, p,
+                         account=account, namuh_account=namuh_account, broker=broker)
         self.bots[bot.bot_id] = bot
         bot.start()
         return bot
@@ -1041,9 +1143,11 @@ class BotManager:
                 continue
             coin = t.get("coin") or "?"
 
+            c_name = t.get("coinName") or bithumb.COINS.get(coin, NAMUH_STOCKS.get(coin, {}).get("name", coin))
             stats = by_coin.setdefault(coin, {
                 "coin": coin,
-                "coinName": bithumb.COINS.get(coin, coin),
+                "coinName": c_name,
+                "currency": t.get("currency", "USD" if coin in NAMUH_STOCKS else "KRW"),
                 "realizedPnlKrw": 0.0,
                 "totalTrades": 0,
                 "winningTrades": 0,
@@ -1093,10 +1197,11 @@ class BotManager:
     def persist(self) -> None:
         botstore.save([b.snapshot() for b in self.bots.values()])
 
-    def restore(self, account: Optional[bithumb.BithumbAccount]) -> Dict[str, Any]:
+    def restore(self, account: Optional[bithumb.BithumbAccount],
+                namuh_account: Optional[namuh.NamuhAccount] = None) -> Dict[str, Any]:
         """저장된 봇을 복원한다.
 
-        LIVE 봇이 포지션을 들고 있었다면 빗썸 실제 보유량과 대조한다.
+        LIVE 봇이 포지션을 들고 있었다면 거래소 실제 보유량과 대조한다.
         내부 장부가 거래소보다 많다고 주장하면(= 팔 수 없는 수량) 자동으로
         재가동하지 않는다. 그 상태로 매도를 걸면 주문이 거부되거나
         의도하지 않은 수량이 나가기 때문이다. 판단은 사용자에게 맡긴다.
@@ -1111,14 +1216,14 @@ class BotManager:
             logger.error(f"체결 일지 복원 실패 (봇 복원은 계속합니다): {e}")
 
         # 여기서부터가 핵심이다. '봇이 0개' 와 '봇 목록을 못 읽었다' 는
-        # 절대 같지 않다. 후자를 0 개로 취급하면 빗썸에 포지션을 남긴 채
+        # 절대 같지 않다. 후자를 0 개로 취급하면 거래소에 포지션을 남긴 채
         # 감시 주체가 사라지고, 다음 저장이 그 기록마저 지운다.
         try:
             records = botstore.load()
         except jsonfile.StoreReadError as e:
             msg = (f"봇 상태 파일을 읽지 못해 복원을 중단했습니다 — {e} "
                    "봇을 하나도 가동하지 않았고, 이 파일에 다시 쓰지도 않습니다. "
-                   "빗썸에 포지션이 남아 있다면 지금은 감시되지 않는 상태입니다. "
+                   "포지션이 남아 있다면 지금은 감시되지 않는 상태입니다. "
                    "원인(주로 data/ 권한)을 고친 뒤 서비스를 재시작하세요.")
             logger.error(msg)
             self.restore_error = msg
@@ -1128,18 +1233,16 @@ class BotManager:
         if not records:
             return {"restored": 0, "resumed": 0, "held": 0, "notes": []}
 
-        # '보유량이 0' 과 '조회를 못 했다' 는 다르다. 후자를 0 으로 취급하면
-        # 잘못된 사유를 안내하게 된다 (실제로 그렇게 안내했다).
+        # 빗썸 잔고 조회
         exchange: Dict[str, float] = {}
         balance_known = False
         balance_error = ""
-        # 미지원 종목으로 저장된 봇도 포지션이 있으면 대조 대상이다.
-        # 사용자가 실제로 정리해야 하는지 판단하려면 거래소 보유량이 필요하다.
-        need_check = any(float(r.get("units", 0)) > 0 and
-                         (r.get("mode") == "LIVE" or
-                          bithumb.normalize_coin(r.get("coin", "")) is None)
-                         for r in records)
-        if need_check:
+        need_bithumb_check = any(r.get("broker", "bithumb") != "namuh" and
+                                 float(r.get("units", 0)) > 0 and
+                                 (r.get("mode") == "LIVE" or
+                                  bithumb.normalize_coin(r.get("coin", "")) is None)
+                                 for r in records)
+        if need_bithumb_check:
             if not (account and account.configured):
                 balance_error = "빗썸 API 키가 등록되지 않았습니다."
             else:
@@ -1150,40 +1253,64 @@ class BotManager:
                     balance_error = e.message
                     logger.error(f"복원 중 빗썸 잔고 조회 실패: {e.message}")
 
+        # 나무증권 잔고 조회
+        namuh_exchange: Dict[str, float] = {}
+        namuh_balance_known = False
+        namuh_balance_error = ""
+        need_namuh_check = any((r.get("broker") == "namuh" or r.get("coin") in NAMUH_STOCKS) and
+                               float(r.get("units", 0)) > 0 and
+                               r.get("mode") == "LIVE"
+                               for r in records)
+        if need_namuh_check:
+            if not (namuh_account and namuh_account.configured):
+                namuh_balance_error = "나무증권 API 키가 등록되지 않았습니다."
+            else:
+                try:
+                    namuh_bal = namuh_account.get_balance()
+                    for h in namuh_bal.get("holdings", []):
+                        namuh_exchange[h.get("symbol", "").upper()] = float(h.get("quantity", 0))
+                    namuh_balance_known = True
+                except Exception as e:
+                    namuh_balance_error = str(e)
+                    logger.error(f"복원 중 나무증권 잔고 조회 실패: {e}")
+
         notes: List[str] = []
         resumed = held = 0
         allocated_units: Dict[str, float] = {}
 
         for r in records:
             try:
-                bot = TradingBot.restore(r, account)
+                bot = TradingBot.restore(r, account, namuh_account)
             except Exception as e:
                 logger.error(f"봇 복원 실패 {r.get('botId')}: {e}")
                 continue
             self.bots[bot.bot_id] = bot
 
-            # 지원 목록에서 빠진 코인(예: 취급 중단)으로 저장된 봇은 재가동하지
-            # 않는다. 시세 조회가 매 틱 실패해 루프만 도는 상태가 되고, 포지션을
-            # 들고 있으면 손절 감시가 되지 않는 채로 방치된다.
-            if bithumb.normalize_coin(bot.coin) is None:
-                # 거래소 실제 보유량을 알 수 있으면 함께 알린다. '장부에 있다' 와
-                # '거래소에 있다' 는 다르고, 사용자가 확인해야 할 것은 후자다.
-                if bot.pos.units <= 0:
-                    where = "보유 포지션은 없습니다."
-                elif balance_known:
-                    actual = float(exchange.get(bot.coin, 0.0))
-                    where = (f"빗썸 실제 보유량은 {actual:.8f} {bot.coin} 입니다. "
-                             + ("빗썸에서 직접 정리하세요." if actual > 0
-                                else "거래소에는 남아 있지 않으니 이 봇은 삭제하셔도 됩니다."))
-                else:
-                    where = (f"내부 장부상 {bot.pos.units:.8f} {bot.coin} 를 들고 있습니다. "
-                             f"빗썸 잔고를 조회하지 못해 대조하지 못했으니 직접 확인하세요.")
-                msg = (f"{bot.coin} 는 더 이상 지원하지 않는 종목이라 재가동하지 "
-                       f"않습니다. {where}")
-                bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
-                bot.is_running = False
-                held += 1
-                continue
+            if bot.broker == "namuh":
+                if bot.coin not in NAMUH_STOCKS:
+                    msg = f"{bot.coin} 는 지원하지 않는 해외주식 종목이라 재가동하지 않습니다."
+                    bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                    bot.is_running = False
+                    held += 1
+                    continue
+            else:
+                if bithumb.normalize_coin(bot.coin) is None:
+                    if bot.pos.units <= 0:
+                        where = "보유 포지션은 없습니다."
+                    elif balance_known:
+                        actual = float(exchange.get(bot.coin, 0.0))
+                        where = (f"빗썸 실제 보유량은 {actual:.8f} {bot.coin} 입니다. "
+                                 + ("빗썸에서 직접 정리하세요." if actual > 0
+                                    else "거래소에는 남아 있지 않으니 이 봇은 삭제하셔도 됩니다."))
+                    else:
+                        where = (f"내부 장부상 {bot.pos.units:.8f} {bot.coin} 를 들고 있습니다. "
+                                 f"빗썸 잔고를 조회하지 못해 대조하지 못했으니 직접 확인하세요.")
+                    msg = (f"{bot.coin} 는 더 이상 지원하지 않는 종목이라 재가동하지 "
+                           f"않습니다. {where}")
+                    bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                    bot.is_running = False
+                    held += 1
+                    continue
 
             if not r.get("wasRunning"):
                 bot.log("INFO", "이전에 정지된 상태로 복원되었습니다. 재가동하지 않습니다.")
@@ -1191,31 +1318,51 @@ class BotManager:
 
             # LIVE + 포지션 보유 → 거래소와 대조
             if bot.mode == "LIVE" and bot.pos.open:
-                if not balance_known:
-                    msg = (f"{bot.coin} 포지션 {bot.pos.units:.8f} 를 들고 있는데 "
-                           f"빗썸 잔고를 조회하지 못해 대조할 수 없습니다. "
-                           f"재가동을 보류합니다. (사유: {balance_error})")
-                    bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
-                    held += 1
-                    continue
-                actual = float(exchange.get(bot.coin, 0.0))
-                req_total = allocated_units.get(bot.coin, 0.0) + bot.pos.units
-                # 계좌에 봇 것 외의 보유분이 있을 수 있으므로 '이상' 이면 정상으로 본다.
-                if actual + 1e-8 < req_total:
-                    msg = (f"내부 장부 누적({req_total:.8f} {bot.coin})이 빗썸 실제 "
-                           f"보유량({actual:.8f})보다 많습니다. 재가동을 보류합니다. "
-                           f"빗썸에서 실제 보유량을 확인한 뒤 이 봇을 삭제하거나 "
-                           f"수동으로 정리하세요.")
-                    bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
-                    held += 1
-                    continue
-                allocated_units[bot.coin] = req_total
-                bot.log("INFO", f"거래소 대조 통과 (봇 장부 {bot.pos.units:.8f} / 계좌 잔고 {actual:.8f} {bot.coin})")
+                if bot.broker == "namuh":
+                    if not namuh_balance_known:
+                        msg = (f"{bot.coin} 포지션 {bot.pos.units:.4f} 를 들고 있는데 "
+                               f"나무증권 잔고를 조회하지 못해 대조할 수 없습니다. "
+                               f"재가동을 보류합니다. (사유: {namuh_balance_error})")
+                        bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                        held += 1
+                        continue
+                    actual = float(namuh_exchange.get(bot.coin, 0.0))
+                    req_total = allocated_units.get(f"namuh:{bot.coin}", 0.0) + bot.pos.units
+                    if actual + 1e-4 < req_total:
+                        msg = (f"내부 장부 누적({req_total:.4f} {bot.coin})이 나무증권 실제 "
+                               f"보유량({actual:.4f})보다 많습니다. 재가동을 보류합니다.")
+                        bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                        held += 1
+                        continue
+                    allocated_units[f"namuh:{bot.coin}"] = req_total
+                    bot.log("INFO", f"나무증권 대조 통과 (봇 장부 {bot.pos.units:.4f} / 계좌 잔고 {actual:.4f} {bot.coin})")
+                else:
+                    if not balance_known:
+                        msg = (f"{bot.coin} 포지션 {bot.pos.units:.8f} 를 들고 있는데 "
+                               f"빗썸 잔고를 조회하지 못해 대조할 수 없습니다. "
+                               f"재가동을 보류합니다. (사유: {balance_error})")
+                        bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                        held += 1
+                        continue
+                    actual = float(exchange.get(bot.coin, 0.0))
+                    req_total = allocated_units.get(bot.coin, 0.0) + bot.pos.units
+                    if actual + 1e-8 < req_total:
+                        msg = (f"내부 장부 누적({req_total:.8f} {bot.coin})이 빗썸 실제 "
+                               f"보유량({actual:.8f})보다 많습니다. 재가동을 보류합니다. "
+                               f"빗썸에서 실제 보유량을 확인한 뒤 이 봇을 삭제하거나 "
+                               f"수동으로 정리하세요.")
+                        bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
+                        held += 1
+                        continue
+                    allocated_units[bot.coin] = req_total
+                    bot.log("INFO", f"거래소 대조 통과 (봇 장부 {bot.pos.units:.8f} / 계좌 잔고 {actual:.8f} {bot.coin})")
 
             if bot.pos.open:
+                p_str = f"{bot.pos.entryPrice:,.2f}$" if bot.currency == "USD" else f"{bot.pos.entryPrice:,.0f}원"
+                u_str = f"{bot.pos.units:.4f}" if bot.currency == "USD" else f"{bot.pos.units:.8f}"
                 bot.log("WARNING",
-                        f"포지션을 들고 재시작되었습니다 — 진입가 {bot.pos.entryPrice:,.0f}원 · "
-                        f"{bot.pos.units:.8f} {bot.coin}. 손절·익절 감시를 재개합니다.")
+                        f"포지션을 들고 재시작되었습니다 — 진입가 {p_str} · "
+                        f"{u_str} {bot.coin}. 손절·익절 감시를 재개합니다.")
             bot.start()
             resumed += 1
 

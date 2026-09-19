@@ -91,3 +91,86 @@ class KeyStore:
 
 
 keystore = KeyStore()
+
+
+# ───────────────────────── 나무증권 계정 보관 ─────────────────────────
+
+NAMUH_KEYS_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "namuh_key.json")
+
+ENV_NAMUH_APP_KEY = "NAMUH_APP_KEY"
+ENV_NAMUH_APP_SECRET = "NAMUH_APP_SECRET"
+ENV_NAMUH_ACCOUNT_NO = "NAMUH_ACCOUNT_NO"
+
+
+class NamuhKeyStore:
+    def __init__(self):
+        self.source = "none"          # "env" | "disk" | "none"
+        from services.namuh import NamuhAccount
+        self.account = NamuhAccount()
+        self._load()
+
+    def _load(self):
+        from services.namuh import NamuhAccount
+        app_key = (os.getenv(ENV_NAMUH_APP_KEY) or "").strip()
+        app_secret = (os.getenv(ENV_NAMUH_APP_SECRET) or "").strip()
+        account_no = (os.getenv(ENV_NAMUH_ACCOUNT_NO) or "").strip()
+        if app_key and app_secret:
+            self.account = NamuhAccount(app_key, app_secret, account_no)
+            self.source = "env"
+            logger.info("나무증권 API 키를 환경변수에서 로드했습니다.")
+            return
+
+        try:
+            if os.path.exists(NAMUH_KEYS_FILE):
+                with open(NAMUH_KEYS_FILE, encoding="utf-8") as f:
+                    d = json.load(f)
+                app_key = (d.get("appKey") or "").strip()
+                app_secret = (d.get("appSecret") or "").strip()
+                account_no = (d.get("accountNo") or "").strip()
+                if app_key and app_secret:
+                    self.account = NamuhAccount(app_key, app_secret, account_no)
+                    self.source = "disk"
+                    logger.info("나무증권 API 키를 저장 파일에서 로드했습니다 (평문 저장).")
+        except Exception as e:
+            logger.warning(f"나무증권 저장된 키를 읽지 못했습니다: {e}")
+
+    def save(self, app_key: str, app_secret: str, account_no: str) -> None:
+        """디스크에 평문 저장."""
+        from services.namuh import NamuhAccount
+        if self.source == "env":
+            raise PermissionError("키가 환경변수로 주입되어 있어 화면에서 변경할 수 없습니다.")
+        os.makedirs(os.path.dirname(NAMUH_KEYS_FILE), exist_ok=True)
+        with open(NAMUH_KEYS_FILE, "w", encoding="utf-8") as f:
+            json.dump({"appKey": app_key, "appSecret": app_secret, "accountNo": account_no}, f)
+        self.account = NamuhAccount(app_key, app_secret, account_no)
+        self.source = "disk"
+
+    def clear(self) -> None:
+        from services.namuh import NamuhAccount
+        if self.source == "env":
+            raise PermissionError("환경변수로 주입된 키는 화면에서 해제할 수 없습니다.")
+        try:
+            if os.path.exists(NAMUH_KEYS_FILE):
+                os.remove(NAMUH_KEYS_FILE)
+        except Exception as e:
+            logger.warning(f"나무증권 키 파일 삭제 실패: {e}")
+        self.account = NamuhAccount()
+        self.source = "none"
+
+    def status(self) -> Dict[str, Any]:
+        return {
+            "connected": self.account.configured,
+            "maskedKey": self.account.masked_key(),
+            "maskedAccount": self.account.masked_account(),
+            "source": self.source,
+            "editable": self.source != "env",
+            "storageNote": ("환경변수로 주입된 키입니다 (디스크에 저장되지 않음)."
+                            if self.source == "env" else
+                            "서버 파일에 평문 저장됩니다. 재배포 시 사라지므로 "
+                            "영구 보관은 환경변수를 사용하세요."),
+        }
+
+
+namuh_keystore = NamuhKeyStore()
+

@@ -57,9 +57,9 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service, arbitrage, spread_recorder
+from services import auth, backtest, bithumb, gemini_service, arbitrage, spread_recorder, namuh
 from services.gemini_service import gemini_keystore
-from services.keystore import keystore
+from services.keystore import keystore, namuh_keystore
 from services.arbitrage import arbitrage_manager
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, bot_manager
@@ -100,12 +100,14 @@ def _startup_log():
         logger.warning(auth.password_strength_warning())
     ks = keystore.status()
     logger.info(f"빗썸 키: {'등록됨(' + ks['source'] + ')' if ks['connected'] else '미등록'}")
+    ns = namuh_keystore.status()
+    logger.info(f"나무증권 키: {'등록됨(' + ns['source'] + ')' if ns['connected'] else '미등록'}")
     gs = gemini_keystore.status()
     logger.info(f"Gemini 키: {'등록됨(' + gs['source'] + ', ' + gs['model'] + ')' if gs['configured'] else '미등록'}")
 
-    # 저장된 봇을 복원한다. LIVE 포지션은 빗썸 실제 보유량과 대조한 뒤에만 재가동한다.
+    # 저장된 봇을 복원한다. LIVE 포지션은 거래소 실제 보유량과 대조한 뒤에만 재가동한다.
     global RESTORE_SUMMARY
-    RESTORE_SUMMARY = bot_manager.restore(keystore.account)
+    RESTORE_SUMMARY = bot_manager.restore(keystore.account, namuh_keystore.account)
 
     # 차익거래 시뮬레이터도 복원한다. 실주문이 없으니 거래소 대조는 없다.
     try:
@@ -238,6 +240,7 @@ class DeployRequest(BaseModel):
     interval: str = "1h"
     mode: str = "PAPER"
     capitalKrw: float = 1_000_000.0
+    broker: str = "bithumb"
     params: Dict[str, Any] = {}
 
 
@@ -247,6 +250,43 @@ class BotIdRequest(BaseModel):
 
 @app.post("/api/bot/deploy")
 def deploy_bot(req: DeployRequest):
+    broker = (req.broker or "bithumb").lower()
+    raw_coin = req.coin.upper().strip()
+
+    if broker == "namuh" or raw_coin in namuh.NAMUH_STOCKS:
+        broker = "namuh"
+        coin = raw_coin
+        if coin not in namuh.NAMUH_STOCKS:
+            raise HTTPException(400, f"나무증권 지원 종목이 아닙니다: {coin} (지원: {', '.join(namuh.NAMUH_STOCKS.keys())})")
+        if req.capitalKrw < 10:
+            raise HTTPException(400, "미국주식 운용 자본은 $10 이상이어야 합니다.")
+        mode = req.mode.upper()
+        if mode not in ("PAPER", "LIVE"):
+            raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
+
+        try:
+            namuh.get_price(coin)
+        except Exception as e:
+            raise HTTPException(503, f"{coin} 시세를 받지 못해 봇을 가동할 수 없습니다: {e}")
+
+        if mode == "LIVE":
+            if not namuh_keystore.account.configured:
+                raise HTTPException(400, "실전(LIVE) 가동 전에 나무증권 API 키를 등록해야 합니다.")
+            test = namuh_keystore.account.test_connection()
+            if not test.get("success"):
+                raise HTTPException(400, f"나무증권 실계좌 연결 실패: {test.get('message')}")
+            usd_avail = float(test.get("usdAvailable", 0))
+            if usd_avail < req.capitalKrw:
+                raise HTTPException(400, f"나무증권 주문가능 외화(${usd_avail:,.2f})가 운용 자본(${req.capitalKrw:,.2f})보다 적습니다.")
+
+        try:
+            bot = bot_manager.deploy(coin, req.interval, mode, req.capitalKrw,
+                                     req.params, account=keystore.account,
+                                     namuh_account=namuh_keystore.account, broker="namuh")
+        except TooManyBots as e:
+            raise HTTPException(429, str(e))
+        return bot.status()
+
     coin = bithumb.normalize_coin(req.coin)
     if not coin:
         raise HTTPException(400, f"빗썸 원화마켓에 없는 코인입니다: {req.coin}")
@@ -295,7 +335,8 @@ def deploy_bot(req: DeployRequest):
 
     try:
         bot = bot_manager.deploy(coin, req.interval, mode, req.capitalKrw,
-                                 req.params, keystore.account)
+                                 req.params, keystore.account,
+                                 namuh_account=namuh_keystore.account, broker="bithumb")
     except TooManyBots as e:
         raise HTTPException(429, str(e))
     return bot.status()
@@ -409,6 +450,93 @@ def egress_ip():
             "registerThisIp": info.get("ip"),
             "hint": ("프록시 IP 를 확인할 수 없습니다. 프록시가 살아 있는지 점검하세요."
                      if info.get("proxyConfigured") and not info.get("ip") else None)}
+
+
+# ───────────────────────── 나무증권 (해외주식) ─────────────────────────
+
+class NamuhKeyRequest(BaseModel):
+    appKey: str
+    appSecret: str
+    accountNo: str = ""
+
+
+@app.get("/api/namuh/stocks")
+def namuh_stocks():
+    """나무증권 지원 미국 ETF 종목 목록."""
+    return {"stocks": [{"code": c, **info} for c, info in namuh.NAMUH_STOCKS.items()]}
+
+
+@app.get("/api/namuh/account")
+def namuh_account_status():
+    st = namuh_keystore.status()
+    if namuh_keystore.account.configured:
+        try:
+            bal = namuh_keystore.account.get_balance()
+            st.update({
+                "balanceOk": True,
+                "usdAvailable": bal.get("usdAvailable", 0.0),
+                "usdTotal": bal.get("usdTotal", 0.0),
+                "krwEquivalent": bal.get("krwEquivalent", 0.0),
+                "holdings": bal.get("holdings", []),
+            })
+        except namuh.NamuhError as e:
+            st.update({"balanceOk": False, "error": e.message})
+    return st
+
+
+@app.post("/api/namuh/test")
+def namuh_test(req: NamuhKeyRequest):
+    return namuh.NamuhAccount(req.appKey, req.appSecret, req.accountNo).test_connection()
+
+
+@app.post("/api/namuh/save")
+def namuh_save(req: NamuhKeyRequest):
+    result = namuh.NamuhAccount(req.appKey, req.appSecret, req.accountNo).test_connection()
+    if not result.get("success"):
+        raise HTTPException(400, result.get("message", "나무증권 인증에 실패했습니다."))
+    try:
+        namuh_keystore.save(req.appKey.strip(), req.appSecret.strip(), req.accountNo.strip())
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    return {"success": True, **namuh_keystore.status()}
+
+
+@app.post("/api/namuh/clear")
+def namuh_clear():
+    try:
+        namuh_keystore.clear()
+    except PermissionError as e:
+        raise HTTPException(409, str(e))
+    return {"success": True, **namuh_keystore.status()}
+
+
+@app.get("/api/namuh/prices")
+def namuh_prices():
+    """미국 ETF 현재가 조회."""
+    out = []
+    for c, info in namuh.NAMUH_STOCKS.items():
+        try:
+            ticker = namuh_keystore.account.get_ticker(c)
+            out.append(ticker)
+        except Exception as e:
+            out.append({"symbol": c, "name": info["name"], "error": str(e)})
+    return {"prices": out}
+
+
+@app.get("/api/namuh/candles")
+def namuh_candles(symbol: str = Query(...), interval: str = Query("1h")):
+    """미국 ETF 캔들 및 지표."""
+    sym = symbol.upper().strip()
+    if sym not in namuh.NAMUH_STOCKS:
+        raise HTTPException(400, f"지원하지 않는 종목: {sym}")
+    try:
+        rows = namuh_keystore.account.get_candles(sym, interval, limit=200)
+        p = StrategyParams()
+        bars = compute_indicators(rows, p)
+    except Exception as e:
+        raise HTTPException(502, str(e))
+    return {"symbol": sym, "name": namuh.NAMUH_STOCKS[sym]["name"], "interval": interval,
+            "candles": bars, "params": p.to_dict(), "dataSource": "namuh-plug"}
 
 
 # ───────────────────────── Gemini AI ─────────────────────────

@@ -31,11 +31,12 @@
 <div id="app" class="hidden">
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">₩</span>
-      <span class="brand-name">빗썸 원화 자동매매</span>
+      <span class="brand-mark">₩/$</span>
+      <span class="brand-name">알파랩 (빗썸 &amp; 나무증권)</span>
     </div>
     <div class="topbar-right">
-      <span class="pill" id="accountPill">계정 확인 중…</span>
+      <span class="pill" id="namuhPill">나무증권 확인 중…</span>
+      <span class="pill" id="accountPill">빗썸 확인 중…</span>
       <button class="btn btn-ghost" id="logoutBtn">로그아웃</button>
     </div>
   </header>
@@ -235,9 +236,15 @@
       <div class="grid-2">
         <div class="card">
           <h2 class="card-title">봇 가동</h2>
+
+          <div style="display: flex; gap: 8px; margin-bottom: 14px;">
+            <button type="button" class="btn btn-sm btn-primary" id="btnMarketCrypto" style="flex: 1;">🪙 코인 (빗썸 원화)</button>
+            <button type="button" class="btn btn-sm btn-ghost" id="btnMarketStock" style="flex: 1;">🇺🇸 미국 ETF (나무증권)</button>
+          </div>
+
           <div class="form-grid">
             <div>
-              <label class="label">코인</label>
+              <label class="label" id="lblBotCoin">코인</label>
               <select class="input" id="botCoin"></select>
             </div>
             <div id="botIntervalField">
@@ -248,11 +255,11 @@
               <label class="label">매매 모드</label>
               <select class="input" id="botMode">
                 <option value="PAPER" selected>모의투자 (주문 안 나감)</option>
-                <option value="LIVE">실전 (빗썸 실주문)</option>
+                <option value="LIVE" id="optBotLive">실전 (빗썸 실주문)</option>
               </select>
             </div>
             <div>
-              <label class="label">운용 자본 (원)</label>
+              <label class="label" id="lblBotCapital">운용 자본 (원)</label>
               <input class="input" type="number" id="botCapital" value="1000000" min="10000" step="10000">
             </div>
           </div>
@@ -666,15 +673,53 @@
           <h3 class="card-title" style="font-size: 15px;">빗썸 계좌 잔고</h3>
           <div id="balanceBox"><div class="empty">빗썸 API 키를 등록하면 표시됩니다.</div></div>
         </div>
+
+        <div class="card" style="grid-column: 1 / -1;">
+          <h2 class="card-title">🌳 농협 나무증권 (해외주식) API 키</h2>
+          <div id="namuhStatus" class="kv"></div>
+
+          <div class="notice" style="margin-top: 12px;">
+            <b>나무증권 Namuh PLUG REST OpenAPI</b>를 통해 미국 3배 레버리지 ETF(TQQQ, SOXL, UPRO 등)를 24시간 자동 매매합니다.
+          </div>
+
+          <div id="namuhKeyForm" style="margin-top: 14px;">
+            <div class="form-grid">
+              <div>
+                <label class="label">App Key (고객사 앱키)</label>
+                <input class="input" id="namuhAppKeyInput" placeholder="나무증권 개발자센터 발급 AppKey" spellcheck="false" autocomplete="off">
+              </div>
+              <div>
+                <label class="label">App Secret (비밀키)</label>
+                <input class="input" id="namuhAppSecretInput" type="password" placeholder="App Secret Key" spellcheck="false" autocomplete="off">
+              </div>
+            </div>
+            <div style="margin-top: 8px;">
+              <label class="label">해외주식 계좌번호 (종합/해외주식 8자리-01)</label>
+              <input class="input" id="namuhAccountNoInput" placeholder="예: 12345678-01" spellcheck="false" autocomplete="off">
+            </div>
+            <div class="btn-row" style="margin-top: 12px;">
+              <button class="btn btn-ghost" id="testNamuhKeyBtn">연결 테스트</button>
+              <button class="btn btn-primary" id="saveNamuhKeyBtn">저장</button>
+              <button class="btn btn-ghost btn-danger hidden" id="clearNamuhKeyBtn">삭제</button>
+            </div>
+            <p class="muted small">OAuth2 토큰 발급을 통과한 키만 저장됩니다. 영구 보관은 <code>.env</code> 파일의 <code>NAMUH_APP_KEY</code>, <code>NAMUH_APP_SECRET</code>, <code>NAMUH_ACCOUNT_NO</code>를 권장합니다.</p>
+          </div>
+          <div class="alert hidden" id="namuhKeyResult"></div>
+
+          <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0 16px 0;">
+
+          <h3 class="card-title" style="font-size: 15px;">나무증권 외화 예수금 및 보유 ETF</h3>
+          <div id="namuhBalanceBox"><div class="empty">나무증권 API 키를 등록하면 표시됩니다.</div></div>
+        </div>
       </div>
     </section>
   </main>
 
   <footer class="foot">
-    빗썸 원화마켓 전용 · 실주문은 빗썸만 지원 · 시세를 받지 못하면 봇은 판단을 보류합니다
+    빗썸 원화마켓 &amp; 나무증권 미국주식 ETF 지원 · 시세를 받지 못하면 봇은 판단을 보류합니다
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=4.10.0"></script>
+<script src="/static/js/app.js?v=5.0.0"></script>
 </body>
 </html>
