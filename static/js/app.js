@@ -302,7 +302,7 @@ function botCard(b) {
 
   let stratBadge = "";
   if (b.strategyType === "raoer_infinite") {
-    const vTag = (b.params?.raoerVersion || "v4").toUpperCase();
+    const vTag = (b.raoerVersion || b.params?.raoerVersion || "v4").toUpperCase() === "V4" ? "V4.0" : "V1.0";
     if (b.params?.raoerUseAi) {
       stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:#60a5fa; border:1px solid rgba(59,130,246,.4);">✨ AI 무한매수 ${vTag} (T=${b.turn||0}/${b.splitCount||40})</span>`;
     } else {

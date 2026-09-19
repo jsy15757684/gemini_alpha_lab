@@ -139,13 +139,14 @@ class TradingBot:
                          f"운용자본 {self.initial_krw:,.0f}원")
         
         if self.params.strategyType == "raoer_infinite":
-            chunk_krw = self.initial_krw / self.params.splitCount
+            v_title = "라오어 V4.0" if self.params.raoerVersion == "v4" else "라오어 V1.0"
+            formula_desc = "잔금비례: 잔여현금 ÷ 잔여회차" if self.params.raoerVersion == "v4" else f"고정 1회 {self.initial_krw / self.params.splitCount:,.0f}원"
             if self.params.raoerUseAi:
-                self.log("INFO", f"🔄✨ [AI 스마트 무한매수] {self.params.splitCount}분할 (기본 1회 {chunk_krw:,.0f}원 · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
-                                 f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 쿼터방어 {self.params.quarterCutPct:.0f}%")
+                self.log("INFO", f"🔄✨ [{v_title} AI 스마트 무한매수] {self.params.splitCount}분할 ({formula_desc} · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
+                                 f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
             else:
-                self.log("INFO", f"🔄 [라오어 무한매수법] {self.params.splitCount}분할 매수 (1회당 {chunk_krw:,.0f}원) · "
-                                 f"목표 익절 +{self.params.targetProfitPct}% · 쿼터방어 {self.params.quarterCutPct:.0f}%")
+                self.log("INFO", f"🔄 [{v_title} 무한매수법] {self.params.splitCount}분할 매수 ({formula_desc}) · "
+                                 f"목표 익절 +{self.params.targetProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
         elif self.params.strategyType == "usdt_premium":
             self.log("INFO", f"💱 [USDT 환차익] 역프 {self.params.usdtBuyPremiumPct}% 이하 매수 → "
                              f"김프 {self.params.usdtSellPremiumPct}% 이상 매도 · "
@@ -887,6 +888,7 @@ class TradingBot:
             "interval": self.interval,
             "mode": self.mode,
             "strategyType": self.params.strategyType,
+            "raoerVersion": self.params.raoerVersion,
             "turn": self.pos.turn,
             "splitCount": self.params.splitCount,
             "targetProfitPct": self.params.targetProfitPct,
