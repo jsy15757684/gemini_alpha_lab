@@ -89,7 +89,9 @@ class StrategyParams:
 
     # ── Gemini AI 퀀트 검증 파라미터 ──
     useGemini: bool = True
-    geminiMode: str = "hybrid"     # "hybrid" (지표 신호 + AI 승인) | "ai_only"
+    # 화면에서 고를 수 있는 것은 "ai_only" 뿐이다. "hybrid" 는 제거했고
+    # 서버가 배포를 거부한다 — 예전에 만든 봇의 복원만 위해 값은 남겨둔다.
+    geminiMode: str = "ai_only"    # "ai_only" (순수 AI) | "hybrid" (제거됨)
     geminiMinConfidence: int = 60  # 퀀트 최적 신뢰도 (60% 이상 승인)
     geminiModel: str = "gemini-flash-latest"
 

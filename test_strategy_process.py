@@ -214,6 +214,26 @@ time.sleep(0.5)
 #   6) 데이터 없으면 판단 보류
 
 print()
+print("── 제거한 전략이 되살아나지 않는다 ──")
+# '전통 기술적 지표' 와 '퀀트 하이브리드' 를 화면에서 뺐다. 하이브리드는
+# 진입 규칙 설정 화면까지 함께 뺐으므로, API 로 만들면 사용자가 본 적 없는
+# 기본 조건으로 매매하게 된다. 그 함정을 서버가 막는지 본다.
+_html = open("static/index.html", encoding="utf-8").read()
+_js = open("static/js/app.js", encoding="utf-8").read()
+check("화면 선택지에 technical / gemini_hybrid 가 없다",
+      'value="technical"' not in _html and 'value="gemini_hybrid"' not in _html
+      and "gemini_hybrid" not in _js,
+      "index.html · app.js 모두 0건")
+check("Gemini 기본 모드가 ai_only 다",
+      StrategyParams().geminiMode == "ai_only", StrategyParams().geminiMode)
+check("예전 hybrid 봇의 값은 보존한다 (복원용)",
+      StrategyParams.from_dict({"geminiMode": "hybrid"}).geminiMode == "hybrid", "hybrid")
+_srv = open("server.py", encoding="utf-8").read()
+check("서버가 hybrid 배포를 거부한다",
+      'get("geminiMode") == "hybrid"' in _srv and "제거됐습니다" in _srv,
+      "deploy 에 가드 있음")
+
+print()
 print("── 무한매수 추세 조절 (raoerTrendMode) ──")
 # 판정 기준은 재서 고르지 않았다. 통상적 정의를 그대로 쓴다:
 #   상승 = 종가 > 30봉 평균 && 평균선 상승

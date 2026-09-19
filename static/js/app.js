@@ -199,11 +199,6 @@ function readParams(prefix) {
       p.useGemini = true;
       p.geminiMode = "ai_only";
       p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "60", 10);
-    } else if (stratType === "gemini_hybrid") {
-      p.strategyType = "quant_ai";
-      p.useGemini = true;
-      p.geminiMode = "hybrid";
-      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "60", 10);
     } else {
       p.strategyType = "quant_ai";
       p.useGemini = false;
@@ -317,7 +312,8 @@ function botCard(b) {
   } else if (b.strategyType === "raoer_vr") {
     stratBadge = `<span class="badge" style="background:rgba(245,158,11,.18); color:#fbbf24; border:1px solid rgba(245,158,11,.4);">⚖️ 밸류리밸런싱 VR</span>`;
   } else if (b.params?.useGemini) {
-    const gemMode = b.params?.geminiMode === "ai_only" ? "✨ AI 전용" : "🧬 하이브리드";
+    // 하이브리드는 화면에서 없앴지만, 예전에 만든 봇이 남아 있을 수 있다.
+    const gemMode = b.params?.geminiMode === "ai_only" ? "✨ AI 전용" : "🧬 하이브리드(구)";
     stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:var(--accent); border:1px solid rgba(59,130,246,.4);">${gemMode} (${b.params?.geminiMinConfidence}%)</span>`;
   }
 
@@ -808,11 +804,12 @@ function toggleStrategyUI() {
 
   if (raoerOpts) raoerOpts.classList.toggle("hidden", type !== "raoer_infinite");
   if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");
-  if (gemOptions) gemOptions.classList.toggle("hidden", !(type === "gemini_ai" || type === "gemini_hybrid"));
-  // 지표 설정은 Gemini 계열에만 쓴다. '전통 기술적 지표 전략' 단독 선택지는
-  // 없앴다 — 진입조건 36개 조합 중 단순보유(+13.05%)를 이긴 것이 없었다.
-  // 지표 엔진 자체는 남아 있다 (하이브리드가 AI 승인 전에 이걸로 걸러낸다).
-  if (quantSettings) quantSettings.classList.toggle("hidden", !(type === "gemini_hybrid" || type === "gemini_ai"));
+  if (gemOptions) gemOptions.classList.toggle("hidden", type !== "gemini_ai");
+  // 진입 규칙·지표 설정을 쓰는 전략이 이 탭에 더는 없다. '전통 기술적 지표'
+  // 와 '퀀트 하이브리드' 를 뺐고, 'AI 전용' 은 지표 조건을 보지 않는다
+  // (trader.py 의 ai_only 분기는 decide() 를 부르지 않는다).
+  // 보이면 '설정했는데 반영이 안 된다' 가 되므로 항상 감춘다.
+  if (quantSettings) quantSettings.classList.add("hidden");
   if (raoerAiSub && raoerUseAiCheck) {
     raoerAiSub.classList.toggle("hidden", !raoerUseAiCheck.checked || type !== "raoer_infinite");
   }
