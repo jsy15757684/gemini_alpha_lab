@@ -158,6 +158,48 @@ check("읽지 못한 장부에는 기존 기록 합치기도 하지 않는다",
       tradelog.seed([{"id": "old-1"}]) == 0, "0건 합침")
 
 
+print("\n── 일지 상한 (오래된 매수부터 버리고 매도는 남긴다) ──")
+# 매도만 실현손익을 나른다. 상한에서 매도를 함께 버리면 화면의
+# '누적 실현손익' 이 조용히 줄어든다 — 이 파일을 따로 둔 이유가 그것을
+# 막는 것이었다. 시험을 빠르게 하려고 상한만 낮춰 끼운다.
+reset()
+_real_max = tradelog.MAX_ROWS
+tradelog.MAX_ROWS = 10
+
+for i in range(8):                      # 오래된 것부터: 매수 8건
+    tradelog.append({"id": f"b{i}", "action": "BUY_CHUNK", "pnlKrw": 0,
+                     "time": f"2026-01-01 00:{i:02d}:00"})
+for i in range(4):                      # 그 뒤 매도 4건 (각 1,000원)
+    tradelog.append({"id": f"s{i}", "action": "SELL", "pnlKrw": 1000,
+                     "time": f"2026-01-01 01:{i:02d}:00"})
+for i in range(6):                      # 다시 매수 6건 → 총 18건, 상한 10
+    tradelog.append({"id": f"c{i}", "action": "BUY_CHUNK", "pnlKrw": 0,
+                     "time": f"2026-01-01 02:{i:02d}:00"})
+
+kept = tradelog.all_rows()
+sells = [r for r in kept if r["action"] == "SELL"]
+check("상한을 지킨다", len(kept) == 10, f"{len(kept)}행")
+check("매도 행은 하나도 버리지 않는다", len(sells) == 4,
+      f"매도 {len(sells)}/4건 보존")
+check("누적 실현손익이 유지된다", sum(r["pnlKrw"] for r in sells) == 4000,
+      f"{sum(r['pnlKrw'] for r in sells):+,}원")
+check("버려진 것은 가장 오래된 매수다",
+      not any(r["id"] == "b0" for r in kept) and any(r["id"] == "c5" for r in kept),
+      "b0(최고령) 버림 · c5(최신) 보존")
+
+# 매도만으로 상한을 넘으면? 어쩔 수 없이 버리되 조용히 넘기지 않는다
+reset()
+tradelog.MAX_ROWS = 3
+for i in range(5):
+    tradelog.append({"id": f"s{i}", "action": "SELL", "pnlKrw": 100,
+                     "time": f"2026-01-01 00:{i:02d}:00"})
+kept = tradelog.all_rows()
+check("매도만으로 상한을 넘으면 상한을 지키고 경고한다",
+      len(kept) == 3 and kept[0]["id"] == "s4", f"{len(kept)}행 · 최신 유지")
+tradelog.MAX_ROWS = _real_max
+check("운영 상한이 5,000행보다 크다 (3.4개월이면 닿던 값)",
+      tradelog.MAX_ROWS >= 50_000, f"{tradelog.MAX_ROWS:,}행")
+
 print("\n── 시뮬레이터 상태 (arb_bots.json) ──")
 
 reset()

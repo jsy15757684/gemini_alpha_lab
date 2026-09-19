@@ -21,8 +21,13 @@ logger = logging.getLogger(__name__)
 LOG_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "trades.json")
 
-# 무한히 쌓이지 않게 상한을 둔다. 최신부터 유지한다.
-MAX_ROWS = 5000
+# 무한히 쌓이지 않게 상한을 둔다.
+#
+# 실측(2026-09, 봇 2개): 하루 43.8행 · 행당 415바이트. 상한 5,000행은
+# 3.4개월이면 닿고 봇 10개면 3주면 닿는다. 파일 크기는 상한에서도
+# 2MB 뿐이라(디스크 여유 14GB) 용량이 아까워 낮게 잡을 이유가 없다.
+# 50,000행이면 약 20MB, 봇 2개로 3년치다.
+MAX_ROWS = 50_000
 
 _lock = threading.RLock()
 _rows: List[Dict[str, Any]] = []
@@ -31,6 +36,40 @@ _loaded = False
 # 일지 파일 전용 빗장. 읽기에 실패하면 이후 저장을 전부 거부한다.
 # 그러지 않으면 '읽은 것이 없다 = 빈 장부' 로 믿고 과거 체결을 덮어쓴다.
 guard = Guard("체결 일지")
+
+
+def _trim_locked() -> None:
+    """상한을 넘으면 **오래된 매수 행부터** 버린다. 매도 행은 남긴다.
+
+    매도만 실현손익을 나른다(전체의 5% 남짓). 잘라낼 때 매도를 함께
+    버리면 화면의 '누적 실현손익' 이 조용히 줄어든다. 이 파일을 봇 상태와
+    분리한 이유가 바로 그것을 막는 것이었는데, 상한에서 앞뒤 없이
+    잘라내면 시간 축에서 같은 일이 다시 생긴다.
+
+    _rows 는 최신이 앞에 온다. 그래서 뒤(오래된 쪽)에서부터 훑는다.
+    """
+    over = len(_rows) - MAX_ROWS
+    if over <= 0:
+        return
+
+    drop = []
+    for i in range(len(_rows) - 1, -1, -1):
+        if len(drop) >= over:
+            break
+        if not str(_rows[i].get("action") or "").startswith("SELL"):
+            drop.append(i)
+    for i in drop:                      # 인덱스 내림차순이라 그대로 지워도 안전
+        del _rows[i]
+
+    still = len(_rows) - MAX_ROWS
+    if still > 0:
+        # 매도만으로 상한을 넘은 극단적 경우(봇 10개로 5년 남짓). 이때는
+        # 어쩔 수 없이 오래된 것부터 버리되, 조용히 넘기지 않는다.
+        logger.warning(
+            f"체결 일지가 상한({MAX_ROWS:,}행)을 넘었고 남은 행이 모두 매도라 "
+            f"가장 오래된 {still:,}행을 버립니다. 누적 실현 손익이 그만큼 "
+            f"줄어듭니다 — 보관이 필요하면 CSV 로 내보낸 뒤 상한을 올리세요.")
+        del _rows[MAX_ROWS:]
 
 
 def _save_locked() -> None:
@@ -86,7 +125,7 @@ def append(trade: Dict[str, Any]) -> None:
     with _lock:
         _load_quietly()
         _rows.insert(0, dict(trade))
-        del _rows[MAX_ROWS:]
+        _trim_locked()
         _save_locked()
 
 
@@ -113,7 +152,7 @@ def seed(trades: List[Dict[str, Any]]) -> int:
             added += 1
         if added:
             _rows.sort(key=lambda x: x.get("time", ""), reverse=True)
-            del _rows[MAX_ROWS:]
+            _trim_locked()
             _save_locked()
             logger.info(f"기존 봇 기록 {added}건을 체결 일지에 합쳤습니다.")
         return added
