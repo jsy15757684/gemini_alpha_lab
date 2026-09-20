@@ -28,6 +28,15 @@ _REGIME_CACHE: Optional[Dict[str, Any]] = None
 _LAST_FETCH_TIME: float = 0.0
 _TTL_SECONDS: float = 900.0  # 15분 캐시
 
+# 수신 실패 시 재시도 간격. 실패한 경우 _LAST_FETCH_TIME 을 갱신하지 않으니
+# 캐시 조건에 걸리지 않아, 봇 틱마다(10초) 야후를 다시 두드리게 된다. 시간당
+# 720회다 — 차단당하기 딱 좋고, 차단당하면 계속 실패하니 더 두드린다.
+# 실패가 이어지면 1분 → 2분 → 4분 … 최대 15분으로 간격을 벌린다.
+_FAIL_COUNT: int = 0
+_NEXT_RETRY_AT: float = 0.0
+_RETRY_BASE_SEC: float = 60.0
+_RETRY_MAX_SEC: float = 900.0
+
 
 def _fetch_qqq_sma200() -> Dict[str, Any]:
     """야후 파이낸스 차트 API를 통해 QQQ 1년 일봉 수신 및 200 SMA 계산."""
@@ -157,12 +166,21 @@ def neutral_regime(note: str) -> Dict[str, Any]:
 
 def get_macro_regime(force_refresh: bool = False) -> Dict[str, Any]:
     """현재 매크로 국면과 적응형 기어 상태를 반환한다 (15분 캐시)."""
-    global _REGIME_CACHE, _LAST_FETCH_TIME
+    global _REGIME_CACHE, _LAST_FETCH_TIME, _FAIL_COUNT, _NEXT_RETRY_AT
 
     with _CACHE_LOCK:
         now = time.time()
         if not force_refresh and _REGIME_CACHE and (now - _LAST_FETCH_TIME < _TTL_SECONDS):
             return dict(_REGIME_CACHE)
+        # 실패 직후에는 잠시 두드리지 않는다.
+        if not force_refresh and now < _NEXT_RETRY_AT:
+            wait_s = int(_NEXT_RETRY_AT - now)
+            if _REGIME_CACHE:
+                stale = dict(_REGIME_CACHE)
+                stale["stale"] = True
+                stale["note"] = f"지표 수신 실패 · {wait_s}초 뒤 재시도 (직전 값 사용)"
+                return stale
+            return neutral_regime(f"수신 실패 · {wait_s}초 뒤 재시도")
 
     try:
         qqq_info = _fetch_qqq_sma200()
@@ -172,10 +190,17 @@ def get_macro_regime(force_refresh: bool = False) -> Dict[str, Any]:
         with _CACHE_LOCK:
             _REGIME_CACHE = regime
             _LAST_FETCH_TIME = time.time()
+            _FAIL_COUNT = 0
+            _NEXT_RETRY_AT = 0.0
         logger.info(f"[MacroRegime] 국면 갱신: {regime['gearName']} | QQQ ${regime['qqqPrice']} (SMA200 ${regime['qqqSma200']}, {regime['qqqDiffPct']:+.1f}%) | VIX {regime['vix']}")
         return dict(regime)
     except Exception as e:
-        logger.warning(f"[MacroRegime] 지표 수신 실패: {e}")
+        with _CACHE_LOCK:
+            _FAIL_COUNT += 1
+            backoff = min(_RETRY_MAX_SEC, _RETRY_BASE_SEC * (2 ** (_FAIL_COUNT - 1)))
+            _NEXT_RETRY_AT = time.time() + backoff
+        logger.warning(
+            f"[MacroRegime] 지표 수신 실패({_FAIL_COUNT}회): {e} — {int(backoff)}초 뒤 재시도")
         with _CACHE_LOCK:
             if _REGIME_CACHE:
                 # 직전에 받아둔 값이 있으면 그대로 쓰되, 최신이 아님을 밝힌다.

@@ -556,6 +556,70 @@ check("지표 없이 시세를 지어내지 않는다",
       _reg["qqqPrice"] is None and _reg["vix"] is None and _reg.get("degraded") is True,
       "qqqPrice · vix 모두 None · degraded=True")
 
+# 실패가 이어져도 야후를 계속 두드리면 안 된다 (차단 유발)
+_mr._REGIME_CACHE = None
+_mr._FAIL_COUNT = 0
+_mr._NEXT_RETRY_AT = 0.0
+_hits = {"n": 0}
+
+
+def _boom():
+    _hits["n"] += 1
+    raise RuntimeError("HTTP 429")
+
+
+_orig_qqq2 = _mr._fetch_qqq_sma200
+_mr._fetch_qqq_sma200 = _boom
+for _ in range(100):
+    _mr.get_macro_regime()
+_first_gap = _mr._NEXT_RETRY_AT - time.time()
+check("지표 수신이 실패해도 매 틱마다 재요청하지 않는다",
+      _hits["n"] == 1, f"요청 100회 → 실제 호출 {_hits['n']}회")
+check("실패가 이어지면 재시도 간격이 벌어진다",
+      55 < _first_gap <= 60, f"첫 재시도 대기 {int(_first_gap)}초 (1분 → 2분 → … 최대 15분)")
+
+_mr._fetch_qqq_sma200 = _orig_qqq2
+_mr._REGIME_CACHE = None
+_mr._FAIL_COUNT = 0
+_mr._NEXT_RETRY_AT = 0.0
+
+# ── 미국 증시 스케줄: 조기 마감일과 신정 토요일 ──
+from services import market_schedule as _ms                  # noqa: E402
+from datetime import datetime as _dt, date as _date          # noqa: E402
+from zoneinfo import ZoneInfo as _ZI                         # noqa: E402
+
+_ET = _ZI("America/New_York")
+_half = _ms.get_nyse_half_days(2026)
+check("조기 마감일(13:00 ET)을 안다",
+      _date(2026, 11, 27) in _half and _date(2026, 12, 24) in _half,
+      "추수감사절 다음 날 · 크리스마스 이브")
+
+_st = _ms.get_us_market_status(_dt(2026, 11, 27, 14, 0, tzinfo=_ET))
+check("조기 마감일 14:00 ET 는 장이 닫힌 것으로 본다",
+      not _st["isOpen"], f"{_st['status']} — 예전에는 OPEN 이라 주문을 냈다")
+
+_st2 = _ms.get_us_market_status(_dt(2026, 11, 27, 11, 0, tzinfo=_ET))
+check("조기 마감일 11:00 ET 는 정상 개장이다",
+      _st2["isOpen"] and _st2["closeTimeEt"] == "13:00", _st2["reason"])
+
+_st3 = _ms.get_us_market_status(_dt(2026, 9, 22, 14, 0, tzinfo=_ET))
+check("평일 14:00 ET 는 그대로 개장이다 (16:00 마감)",
+      _st3["isOpen"] and _st3["closeTimeEt"] == "16:00", _st3["reason"])
+
+# 신정이 토요일인 해에는 앞 금요일도 다음 월요일도 쉬지 않는다 (2022년 실제)
+check("신정이 토요일이면 대체휴일을 만들지 않는다",
+      _date(2027, 12, 31) not in _ms.get_nyse_holidays(2027)
+      and _date(2028, 1, 3) not in _ms.get_nyse_holidays(2028),
+      "2021-12-31 금 개장 · 2022-01-03 월 개장 (실제 NYSE)")
+
+# 2026 정규 휴장일 10개는 그대로여야 한다
+_h26 = _ms.get_nyse_holidays(2026)
+_official = {_date(2026, 1, 1), _date(2026, 1, 19), _date(2026, 2, 16), _date(2026, 4, 3),
+             _date(2026, 5, 25), _date(2026, 6, 19), _date(2026, 7, 3), _date(2026, 9, 7),
+             _date(2026, 11, 26), _date(2026, 12, 25)}
+check("2026 NYSE 휴장일 10개가 공식과 일치한다",
+      set(_h26) == _official, f"{len(_h26)}개 · 차이 {sorted(set(_h26) ^ _official)}")
+
 print(f"\n{'=' * 58}")
 if FAIL:
     print(f"통과 {len(PASS)}개 · 실패 {len(FAIL)}개")

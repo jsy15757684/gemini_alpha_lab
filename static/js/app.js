@@ -302,6 +302,14 @@ function setMarket(market) {
     btnCrypto.className = isStock ? "btn btn-sm btn-ghost" : "btn btn-sm btn-primary";
     btnStock.className = isStock ? "btn btn-sm btn-primary" : "btn btn-sm btn-ghost";
   }
+  // 매크로 기어와 반반 매수는 미국 ETF 전용이다. 엔진이 currency == "USD"
+  // 로만 동작하므로 코인 봇에 켜도 아무 일이 일어나지 않는다. 켜면 뭔가
+  // 달라진다고 오해할 칸은 아예 감춘다.
+  const gearField = $("macroGearField");
+  if (gearField) gearField.classList.toggle("hidden", !isStock);
+  const locField = $("bp_locMode")?.closest("div");
+  if (locField) locField.classList.toggle("hidden", !isStock);
+
   if ($("lblBotCoin")) $("lblBotCoin").textContent = isStock ? "미국 ETF 종목" : "코인";
   if ($("lblBotCapital")) $("lblBotCapital").textContent = isStock ? "운용 자본 ($ USD)" : "운용 자본 (원)";
   if ($("botCapital")) {

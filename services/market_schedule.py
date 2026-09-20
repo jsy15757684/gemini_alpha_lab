@@ -49,7 +49,17 @@ def get_nyse_holidays(year: int) -> Dict[date, str]:
             holidays[dt] = name
 
     # 1. New Year's Day (1월 1일)
-    _observed(date(year, 1, 1), "신정 (New Year's Day)")
+    #
+    # 신정만 토요일 예외다. 다른 휴일은 토요일이면 앞 금요일을 쉬지만,
+    # 신정이 토요일인 해에는 앞 금요일(12/31)도 다음 월요일도 쉬지 않는다.
+    # 그 금요일이 그 해 마지막 거래일이기 때문이다 (2022년이 그랬다:
+    # 2021-12-31 금 개장, 2022-01-03 월 개장).
+    _ny = date(year, 1, 1)
+    if _ny.weekday() == 6:        # 일요일 → 월요일 대체
+        holidays[_ny + timedelta(days=1)] = "신정 (New Year's Day) (대체휴일)"
+    elif _ny.weekday() < 5:       # 평일 → 당일
+        holidays[_ny] = "신정 (New Year's Day)"
+    # 토요일이면 휴장일 없음
 
     # 2. Martin Luther King, Jr. Day (1월 셋째 월요일)
     first_jan = date(year, 1, 1)
@@ -93,6 +103,33 @@ def get_nyse_holidays(year: int) -> Dict[date, str]:
     return holidays
 
 
+def get_nyse_half_days(year: int) -> Dict[date, str]:
+    """13:00 ET 조기 마감일.
+
+    정규 마감이 16:00 이 아니라 13:00 이다. 이걸 모르면 13:00~16:00 사이에
+    장이 열려 있다고 보고 주문을 내는데, 거래소는 이미 닫혀 있다.
+
+    - 추수감사절 다음 날(블랙프라이데이): 항상
+    - 독립기념일 전날(7/3): 평일이고 그 자체가 휴장일이 아닐 때
+    - 크리스마스 이브(12/24): 평일이고 그 자체가 휴장일이 아닐 때
+    """
+    full = get_nyse_holidays(year)
+    half: Dict[date, str] = {}
+
+    # 추수감사절 다음 날
+    for d, name in full.items():
+        if "추수감사절" in name:
+            half[d + timedelta(days=1)] = "추수감사절 다음 날 (조기 마감)"
+            break
+
+    for d, label in ((date(year, 7, 3), "독립기념일 전날 (조기 마감)"),
+                     (date(year, 12, 24), "크리스마스 이브 (조기 마감)")):
+        if d.weekday() < 5 and d not in full:
+            half[d] = label
+
+    return half
+
+
 def is_us_dst(now_et: Optional[datetime] = None) -> bool:
     """현재 미국 동부 시간이 서머타임(Daylight Saving Time) 적용 중인지 여부."""
     if now_et is None:
@@ -109,7 +146,6 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
 
     is_dst = is_us_dst(now_et)
     reg_open_time = dtime(9, 30)
-    reg_close_time = dtime(16, 0)
     pre_open_time = dtime(4, 0)
     post_close_time = dtime(20, 0)
 
@@ -119,6 +155,11 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
 
     holidays = get_nyse_holidays(cur_date.year)
     holiday_name = holidays.get(cur_date)
+
+    # 조기 마감일은 16:00 이 아니라 13:00 에 닫는다.
+    half_days = get_nyse_half_days(cur_date.year)
+    half_day_name = half_days.get(cur_date)
+    reg_close_time = dtime(13, 0) if half_day_name else dtime(16, 0)
 
     status = "CLOSED"
     reason = "정규장 마감"
@@ -131,7 +172,8 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
         reason = f"미국 공휴일 휴장: {holiday_name}"
     elif reg_open_time <= cur_time < reg_close_time:
         status = "OPEN"
-        reason = "미국 정규장 운영 중"
+        reason = ("미국 정규장 운영 중 (조기 마감 13:00 ET)" if half_day_name
+                  else "미국 정규장 운영 중")
     elif pre_open_time <= cur_time < reg_open_time:
         status = "PRE_MARKET"
         reason = "프리마켓 진행 중 (정규장 개장 대기)"
@@ -161,7 +203,10 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
     next_open_kst = next_open_et.astimezone(KST_TZ) if next_open_et else None
     seconds_to_open = int((next_open_et - now_et).total_seconds()) if next_open_et else 0
 
-    kst_open_str = "22:30 ~ 05:00" if is_dst else "23:30 ~ 06:00"
+    if half_day_name:
+        kst_open_str = "22:30 ~ 02:00" if is_dst else "23:30 ~ 03:00"
+    else:
+        kst_open_str = "22:30 ~ 05:00" if is_dst else "23:30 ~ 06:00"
     reg_close_et = datetime.combine(cur_date, reg_close_time, tzinfo=EASTERN_TZ)
     reg_close_kst = reg_close_et.astimezone(KST_TZ)
 
@@ -181,6 +226,9 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
         "secondsToOpen": max(0, seconds_to_open),
         "isHoliday": bool(holiday_name),
         "holidayName": holiday_name or None,
+        "isHalfDay": bool(half_day_name),
+        "halfDayName": half_day_name or None,
+        "closeTimeEt": reg_close_time.strftime("%H:%M"),
     }
 
 
