@@ -306,6 +306,22 @@ def deploy_bot(req: DeployRequest):
     if req.capitalKrw < 10_000:
         raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
 
+    # 화면에서 고를 수 있는 전략만 배포를 허용한다.
+    #
+    # 제거한 전략(기술적 지표 · 퀀트 하이브리드 · 밸류리밸런싱 VR ·
+    # Gemini AI 전용)은 설정 화면도 함께 없앴다. API 로 들어오면 사용자가
+    # 본 적 없는 기본값으로 실매매가 나간다. 그 함정을 만들지 않는다.
+    _allowed = ("raoer_infinite", "usdt_premium")
+    _st = (req.params or {}).get("strategyType")
+    if _st and _st not in _allowed:
+        raise HTTPException(400,
+            f"'{_st}' 전략은 제거됐습니다. 사용 가능: {', '.join(_allowed)} "
+            f"(화면에서는 무한매수 V4/V1 · USDT 환차익 으로 보입니다).")
+    if (req.params or {}).get("useGemini"):
+        raise HTTPException(400,
+            "Gemini AI 전용 매매는 제거됐습니다. 무한매수의 'AI 스마트 조절' "
+            "옵션으로 AI 판단을 쓸 수 있습니다.")
+
     # 하이브리드(지표 신호 + AI 승인)는 화면에서 없앴다. 진입 규칙·지표
     # 설정을 보여주는 칸도 함께 뺐으므로, API 로 이 모드를 만들면 사용자가
     # 본 적 없는 기본 진입조건으로 매매하게 된다. 그 함정을 만들지 않는다.

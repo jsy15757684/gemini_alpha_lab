@@ -193,11 +193,6 @@ function readParams(prefix) {
       // 이 전략의 기본 손절은 0(사용 안 함)이다. 공용 기본값(1.8)이 그대로
       // 넘어가면 손절-재매수 루프에 빠진다.
       p.stopLossPct = parseFloat($("bp_usdtStopLossPct")?.value || "0");
-    } else if (stratType === "gemini_ai") {
-      p.strategyType = "quant_ai";
-      p.useGemini = true;
-      p.geminiMode = "ai_only";
-      p.geminiMinConfidence = parseInt($("geminiMinConf")?.value || "60", 10);
     } else {
       p.strategyType = "quant_ai";
       p.useGemini = false;
@@ -710,9 +705,6 @@ async function loadGeminiScan() {
             <button class="btn btn-ghost btn-sm" id="btn-reanalyze-${r.coin}" onclick="analyzeSingleCoin('${r.coin}', '${interval}')" title="이 코인만 1초 만에 단독 재분석">
               🔄 단독 분석
             </button>
-            <button class="btn btn-primary btn-sm" style="flex:1" onclick="startGeminiBotFromScan('${r.coin}', '${interval}', ${conf})">
-              🚀 ${r.coin} 봇 가동
-            </button>
           </div>
         </div>
       `;
@@ -744,20 +736,6 @@ async function analyzeSingleCoin(coin, interval) {
   }
 }
 
-function startGeminiBotFromScan(coin, interval, conf) {
-  $("botCoin").value = coin;
-  $("botInterval").value = interval;
-  if ($("botStrategyType")) {
-    $("botStrategyType").value = "gemini_ai";
-    toggleStrategyUI();
-  }
-  if ($("geminiMinConf")) {
-    $("geminiMinConf").value = Math.max(50, conf);
-    if ($("geminiConfVal")) $("geminiConfVal").textContent = Math.max(50, conf) + "%";
-  }
-  const botTab = document.querySelector('.tab[data-panel="panel-bots"]');
-  if (botTab) botTab.click();
-}
 
 async function loadGeminiStatus() {
   try {
@@ -873,7 +851,8 @@ function toggleStrategyUI() {
 
   const isRaoer = (type === "raoer_v4" || type === "raoer_v1");
   if (raoerOpts) raoerOpts.classList.toggle("hidden", !isRaoer);
-  if (gemOptions) gemOptions.classList.toggle("hidden", type !== "gemini_ai");
+  // Gemini 매매 전략을 제거해 이 설정을 쓰는 전략이 없다. 항상 감춘다.
+  if (gemOptions) gemOptions.classList.add("hidden");
   // 진입 규칙·지표 설정을 쓰는 전략이 이 탭에 더는 없다. '전통 기술적 지표'
   // 와 '퀀트 하이브리드' 를 뺐고, 'AI 전용' 은 지표 조건을 보지 않는다
   // (trader.py 의 ai_only 분기는 decide() 를 부르지 않는다).

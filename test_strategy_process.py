@@ -420,6 +420,22 @@ check("밸류리밸런싱 VR 이 화면·엔진에서 사라졌다",
 check("VR 파라미터를 넣어도 기본 전략으로 교정한다",
       StrategyParams.from_dict({"strategyType": "raoer_vr"}).strategyType == "quant_ai",
       "quant_ai")
+check("Gemini AI 전용 매매가 화면·엔진에서 사라졌다",
+      "gemini_ai" not in _html and "gemini_ai" not in _js
+      and "useGemini" not in _trd,
+      "index.html · app.js · trader.py 모두 0건")
+_srv2 = open("server.py", encoding="utf-8").read()
+check("서버가 제거된 전략의 배포를 막는다",
+      '"raoer_infinite", "usdt_premium"' in _srv2 and "전략은 제거됐습니다" in _srv2,
+      "허용 목록 방식 (raoer_infinite · usdt_premium)")
+check("서버가 useGemini 배포를 막는다",
+      'get("useGemini")' in _srv2, "Gemini 전용 매매 거부")
+check("무한매수의 AI 스마트 조절은 그대로 살아 있다",
+      "analyze_raoer_context" in _trd and "raoerUseAi" in _trd,
+      "실전 봇이 쓰는 기능")
+check("Gemini AI 연구소(스캐너)는 남아 있다",
+      "gemini/scan" in _js and "scan_all_coins" in open("server.py", encoding="utf-8").read(),
+      "매매 전략만 뺐다")
 check("옛 VR 체결 기록은 일지에서 여전히 읽힌다",
       "BUY_VR" in _js and "SELL_VR" in _js,
       "지난 장부를 못 읽게 만들지 않는다")
