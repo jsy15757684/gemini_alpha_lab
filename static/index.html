@@ -35,6 +35,7 @@
       <span class="brand-name">알파랩 (빗썸 &amp; 나무증권)</span>
     </div>
     <div class="topbar-right">
+      <span class="pill" id="macroGearPill" style="cursor: pointer;" title="매크로 국면 감지 적응형 변속 기어 (QQQ 200일선 & VIX)">⚙️ 기어 확인 중…</span>
       <span class="pill" id="usMarketPill" style="cursor: pointer;" title="미국 증시 운영 시간 상세">🇺🇸 증시 확인 중…</span>
       <span class="pill" id="namuhPill">나무증권 확인 중…</span>
       <span class="pill" id="accountPill">빗썸 확인 중…</span>
@@ -340,6 +341,13 @@
                     <option value="pause_down">하락추세면 회차 쉼</option>
                   </select>
                 </div>
+                <div>
+                  <label class="label">매수 체결 방식</label>
+                  <select class="input" id="bp_locMode">
+                    <option value="half_half" selected>라오어 원조 반반 LOC (전반전 평단/평단+5% · 후반전 평단)</option>
+                    <option value="single">단일 묶음 매수 (전액 시장가/단일 LOC)</option>
+                  </select>
+                </div>
               </div>
 
               <div class="alert alert-warn small" id="raoerTrendNote" style="margin-top:8px;">
@@ -357,8 +365,19 @@
                 경우가 아니면 권하지 않습니다.
               </div>
 
+              <!-- 매크로 국면 감지 적응형 변속 기어 토글 -->
+              <div style="margin-top: 10px; padding: 10px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 6px;">
+                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 0.88rem;">
+                  <input type="checkbox" id="bp_useMacroGear" checked style="width: 16px; height: 16px; accent-color: #10b981;">
+                  <span>⚙️ 매크로 국면 감지 적응형 변속 기어 (QQQ 200일선 &amp; VIX 연동 3단 변속)</span>
+                </label>
+                <p class="muted small" style="margin-top: 6px; margin-bottom: 0;">
+                  🚀 <b>3단(강세)</b>: 목표익절률 +12% 상향 · 🔄 <b>2단(중립)</b>: 표준 매매 · 🛡️ <b>1단(약세/위기)</b>: 매수금 50% 축소로 80회분 생존 총알 비축.
+                </p>
+              </div>
+
               <!-- AI 스마트 무한매수 토글 -->
-              <div style="margin-top: 12px; padding: 10px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 6px;">
+              <div style="margin-top: 10px; padding: 10px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 6px;">
                 <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 0.88rem;">
                   <input type="checkbox" id="bp_raoerUseAi" style="width: 16px; height: 16px; accent-color: var(--accent);">
                   <span>✨ Gemini AI 스마트 조절 (동적 비중 + 가변 익절)</span>

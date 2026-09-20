@@ -19,7 +19,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from services import backtest, bithumb, jsonfile, botstore, tradelog
-from services import gemini_service, namuh
+from services import gemini_service, namuh, macro_regime
 from services.namuh import NamuhAccount, NAMUH_STOCKS
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 from services.envconf import env_float, env_int
@@ -89,6 +89,7 @@ class TradingBot:
         self.last_rsi: Optional[float] = None
         self.last_decision = "가동 대기"
         self.last_ai_analysis: Optional[Dict[str, Any]] = None
+        self.last_macro_regime: Optional[Dict[str, Any]] = None
         self.price_failures = 0
 
         self.is_running = False
@@ -290,6 +291,14 @@ class TradingBot:
                 # ── 전략 판단 실행 ──
                 if self.params.strategyType == "raoer_infinite":
                     cur_bar_time = bars[-1].get("time") if bars else None
+
+                    # 매크로 국면 감지 적응형 변속 기어 점검 (나스닥 200일선 & VIX)
+                    if (self.currency == "USD" or self.broker == "namuh") and self.params.useMacroGear:
+                        try:
+                            self.last_macro_regime = macro_regime.get_macro_regime()
+                        except Exception as e:
+                            logger.warning(f"[{self.bot_id}] 매크로 국면 조회 실패: {e}")
+
                     if self.params.raoerUseAi and (now - last_ai_check >= float(candle_ttl) or not self.last_ai_analysis):
                         try:
                             ai_res = gemini_service.analyze_raoer_context(
@@ -312,6 +321,12 @@ class TradingBot:
                             logger.warning(f"[{self.bot_id}] AI 무한매수 분석 실패: {e}")
 
                     target_tp = self.params.targetProfitPct
+                    # 매크로 기어 목표 익절률 반영
+                    if self.params.useMacroGear and self.last_macro_regime:
+                        rec_tp = self.last_macro_regime.get("recommendedTargetProfitPct")
+                        if rec_tp:
+                            target_tp = float(rec_tp)
+
                     if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
                         target_tp = self.last_ai_analysis.get("dynamicTargetProfitPct", target_tp)
 
@@ -319,7 +334,7 @@ class TradingBot:
                     if self.pos.open:
                         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                         if pnl_pct >= target_tp:
-                            ai_note = f" (AI 가변목표 +{target_tp:.1f}%)" if self.params.raoerUseAi else ""
+                            ai_note = f" (가변목표 +{target_tp:.1f}%)" if (self.params.raoerUseAi or self.params.useMacroGear) else ""
                             self.last_decision = f"무한매수 목표 익절 (+{pnl_pct:.2f}% ≥ +{target_tp:.1f}%){ai_note}"
                             self._exit(price, self.last_decision)
                             # 이 봉은 소비했다고 기록한다. 안 그러면 다음 틱(수초 뒤)에
@@ -347,9 +362,14 @@ class TradingBot:
                             base_chunk_krw = self.initial_krw / self.params.splitCount
                         sizing_mult = 1.0
                         ai_reason = ""
+                        if self.params.useMacroGear and self.last_macro_regime:
+                            gear_mult = float(self.last_macro_regime.get("sizingMultiplier", 1.0))
+                            sizing_mult *= gear_mult
+                            gear_name = self.last_macro_regime.get("gearName", "")
+                            ai_reason += f" [{gear_name} {gear_mult}x]"
                         if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
-                            sizing_mult = self.last_ai_analysis.get("sizingMultiplier", 1.0)
-                            ai_reason = f" [AI {sizing_mult}x 배수: {self.last_ai_analysis.get('reason', '')}]"
+                            sizing_mult *= self.last_ai_analysis.get("sizingMultiplier", 1.0)
+                            ai_reason += f" [AI {self.last_ai_analysis.get('sizingMultiplier')}x: {self.last_ai_analysis.get('reason', '')}]"
 
                         # 추세 조절. 판정 기준은 strategy.py 에 적어둔 대로 고정이고,
                         # 백테스트(backtest._trend_of)와 같은 정의를 쓴다.
@@ -571,7 +591,7 @@ class TradingBot:
         self._persist()
 
     def _enter_chunk(self, price: float, invest_krw: float, reason: str):
-        """라오어 무한매수 분할 매수 (미국주식 정수 1주 단위 체결 및 잔돈 이월 지원)."""
+        """라오어 무한매수 분할 매수 (원조 반반 LOC 및 미국주식 정수 1주 단위 체결/잔돈 이월 지원)."""
         fee = self.params.feePct / 100.0
 
         if self.currency == "USD":
@@ -579,36 +599,146 @@ class TradingBot:
             # 배정액 + 이전 회차 잔돈 이월금
             allocated_budget = min(self.cash, invest_krw)
             total_budget = allocated_budget + self.budget_carryover
-            units_to_buy = int(total_budget // cost_per_share)
 
-            if units_to_buy < 1:
-                # 1주 미만이므로 이번 회차는 매수하지 않고 전액 다음 회차로 이월
-                self.budget_carryover = total_budget
-                self.pos.turn += 1
-                self.last_decision = f"1주 미만 예산 이월 (${self.budget_carryover:,.2f} 누적, 주가 ${price:,.2f})"
-                self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 예산 이월] 주가(${price:,.2f}) 대비 가용 예산(${total_budget:,.2f})이 1주 미만이므로 ${self.budget_carryover:,.2f}을 다음 회차로 이월합니다.")
-                self._persist()
-                return
+            # 반반 LOC 모드 여부 판정 (이미 1회차 이상 보유 중이며 locMode == "half_half")
+            if self.pos.open and self.params.locMode == "half_half":
+                avg_price = self.pos.entryPrice
+                half_count = self.params.splitCount // 2
 
-            # 1주 이상 체결 가능
-            new_units = float(units_to_buy)
-            spent_total = new_units * cost_per_share
-            invest = new_units * price
-            # 잔돈 이월금 갱신 및 실제 현금 차감
-            self.budget_carryover = max(0.0, total_budget - spent_total)
-            self.cash = max(0.0, self.cash - spent_total)
+                if self.pos.turn <= half_count:
+                    # ── [전반전 T <= N/2]: 0.5회 평단 LOC + 0.5회 평단*1.05 LOC ──
+                    loc_a_price = avg_price
+                    loc_b_price = round(avg_price * 1.05, 2)
+                    half_budget = total_budget / 2.0
 
-            if self.mode == "LIVE":
-                if not (self.namuh_account and self.namuh_account.configured):
-                    self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
+                    units_a = 0
+                    units_b = 0
+                    spent_a = 0.0
+                    spent_b = 0.0
+
+                    # A 주문 판정: 종가 <= 평단가
+                    if price <= loc_a_price:
+                        units_a = int(half_budget // cost_per_share)
+                        spent_a = units_a * cost_per_share
+
+                    # B 주문 판정: 종가 <= 평단가 * 1.05
+                    if price <= loc_b_price:
+                        units_b = int(half_budget // cost_per_share)
+                        spent_b = units_b * cost_per_share
+
+                    # 소액 자본 단주 방어: 50/50 분할로 각각은 0주이나 전체 예산으로는 1주 매수 가능한 경우
+                    if units_a == 0 and units_b == 0 and total_budget >= cost_per_share:
+                        if price <= loc_a_price:
+                            units_a = 1
+                            spent_a = cost_per_share
+                        elif price <= loc_b_price:
+                            units_b = 1
+                            spent_b = cost_per_share
+
+                    total_units_to_buy = units_a + units_b
+                    actual_spent = spent_a + spent_b
+
+                    if total_units_to_buy < 1:
+                        # 둘 다 미체결 (종가가 평단+5% 초과) 또는 1주 미만
+                        self.budget_carryover = total_budget
+                        self.pos.turn += 1
+                        reason_detail = f"종가(${price:,.2f}) > 평단+5%(${loc_b_price:,.2f}) 추격매수 방지 미체결" if price > loc_b_price else "가용 예산 1주 미만"
+                        self.last_decision = f"반반 LOC 미체결/이월 ({reason_detail}, 잔돈 ${self.budget_carryover:,.2f} 누적)"
+                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 전반전 반반 LOC 미체결] {reason_detail} -> ${self.budget_carryover:,.2f} 전액 다음 회차로 이월.")
+                        self._persist()
+                        return
+
+                    self.budget_carryover = max(0.0, total_budget - actual_spent)
+                    self.cash = max(0.0, self.cash - actual_spent)
+
+                    fill_desc = []
+                    if units_a > 0:
+                        fill_desc.append(f"평단LOC {units_a}주")
+                    if units_b > 0:
+                        fill_desc.append(f"평단+5%LOC {units_b}주")
+                    fill_summary = " + ".join(fill_desc)
+
+                    if self.mode == "LIVE":
+                        if not (self.namuh_account and self.namuh_account.configured):
+                            self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
+                            return
+                        try:
+                            res = self.namuh_account.market_buy(self.coin, amount_usd=actual_spent, units=total_units_to_buy, order_type="12")
+                            total_units_to_buy = int(res.get("units") or total_units_to_buy)
+                            self.log("ORDER", f"나무증권 실주문 반반 LOC 매수 접수 ({fill_summary}, 주문번호 {res.get('orderId')})")
+                        except namuh.NamuhError as e:
+                            self.log("ERROR", f"나무증권 실주문 반반 LOC 매수 실패: {e.message}")
+                            return
+
+                    new_units = float(total_units_to_buy)
+                    invest = new_units * price
+
+                else:
+                    # ── [후반전 T > N/2]: 1.0회 전액 평단 LOC 집중 ──
+                    loc_price = avg_price
+                    if price > loc_price:
+                        self.budget_carryover = total_budget
+                        self.pos.turn += 1
+                        self.last_decision = f"후반전 LOC 미체결 (종가 ${price:,.2f} > 평단 ${loc_price:,.2f}, 잔돈 ${self.budget_carryover:,.2f} 누적)"
+                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 후반전 LOC 미체결] 종가(${price:,.2f}) > 평단(${loc_price:,.2f})로 평단 보호를 위해 ${self.budget_carryover:,.2f} 전액 이월.")
+                        self._persist()
+                        return
+
+                    units_to_buy = int(total_budget // cost_per_share)
+                    if units_to_buy < 1:
+                        self.budget_carryover = total_budget
+                        self.pos.turn += 1
+                        self.last_decision = f"1주 미만 예산 이월 (${self.budget_carryover:,.2f} 누적, 주가 ${price:,.2f})"
+                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 후반전 LOC 이월] 주가(${price:,.2f}) 대비 가용 예산(${total_budget:,.2f})이 1주 미만이므로 ${self.budget_carryover:,.2f}을 다음 회차로 이월합니다.")
+                        self._persist()
+                        return
+
+                    new_units = float(units_to_buy)
+                    spent_total = new_units * cost_per_share
+                    invest = new_units * price
+                    self.budget_carryover = max(0.0, total_budget - spent_total)
+                    self.cash = max(0.0, self.cash - spent_total)
+
+                    if self.mode == "LIVE":
+                        if not (self.namuh_account and self.namuh_account.configured):
+                            self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
+                            return
+                        try:
+                            res = self.namuh_account.market_buy(self.coin, amount_usd=spent_total, units=units_to_buy, order_type="12", limit_price=loc_price)
+                            new_units = float(res.get("units") or new_units)
+                            self.log("ORDER", f"나무증권 실주문 후반전 LOC 매수 접수 (주문번호 {res.get('orderId')})")
+                        except namuh.NamuhError as e:
+                            self.log("ERROR", f"나무증권 실주문 후반전 LOC 매수 실패: {e.message}")
+                            return
+
+            else:
+                # 1회차 첫 매수이거나 단일 매수(single) 모드
+                units_to_buy = int(total_budget // cost_per_share)
+                if units_to_buy < 1:
+                    self.budget_carryover = total_budget
+                    self.pos.turn += 1
+                    self.last_decision = f"1주 미만 예산 이월 (${self.budget_carryover:,.2f} 누적, 주가 ${price:,.2f})"
+                    self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 예산 이월] 주가(${price:,.2f}) 대비 가용 예산(${total_budget:,.2f})이 1주 미만이므로 ${self.budget_carryover:,.2f}을 다음 회차로 이월합니다.")
+                    self._persist()
                     return
-                try:
-                    res = self.namuh_account.market_buy(self.coin, amount_usd=spent_total, units=units_to_buy)
-                    new_units = float(res.get("units") or new_units)
-                    self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
-                except namuh.NamuhError as e:
-                    self.log("ERROR", f"나무증권 실주문 분할 매수 실패: {e.message}")
-                    return
+
+                new_units = float(units_to_buy)
+                spent_total = new_units * cost_per_share
+                invest = new_units * price
+                self.budget_carryover = max(0.0, total_budget - spent_total)
+                self.cash = max(0.0, self.cash - spent_total)
+
+                if self.mode == "LIVE":
+                    if not (self.namuh_account and self.namuh_account.configured):
+                        self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
+                        return
+                    try:
+                        res = self.namuh_account.market_buy(self.coin, amount_usd=spent_total, units=units_to_buy)
+                        new_units = float(res.get("units") or new_units)
+                        self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
+                    except namuh.NamuhError as e:
+                        self.log("ERROR", f"나무증권 실주문 분할 매수 실패: {e.message}")
+                        return
         else:
             invest = min(self.cash, invest_krw)
             min_invest = 5000.0
@@ -934,6 +1064,7 @@ class TradingBot:
             "pricePollSec": PRICE_POLL_SEC,
             "lastDecision": self.last_decision,
             "lastAiAnalysis": self.last_ai_analysis,
+            "macroRegime": self.last_macro_regime,
             "priceFailures": self.price_failures,
             "params": self.params.to_dict(),
             "recentLogs": self.logs[:20],

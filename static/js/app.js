@@ -185,6 +185,8 @@ function readParams(prefix) {
       p.raoerMaxProfitPct = parseFloat($("bp_raoerMaxProfitPct")?.value || "20.0");
       p.raoerMaxMultiplier = parseFloat($("bp_raoerMaxMultiplier")?.value || "2.0");
       p.raoerTrendMode = $("bp_raoerTrendMode")?.value || "off";
+      p.useMacroGear = $("bp_useMacroGear") ? $("bp_useMacroGear").checked : true;
+      p.locMode = $("bp_locMode")?.value || "half_half";
     } else if (stratType === "usdt_premium") {
       p.strategyType = "usdt_premium";
       p.useGemini = false;
@@ -403,6 +405,17 @@ function botCard(b) {
 
   if (isUsd && Number(b.budgetCarryover || 0) > 0) {
     stratBadge += ` <span class="badge" style="background:rgba(234,179,8,.18); color:#facc15; border:1px solid rgba(234,179,8,.4);" title="1주 미만 단주로 다음 회차로 이월 누적된 예산">이월잔돈 $${Number(b.budgetCarryover).toFixed(2)}</span>`;
+  }
+
+  if (b.macroRegime && (b.params?.useMacroGear ?? true)) {
+    const mg = b.macroRegime;
+    const gearCol = mg.gear === "3_BULL" ? "#3b82f6" : (mg.gear === "1_BEAR" ? "#ef4444" : "#10b981");
+    const gearText = mg.gear === "3_BULL" ? "🚀 3단 고속" : (mg.gear === "1_BEAR" ? "🛡️ 1단 방어" : "🔄 2단 순환");
+    stratBadge += ` <span class="badge" style="background:${gearCol}22; color:${gearCol}; border:1px solid ${gearCol}55;" title="매크로 기어: ${mg.gearName}\nQQQ $${mg.qqqPrice} (SMA200 대비 ${mg.qqqDiffPct > 0 ? '+' : ''}${mg.qqqDiffPct}%)\nVIX: ${mg.vix}\n매수배수: ${mg.sizingMultiplier}x / 목표: +${mg.recommendedTargetProfitPct}%">${gearText}</span>`;
+  }
+
+  if (isUsd && (b.params?.locMode || "half_half") === "half_half") {
+    stratBadge += ` <span class="badge" style="background:rgba(99,102,241,.18); color:#a5b4fc; border:1px solid rgba(99,102,241,.4);" title="라오어 원조 반반 LOC 매수 모드 (전반전 평단/평단+5% · 후반전 평단)">반반LOC</span>`;
   }
 
   const logs = (b.recentLogs || []).map(l =>
@@ -1014,6 +1027,29 @@ async function loadUsMarketStatus() {
     }
   } catch (e) {
     console.error("미국 증시 상태 조회 실패:", e);
+  }
+}
+
+// ───────── 매크로 국면 감지 적응형 변속 기어 ─────────
+
+async function loadMacroRegime() {
+  try {
+    const r = await api("/api/namuh/macro_regime");
+    const pill = $("macroGearPill");
+    if (!pill) return;
+    if (r.gear === "3_BULL") {
+      pill.className = "pill ok";
+      pill.textContent = `🚀 3단 고속 (+${r.recommendedTargetProfitPct}%)`;
+    } else if (r.gear === "1_BEAR") {
+      pill.className = "pill warn";
+      pill.textContent = `🛡️ 1단 방어 (0.5x)`;
+    } else {
+      pill.className = "pill";
+      pill.textContent = `🔄 2단 순환 (+${r.recommendedTargetProfitPct}%)`;
+    }
+    pill.title = `${r.gearName}\n• QQQ: $${r.qqqPrice} (200일선 $${r.qqqSma200}, ${r.qqqDiffPct > 0 ? '+' : ''}${r.qqqDiffPct}%)\n• CBOE VIX: ${r.vix}\n• 매수배수: ${r.sizingMultiplier}x / 목표익절: +${r.recommendedTargetProfitPct}%\n• ${r.description}\n(클릭 시 새로고침)`;
+  } catch (e) {
+    console.error("매크로 기어 조회 실패:", e);
   }
 }
 
@@ -1665,8 +1701,9 @@ async function boot() {
   });
 
   if ($("usMarketPill")) $("usMarketPill").onclick = () => loadUsMarketStatus();
+  if ($("macroGearPill")) $("macroGearPill").onclick = () => loadMacroRegime();
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadMacroRegime(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
   timers.push(
     setInterval(loadPrices, 10000),
     setInterval(loadArbitrageRadar, 8000),
@@ -1675,11 +1712,12 @@ async function boot() {
     setInterval(loadTradeHistory, 10000),
     setInterval(loadNamuhAccount, 30000),
     setInterval(loadUsMarketStatus, 15000),
+    setInterval(loadMacroRegime, 30000),
     setInterval(renderFreshness, 1000),
   );
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && started) { loadPrices(); loadBots(); loadTradeHistory(); loadUsMarketStatus(); }
+    if (!document.hidden && started) { loadPrices(); loadBots(); loadTradeHistory(); loadUsMarketStatus(); loadMacroRegime(); }
   });
 }
 

@@ -45,6 +45,14 @@ class StrategyParams:
     # "boost_up"   : 상승추세면 회차 금액을 raoerMaxMultiplier 배로 (급등장 열세 대응)
     raoerTrendMode: str = "off"
 
+    # ── 매크로 국면 감지 적응형 변속 기어 (Macro Regime Adaptive Gear) ──
+    useMacroGear: bool = True     # 나스닥(QQQ) 200일선 및 VIX 공포지수 기반 3단 변속 제어
+
+    # ── 라오어 원조 반반 LOC 매수 주문 방식 ──
+    # "half_half" : 전반전 0.5회 평단 LOC + 0.5회 평단+5% LOC, 후반전 1.0회 평단 LOC (라오어 원전 정석)
+    # "single"    : 단일 묶음 매수 (시장가 또는 단일 LOC)
+    locMode: str = "half_half"
+
     # ── 라오어 밸류 리밸런싱 (VR) 파라미터 ──
 
     # ── USDT 환차익 (usdt_premium) ──────────────────────────
@@ -142,6 +150,8 @@ class StrategyParams:
             self.raoerVersion = "v4"
         if self.raoerTrendMode not in ("off", "pause_down", "boost_up"):
             self.raoerTrendMode = "off"
+        if self.locMode not in ("half_half", "single"):
+            self.locMode = "half_half"
         if self.strategyType not in ("quant_ai", "raoer_infinite", "usdt_premium"):
             self.strategyType = "quant_ai"
         self.splitCount = max(5, min(100, self.splitCount))

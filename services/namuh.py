@@ -480,11 +480,12 @@ class NamuhAccount:
                 f"닫힌 장에 낸 주문은 체결되지 않는데 장부에는 남을 수 있습니다.")
 
     def market_buy(self, ticker: str, amount_usd: float = 0.0,
-                   order_type: str = "", units: float = 0.0) -> Dict[str, Any]:
+                   order_type: str = "", units: float = 0.0,
+                   limit_price: float = 0.0) -> Dict[str, Any]:
         """미국 주식 매수 (라오어 무한매수 금액 또는 정수 주수 기준 주문)."""
         sym = ticker.upper().strip()
         order_type = (order_type or DEFAULT_ORDER_TYPE).strip()
-        price = self.get_price(sym)
+        price = limit_price if limit_price > 0 else self.get_price(sym)
         if price <= 0:
             raise NamuhError(f"현재가를 조회할 수 없습니다: {sym}")
 
@@ -500,7 +501,7 @@ class NamuhAccount:
         actual_amt = qty * price
 
         if not self.configured:
-            logger.info(f"[모의 주문] 나무증권 매수 접수: {sym} {qty}주 @ ${price:,.2f} (${actual_amt:,.2f})")
+            logger.info(f"[모의 주문] 나무증권 매수 접수: {sym} {qty}주 @ ${price:,.2f} (${actual_amt:,.2f}) | {order_type or 'LOC'}")
             return {
                 "orderId": f"MOCK-BUY-{int(time.time()*1000)}",
                 "ticker": sym,
@@ -508,7 +509,7 @@ class NamuhAccount:
                 "price": price,
                 "amountUsd": actual_amt,
                 "status": "FILLED",
-                "orderType": "LOC",
+                "orderType": order_type or "LOC",
             }
 
         # 실주문 전에 장이 열려 있는지 본다.

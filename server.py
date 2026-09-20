@@ -600,6 +600,13 @@ def namuh_tax_status():
     }
 
 
+@app.get("/api/namuh/macro_regime")
+def namuh_macro_regime():
+    """나스닥(QQQ) 200일 이동평균 및 VIX 기반 3단 변속 기어 국면."""
+    from services.macro_regime import get_macro_regime
+    return get_macro_regime()
+
+
 # ───────────────────────── Gemini AI ─────────────────────────
 
 class GeminiKeyRequest(BaseModel):
