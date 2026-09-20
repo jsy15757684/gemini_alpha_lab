@@ -48,9 +48,14 @@ class StrategyParams:
     # ── 매크로 국면 감지 적응형 변속 기어 (Macro Regime Adaptive Gear) ──
     useMacroGear: bool = True     # 나스닥(QQQ) 200일선 및 VIX 공포지수 기반 3단 변속 제어
 
-    # ── 라오어 원조 반반 LOC 매수 주문 방식 ──
-    # "half_half" : 전반전 0.5회 평단 LOC + 0.5회 평단+5% LOC, 후반전 1.0회 평단 LOC (라오어 원전 정석)
-    # "single"    : 단일 묶음 매수 (시장가 또는 단일 LOC)
+    # ── 미국 주식 매수 체결 방식 ──
+    #
+    # "half_half"     : 라오어 원전. 마감 20분 전에 그날의 평단으로 LOC
+    #                   (장마감 지정가)를 걸고, 체결은 마감 뒤 잔고로 정산한다.
+    #                   하루 한 번이므로 캔들 간격은 쓰이지 않는다 (40분할 = 40거래일).
+    # "half_half_now" : 같은 반반 구조지만 봉마다 평단 상한 지정가로 즉시 산다.
+    #                   체결이 바로 확인되고 주문이 쌓이지 않는다.
+    # "single"        : 단일 묶음 시장가.
     locMode: str = "half_half"
 
     # ── 라오어 밸류 리밸런싱 (VR) 파라미터 ──
@@ -150,7 +155,7 @@ class StrategyParams:
             self.raoerVersion = "v4"
         if self.raoerTrendMode not in ("off", "pause_down", "boost_up"):
             self.raoerTrendMode = "off"
-        if self.locMode not in ("half_half", "single"):
+        if self.locMode not in ("half_half", "half_half_now", "single"):
             self.locMode = "half_half"
         if self.strategyType not in ("quant_ai", "raoer_infinite", "usdt_premium"):
             self.strategyType = "quant_ai"

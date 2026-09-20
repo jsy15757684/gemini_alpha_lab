@@ -343,8 +343,10 @@
                 </div>
                 <div>
                   <label class="label">매수 체결 방식</label>
+                  <div class="muted small" id="locModeHint" style="margin-bottom:.3rem"></div>
                   <select class="input" id="bp_locMode">
-                    <option value="half_half" selected>라오어 원조 반반 매수 (전반전 평단·평단+5% 상한 2건 · 후반전 평단 상한)</option>
+                    <option value="half_half" selected>라오어 원전 반반 LOC (마감 20분 전 · 하루 한 번 · 종가 체결)</option>
+                    <option value="half_half_now">반반 지정가 즉시 체결 (봉마다 · 평단 상한)</option>
                     <option value="single">단일 묶음 매수 (전액 한 건 · 시장가)</option>
                   </select>
                 </div>
@@ -769,6 +771,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.0.6"></script>
+<script src="/static/js/app.js?v=5.0.7"></script>
 </body>
 </html>

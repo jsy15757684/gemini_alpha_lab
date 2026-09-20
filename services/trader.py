@@ -102,6 +102,12 @@ class TradingBot:
         self._adopt_bar_on_start = False
         # 미국 주식 정수 1주 매수 후 남은 잔돈 이월금 (USD)
         self.budget_carryover = 0.0
+        # 원전 LOC: 접수했지만 아직 정산 안 한 주문들. 취소 API 가 없어서
+        # 한번 낸 주문은 거둬들일 수 없다. 봇이 꺼져도 주문은 거래소에
+        # 살아 있으므로 반드시 디스크에 남기고 다음 세션에 정산해야 한다.
+        self.pending_orders: List[Dict[str, Any]] = []
+        # 그날 이미 주문을 냈는지 (미국 동부 날짜). 하루 한 번을 보장한다.
+        self.loc_session: Optional[str] = None
 
     def _fetch_price(self) -> float:
         if self.broker == "namuh":
@@ -214,6 +220,17 @@ class TradingBot:
                 self._exit(price, "사용자 정지 명령 (시장가 청산)")
             except Exception as e:
                 self.log("ERROR", f"청산 실패 — 포지션이 남아 있습니다: {e}")
+        # 봇을 세워도 거래소의 LOC 는 살아 있다. 정지했는데 마감에 주식이
+        # 생기는 일이 없도록 미체결 주문을 거둬들인다.
+        if self.mode == "LIVE" and self.pending_orders:
+            try:
+                self._cancel_pending_loc("봇 정지")
+            except Exception as e:
+                self.log("ERROR", f"미체결 LOC 취소 실패 — 거래소에 주문이 남아 있습니다: {e}")
+        if self.pending_orders:
+            self.log("WARNING",
+                     f"취소되지 않은 LOC {len(self.pending_orders)}건이 남아 있습니다. "
+                     f"마감에 체결될 수 있으니 나무증권 앱에서 확인하세요.")
         self.log("WARNING", "봇이 정지되었습니다.")
         self._persist()
 
@@ -266,6 +283,13 @@ class TradingBot:
 
                 # ── 미국 주식 운영 시간 및 휴장일 스케줄러 점검 ──
                 if self.broker == "namuh":
+                    # LOC 정산은 장이 닫힌 뒤에 해야 한다. 휴장 게이트보다
+                    # 먼저 돌지 않으면 영영 정산되지 않는다.
+                    if self.mode == "LIVE" and self.pending_orders:
+                        try:
+                            self._settle_pending_loc()
+                        except Exception as e:
+                            logger.warning(f"[{self.bot_id}] LOC 정산 실패: {e}")
                     try:
                         from services.market_schedule import get_us_market_status
                         m_stat = get_us_market_status()
@@ -346,8 +370,25 @@ class TradingBot:
                             time.sleep(poll)
                             continue
 
-                    # 2) 캔들 갱신 시점마다 기계적 / AI 동적 분할 매수 / 쿼터 방어
-                    if cur_bar_time and cur_bar_time != self._last_bar_time:
+                    # 2) 매수 시점 판단.
+                    #
+                    # 원전 LOC 는 캔들이 아니라 **거래일** 단위다 (40분할 =
+                    # 40거래일). 마감 20분 전 창에서 하루 한 번만 낸다.
+                    # 그 외 모드는 종전대로 캔들 갱신마다 판단한다.
+                    loc_native = (self.broker == "namuh"
+                                  and self.params.locMode == "half_half")
+                    if loc_native:
+                        from services import market_schedule as _ms
+                        _win = _ms.loc_window()
+                        buy_now = bool(_win["in"] and self.loc_session != _win["sessionDate"])
+                        if not buy_now and self.pos.open:
+                            self.last_decision = (
+                                f"원전 LOC 대기 — 접수 창 {_win['opensAtKst']} KST "
+                                f"(T={self.pos.turn}/{self.params.splitCount})")
+                    else:
+                        buy_now = bool(cur_bar_time and cur_bar_time != self._last_bar_time)
+
+                    if buy_now:
                         self._last_bar_time = cur_bar_time
                         if self.params.raoerVersion == "v4":
                             # V4.0 공식: 잔여 현금 / (N - T)
@@ -407,11 +448,19 @@ class TradingBot:
                         version_tag = " [V4]" if self.params.raoerVersion == "v4" else ""
                         if not self.pos.open:
                             self.last_decision = f"무한매수{version_tag} 1/{self.params.splitCount}회차 첫 매수{ai_reason}{cap_note}"
-                            self._enter_chunk(price, chunk_krw, self.last_decision)
+                            if loc_native:
+                                self._place_loc_orders(price, chunk_krw, _win["sessionDate"],
+                                                       self.last_decision)
+                            else:
+                                self._enter_chunk(price, chunk_krw, self.last_decision)
                         elif self.pos.turn < self.params.splitCount:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                             self.last_decision = f"무한매수{version_tag} {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%){ai_reason}{cap_note}"
-                            self._enter_chunk(price, chunk_krw, self.last_decision)
+                            if loc_native:
+                                self._place_loc_orders(price, chunk_krw, _win["sessionDate"],
+                                                       self.last_decision)
+                            else:
+                                self._enter_chunk(price, chunk_krw, self.last_decision)
                         else:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                             rev_note = " (V4 리버스 모드: 쿼터 매도 후 롤백)" if self.params.raoerVersion == "v4" else ""
@@ -590,6 +639,219 @@ class TradingBot:
         self.log("BUY", f"매수 {units:.4f} {self.coin} @ {p_str} ({inv_str}) | 사유: {reason}")
         self._persist()
 
+    # ── 라오어 원전 LOC (장마감 지정가) ──────────────────────────
+    #
+    # LOC 는 마감 동시호가에서만 체결된다. 그래서 '주문' 과 '체결' 이
+    # 분리된다. 주문은 마감 20분 전에 내고, 체결은 그 세션이 끝난 뒤
+    # 잔고 변화로 정산한다. 그 사이 봇이 꺼져도 주문은 거래소에 살아
+    # 있으므로 pending_orders 를 디스크에 남긴다 (취소 API 가 없다).
+
+    def _loc_targets(self, price: float, chunk_budget: float) -> List[Dict[str, Any]]:
+        """이번 세션에 낼 LOC 주문들을 계산한다. 주문은 내지 않는다."""
+        fee = self.params.feePct / 100.0
+        cost_per_share = price * (1 + fee)
+        total_budget = min(self.cash, chunk_budget) + self.budget_carryover
+        if cost_per_share <= 0:
+            return []
+
+        if not self.pos.open:
+            # 1회차는 기준 평단이 없다. 그날 종가에 사도록 상한을 넉넉히 둔다.
+            qty = int(total_budget // cost_per_share)
+            if qty < 1:
+                return []
+            return [{"leg": "1회차", "units": qty, "limit": round(price * 1.05, 2)}]
+
+        avg = self.pos.entryPrice
+        if self.pos.turn <= self.params.splitCount // 2:
+            # 전반전: 예산 반씩 나눠 평단 / 평단+5% 두 다리
+            half = total_budget / 2.0
+            a = int(half // cost_per_share)
+            b = int(half // cost_per_share)
+            if a == 0 and b == 0 and total_budget >= cost_per_share:
+                a = 1                       # 소액 자본 단주 방어
+            out = []
+            if a > 0:
+                out.append({"leg": "평단", "units": a, "limit": round(avg, 2)})
+            if b > 0:
+                out.append({"leg": "평단+5%", "units": b, "limit": round(avg * 1.05, 2)})
+            return out
+
+        # 후반전: 전액 평단 한 다리
+        qty = int(total_budget // cost_per_share)
+        if qty < 1:
+            return []
+        return [{"leg": "평단", "units": qty, "limit": round(avg, 2)}]
+
+    def _place_loc_orders(self, price: float, chunk_budget: float,
+                          session: str, reason: str) -> None:
+        """마감 전 LOC 접수. 장부는 건드리지 않는다 (체결 전이다)."""
+        targets = self._loc_targets(price, chunk_budget)
+        self.loc_session = session          # 미체결이어도 그날은 시도한 것으로 본다
+
+        if not targets:
+            self.last_decision = (
+                f"LOC 보류 — 가용 예산이 1주 값(${price:,.2f})에 못 미칩니다 "
+                f"· 회차 유지 {self.pos.turn}/{self.params.splitCount}")
+            self.budget_carryover = min(self.cash, chunk_budget) + self.budget_carryover
+            self.log("INFO", self.last_decision)
+            self._persist()
+            return
+
+        if self.mode != "LIVE":
+            # 모의투자는 접수/정산을 흉내 내지 않는다. 종가를 알 수 없으니
+            # 현재가로 즉시 체결시킨다 (화면 확인용).
+            self._enter_chunk(price, chunk_budget, reason)
+            return
+
+        if not (self.namuh_account and self.namuh_account.configured):
+            self.log("WARNING", "나무증권 실주문 보류 — API 키가 등록되지 않았습니다.")
+            return
+
+        try:
+            bal = self.namuh_account.get_balance()
+            qty_before = float(bal.get("qtyByTicker", {}).get(self.coin, 0.0))
+            hold = (bal.get("holdings") or {}).get(self.coin) or {}
+            avg_before = float(hold.get("avgPrice") or 0.0)
+        except Exception as e:
+            self.log("ERROR", f"LOC 접수 전 잔고 조회 실패 — 이번 세션 주문을 보류합니다: {e}")
+            return
+
+        placed = []
+        for t in targets:
+            try:
+                res = self.namuh_account.market_buy(
+                    self.coin, units=t["units"], order_type=namuh.ORD_LOC,
+                    limit_price=t["limit"], await_fill=False)
+                placed.append({
+                    "orderId": res.get("orderId"), "leg": t["leg"],
+                    "units": t["units"], "limit": t["limit"],
+                    "session": session, "qtyBefore": qty_before,
+                    "avgBefore": avg_before, "budget": chunk_budget,
+                    "reason": reason,
+                })
+                self.log("ORDER", f"LOC 접수 {t['leg']} ${t['limit']:,.2f} × {t['units']}주 "
+                                  f"(주문번호 {res.get('orderId')})")
+            except namuh.NamuhError as e:
+                self.log("ERROR", f"LOC 접수 실패 ({t['leg']}): {e.message}")
+
+        if placed:
+            self.pending_orders.extend(placed)
+            legs = " + ".join(f"{p['leg']} {p['units']}주@${p['limit']:,.2f}" for p in placed)
+            self.last_decision = f"LOC 접수 완료 ({legs}) · 마감 동시호가 체결 대기"
+        self._persist()
+
+    def _cancel_pending_loc(self, why: str) -> None:
+        """미체결 LOC 를 거둬들인다.
+
+        이게 없으면 익절로 포지션을 닫은 뒤에도 매수 LOC 가 마감 동시호가에
+        체결돼 포지션이 되살아난다. 봇은 다 팔았다고 알고 있는데 계좌에는
+        주식이 생긴다 — 거래소 대조가 어긋나고, 아무도 그 주식을 관리하지
+        않는다.
+
+        거래소 접수 마감(15:50 ET) 뒤에는 취소가 거부된다. 그때는 취소가
+        안 됐다는 사실을 남겨서, 다음 세션 정산이 그 체결을 주워 담게 한다.
+        """
+        if not self.pending_orders:
+            return
+        if not (self.namuh_account and self.namuh_account.configured):
+            self.pending_orders = []
+            return
+
+        left = []
+        for o in list(self.pending_orders):
+            try:
+                self.namuh_account.cancel_order(o.get("orderId"), self.coin)
+                self.log("ORDER", f"미체결 LOC 취소 ({o.get('leg')} {o.get('units')}주 "
+                                  f"@${o.get('limit')}) — {why}")
+            except Exception as e:
+                left.append(o)
+                self.log("WARNING",
+                         f"미체결 LOC 취소 실패 ({o.get('leg')}, 주문번호 {o.get('orderId')}): {e}. "
+                         f"거래소 마감 뒤에는 취소되지 않습니다 — 다음 세션에 정산합니다.")
+        self.pending_orders = left
+        self._persist()
+
+    def _settle_pending_loc(self) -> None:
+        """지난 세션의 LOC 를 잔고 변화로 정산한다.
+
+        주문 조회 API 가 없어서 체결 수량을 직접 물어볼 수 없다. 대신
+        잔고가 수량과 매입단가를 같이 주므로 체결가를 역산할 수 있다.
+
+            체결가 = (새수량×새평단 − 옛수량×옛평단) ÷ (새수량 − 옛수량)
+        """
+        if not self.pending_orders:
+            return
+        from services import market_schedule as ms
+        now_session = ms.session_date()
+        win = ms.loc_window()
+        # 같은 세션이고 아직 접수 창이 안 지났으면 정산할 때가 아니다.
+        ripe = [o for o in self.pending_orders
+                if o.get("session") != now_session or win["past"]]
+        if not ripe:
+            return
+        if not (self.namuh_account and self.namuh_account.configured):
+            return
+
+        try:
+            bal = self.namuh_account.get_balance()
+        except Exception as e:
+            self.log("WARNING", f"LOC 정산 보류 — 잔고 조회 실패: {e}")
+            return
+
+        qty_now = float(bal.get("qtyByTicker", {}).get(self.coin, 0.0))
+        hold = (bal.get("holdings") or {}).get(self.coin) or {}
+        avg_now = float(hold.get("avgPrice") or 0.0)
+
+        qty_before = float(ripe[0].get("qtyBefore") or 0.0)
+        avg_before = float(ripe[0].get("avgBefore") or 0.0)
+        budget = float(ripe[0].get("budget") or 0.0)
+        legs = " + ".join(f"{o['leg']} {o['units']}주@${o['limit']:,.2f}" for o in ripe)
+        filled = qty_now - qty_before
+
+        # 정산했으니 목록에서 뺀다. 실패해도 같은 주문을 두 번 반영하지 않는다.
+        self.pending_orders = [o for o in self.pending_orders if o not in ripe]
+
+        if filled < 1:
+            self.budget_carryover = min(self.cash, budget) + self.budget_carryover
+            self.last_decision = (
+                f"LOC 미체결 (종가가 상한 위) · 회차 유지 "
+                f"{self.pos.turn}/{self.params.splitCount}")
+            self.log("INFO", f"[LOC 정산] {legs} 미체결 — 종가가 상한을 넘었습니다. "
+                             f"회차를 소진하지 않고 ${self.budget_carryover:,.2f} 를 이월합니다.")
+            self._persist()
+            return
+
+        if filled > 0 and qty_now > 0:
+            fill_price = ((qty_now * avg_now) - (qty_before * avg_before)) / filled
+        else:
+            fill_price = self.last_price or self.pos.entryPrice
+        if fill_price <= 0:
+            fill_price = self.last_price or self.pos.entryPrice
+
+        fee = self.params.feePct / 100.0
+        invest = filled * fill_price
+        spent = invest * (1 + fee)
+
+        u0, p0 = self.pos.units, self.pos.entryPrice
+        u_total = u0 + filled
+        self.pos.units = u_total
+        self.pos.entryPrice = ((u0 * p0) + invest) / u_total if u_total > 0 else fill_price
+        self.pos.peakPrice = max(self.pos.peakPrice, fill_price)
+        self.pos.turn += 1
+        self.pos.totalInvested += invest
+        self.budget_carryover = max(0.0, min(self.cash, budget) + self.budget_carryover - spent)
+        self.cash = max(0.0, self.cash - spent)
+
+        reason = ripe[0].get("reason") or "LOC 체결"
+        self._record_trade("BUY_CHUNK", fill_price, filled, invest,
+                           pnl=0.0, return_pct=0.0, reason=reason)
+        self.log("BUY", f"[{self.pos.turn}/{self.params.splitCount}회차 LOC 체결] "
+                        f"{legs} → {filled:.0f}주 @ ${fill_price:,.2f} (${invest:,.2f}) | "
+                        f"평단 ${self.pos.entryPrice:,.2f} (총 {u_total:.0f}주) | 사유: {reason}")
+        self.last_decision = (f"LOC 체결 {filled:.0f}주 @ ${fill_price:,.2f} · "
+                              f"평단 ${self.pos.entryPrice:,.2f}")
+        self._persist()
+
     def _skip_turn(self, price: float, total_budget: float, chased: bool,
                    where: str, limit_desc: str, note: str = "") -> None:
         """이번 봉에 못 샀을 때의 처리. **회차(T)는 올리지 않는다.**
@@ -645,8 +907,8 @@ class TradingBot:
             allocated_budget = min(self.cash, invest_krw)
             total_budget = allocated_budget + self.budget_carryover
 
-            # 반반 매수 모드 판정 (이미 1회차 이상 보유 중이며 locMode == "half_half")
-            if self.pos.open and self.params.locMode == "half_half":
+            # 반반 매수 모드 판정 (이미 1회차 이상 보유 중)
+            if self.pos.open and self.params.locMode in ("half_half", "half_half_now"):
                 avg_price = self.pos.entryPrice
                 half_count = self.params.splitCount // 2
 
@@ -885,6 +1147,10 @@ class TradingBot:
         units = self.pos.units
         if units <= 0:
             return
+        # 파는 순간, 살아 있는 매수 LOC 를 먼저 거둬들인다. 안 그러면
+        # 마감 동시호가에 체결돼 방금 비운 포지션이 되살아난다.
+        if self.mode == "LIVE" and self.pending_orders:
+            self._cancel_pending_loc(f"청산: {reason}")
         fee = self.params.feePct / 100.0
 
         if self.mode == "LIVE":
@@ -943,6 +1209,7 @@ class TradingBot:
         self._record_trade("SELL", price, units, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
         self.pos = Position()
         self.budget_carryover = 0.0
+        self.loc_session = None
 
         p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
         pnl_str = f"{pnl:+,.2f}$" if self.currency == "USD" else f"{pnl:+,.0f}원"
@@ -1030,6 +1297,8 @@ class TradingBot:
             "params": self.params.to_dict(),
             "cash": self.cash,
             "budgetCarryover": round(self.budget_carryover, 2),
+            "pendingOrders": list(self.pending_orders),
+            "locSession": self.loc_session,
             "units": self.pos.units, "entryPrice": self.pos.entryPrice,
             "peakPrice": self.pos.peakPrice,
             "turn": self.pos.turn,
@@ -1054,6 +1323,11 @@ class TradingBot:
                   account=account, namuh_account=namuh_account, broker=broker)
         bot.cash = float(d.get("cash", d["initialKrw"]))
         bot.budget_carryover = float(d.get("budgetCarryover", 0.0))
+        # 취소 API 가 없어 봇이 꺼져도 주문은 거래소에 살아 있다.
+        # 이 두 줄을 빼먹으면 재시작 뒤 같은 세션에 주문을 또 내고,
+        # 이미 체결된 것을 영영 정산하지 못한다.
+        bot.pending_orders = list(d.get("pendingOrders") or [])
+        bot.loc_session = d.get("locSession")
         lbt = d.get("lastBarTime")
         bot._last_bar_time = int(lbt) if lbt else None
         # 이 값이 없던 시절에 저장된 봇: 이미 포지션을 들고 있다면 어느 봉에서
@@ -1120,6 +1394,8 @@ class TradingBot:
             "equityKrw": round(equity, 2 if self.currency == "USD" else 0),
             "cashKrw": round(self.cash, 2 if self.currency == "USD" else 0),
             "budgetCarryover": round(self.budget_carryover, 2),
+            "pendingLocOrders": len(self.pending_orders),
+            "locSession": self.loc_session,
             "fxRate": round(fx_rate, 2),
             "equityKrwConverted": equity_krw_conv,
             "cashKrwConverted": cash_krw_conv,

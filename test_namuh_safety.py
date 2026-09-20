@@ -371,6 +371,7 @@ tradelog.LOG_FILE = os.path.join(_SANDBOX, "trades.json")
 tradelog._rows.clear()
 tradelog._loaded = True        # 운영 일지를 읽지 않는다
 
+from services import market_schedule as _ms_mod      # noqa: E402
 from services.trader import TradingBot              # noqa: E402
 from services.strategy import StrategyParams        # noqa: E402
 
@@ -582,6 +583,105 @@ _mr._fetch_qqq_sma200 = _orig_qqq2
 _mr._REGIME_CACHE = None
 _mr._FAIL_COUNT = 0
 _mr._NEXT_RETRY_AT = 0.0
+
+# ── 라오어 원전 LOC: 주문과 체결이 분리된다 ──
+#
+# LOC 는 마감 동시호가에서만 붙는다. 그래서 접수 시점에는 장부를 건드리면
+# 안 되고, 체결은 그 세션이 끝난 뒤 잔고 변화로 정산해야 한다. 봇이 꺼져도
+# 주문은 거래소에 살아 있으므로 미체결 목록은 디스크에 남아야 한다.
+_LOC = {"qty": 4.0, "avg": 50.0, "orders": [], "cancelled": []}
+
+
+class _LocBroker:
+    configured = True
+
+    def get_balance(self):
+        return {"qtyByTicker": {"TQQQ": _LOC["qty"]},
+                "holdings": {"TQQQ": {"qty": _LOC["qty"], "avgPrice": _LOC["avg"]}}}
+
+    def market_buy(self, ticker, amount_usd=0.0, order_type="", units=0.0,
+                   limit_price=0.0, await_fill=True):
+        if order_type != namuh.ORD_LOC or await_fill is not False:
+            raise AssertionError(f"LOC 접수가 아니다: {order_type} / await_fill={await_fill}")
+        oid = 1000 + len(_LOC["orders"])
+        _LOC["orders"].append({"id": oid, "units": int(units), "limit": limit_price})
+        return {"orderId": oid, "units": 0.0, "status": "ACCEPTED"}
+
+    def cancel_order(self, order_id, ticker, qty=0.0):
+        _LOC["cancelled"].append(int(order_id))
+        return {"cancelOrderId": "9", "originalOrderId": str(order_id)}
+
+    def market_sell(self, ticker, units, order_type=""):
+        _LOC["qty"] = 0.0
+        return {"orderId": "S", "units": units, "price": 60.0}
+
+
+def _loc_bot():
+    p = StrategyParams(strategyType="raoer_infinite", raoerVersion="v4",
+                       splitCount=10, targetProfitPct=10.0,
+                       locMode="half_half", feePct=0.0)
+    b = TradingBot(bot_id="LOC", coin="TQQQ", interval="1h", mode="LIVE",
+                   capital_krw=1000.0, params=p, broker="namuh")
+    b.namuh_account = _LocBroker()
+    b.pos.units, b.pos.entryPrice, b.pos.turn = 4.0, 50.0, 1
+    return b
+
+
+_LOC["qty"], _LOC["avg"] = 4.0, 50.0
+_LOC["orders"].clear()
+_lb = _loc_bot()
+_c0, _u0, _t0 = _lb.cash, _lb.pos.units, _lb.pos.turn
+_lb._place_loc_orders(price=49.0, chunk_budget=400.0, session="2026-09-21", reason="2회차")
+check("LOC 접수만으로는 장부가 움직이지 않는다",
+      _lb.cash == _c0 and _lb.pos.units == _u0 and _lb.pos.turn == _t0,
+      f"현금 ${_lb.cash:,.2f} · 보유 {_lb.pos.units}주 · T={_lb.pos.turn} 그대로")
+check("두 다리를 각자의 상한으로 접수한다",
+      len(_lb.pending_orders) == 2
+      and {o["limit"] for o in _lb.pending_orders} == {50.0, 52.5},
+      " · ".join(f"{o['leg']} {o['units']}주@${o['limit']}" for o in _lb.pending_orders))
+
+_restored = TradingBot.restore(_lb.snapshot(), None, _LocBroker())
+check("미체결 주문은 재시작을 넘어 살아남는다",
+      len(_restored.pending_orders) == 2 and _restored.loc_session == "2026-09-21",
+      f"{len(_restored.pending_orders)}건 · 세션 {_restored.loc_session}")
+
+# 마감 뒤 8주 체결 → 계좌 12주, 평단 (4*50 + 8*48)/12
+_LOC["qty"], _LOC["avg"] = 12.0, (4 * 50.0 + 8 * 48.0) / 12
+_orig_sd, _orig_lw = _ms_mod.session_date, _ms_mod.loc_window
+_ms_mod.session_date = lambda *a, **k: "2026-09-22"
+_ms_mod.loc_window = lambda *a, **k: {"past": True, "sessionDate": "2026-09-22"}
+_restored._settle_pending_loc()
+check("체결가를 잔고 변화로 정확히 역산한다",
+      _restored.pos.units == 12.0 and abs(_restored.pos.entryPrice - 48.6667) < 0.01,
+      f"보유 12주 · 평단 ${_restored.pos.entryPrice:,.4f} (체결가 $48.00 역산)")
+check("체결되면 회차가 오르고 미체결 목록이 비워진다",
+      _restored.pos.turn == 2 and not _restored.pending_orders,
+      f"T={_restored.pos.turn} · 미체결 {len(_restored.pending_orders)}건")
+
+# 종가가 상한 위 → 한 주도 안 붙음
+_LOC["qty"], _LOC["avg"] = 4.0, 50.0
+_LOC["orders"].clear()
+_lb2 = _loc_bot()
+_lb2._place_loc_orders(price=49.0, chunk_budget=400.0, session="2026-09-21", reason="2회차")
+_c2 = _lb2.cash
+_lb2._settle_pending_loc()
+check("LOC 미체결은 회차를 소진하지 않는다",
+      _lb2.pos.turn == 1 and _lb2.cash == _c2 and not _lb2.pending_orders,
+      f"T={_lb2.pos.turn} 유지 · 현금 ${_lb2.cash:,.2f} 불변")
+_ms_mod.session_date, _ms_mod.loc_window = _orig_sd, _orig_lw
+
+# 익절 시 살아 있는 매수 LOC 를 거둬들이지 않으면 포지션이 되살아난다
+_LOC["qty"], _LOC["avg"] = 4.0, 50.0
+_LOC["orders"].clear()
+_LOC["cancelled"].clear()
+_lb3 = _loc_bot()
+_lb3._place_loc_orders(price=49.0, chunk_budget=400.0, session="2026-09-21", reason="2회차")
+_ids = [o["orderId"] for o in _lb3.pending_orders]
+_lb3._exit(price=60.0, reason="목표 익절")
+check("익절하면 미체결 매수 LOC 를 전부 취소한다",
+      sorted(_LOC["cancelled"]) == sorted(_ids) and not _lb3.pending_orders
+      and _lb3.pos.units == 0.0,
+      f"취소 {_LOC['cancelled']} — 안 하면 마감 체결로 포지션이 되살아난다")
 
 # ── 미국 증시 스케줄: 조기 마감일과 신정 토요일 ──
 from services import market_schedule as _ms                  # noqa: E402

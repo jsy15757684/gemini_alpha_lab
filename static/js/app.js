@@ -261,6 +261,27 @@ let STOCKS = [];
 let lastBithumbAccount = null;
 let lastNamuhAccount = null;
 
+// 원전 LOC 는 거래일 단위(40분할 = 40거래일)라 캔들 간격을 쓰지 않는다.
+// 칸이 그대로 보이면 그 값이 매수 주기라고 오해한다.
+function renderLocModeHint() {
+  const el = $("locModeHint");
+  const mode = $("bp_locMode")?.value;
+  const native = mode === "half_half";
+  if (el) {
+    el.textContent = native
+      ? "하루 한 번, 미국장 마감 20분 전(한국시간 04:40경)에 주문하고 종가로 체결됩니다. 40분할 = 40거래일 — 캔들 간격은 쓰이지 않습니다."
+      : (mode === "half_half_now"
+          ? "캔들이 갱신될 때마다 평단을 상한으로 건 지정가로 즉시 매수합니다."
+          : "캔들이 갱신될 때마다 전액 한 건을 시장가로 매수합니다.");
+  }
+  const intervalField = $("botIntervalField");
+  if (intervalField && currentMarket === "stock") {
+    intervalField.classList.toggle("hidden", native);
+  } else if (intervalField && currentMarket !== "stock") {
+    intervalField.classList.remove("hidden");
+  }
+}
+
 function renderCapitalHint() {
   const el = $("capitalHint");
   if (!el) return;
@@ -309,6 +330,7 @@ function setMarket(market) {
   if (gearField) gearField.classList.toggle("hidden", !isStock);
   const locField = $("bp_locMode")?.closest("div");
   if (locField) locField.classList.toggle("hidden", !isStock);
+  renderLocModeHint();
 
   if ($("lblBotCoin")) $("lblBotCoin").textContent = isStock ? "미국 ETF 종목" : "코인";
   if ($("lblBotCapital")) $("lblBotCapital").textContent = isStock ? "운용 자본 ($ USD)" : "운용 자본 (원)";
@@ -1412,6 +1434,7 @@ async function boot() {
   // 전략 선택기 UI 바인딩
   if ($("botStrategyType")) {
     $("botStrategyType").onchange = toggleStrategyUI;
+    if ($("bp_locMode")) $("bp_locMode").onchange = renderLocModeHint;
   }
   if ($("bp_raoerUseAi")) {
     $("bp_raoerUseAi").onchange = toggleStrategyUI;

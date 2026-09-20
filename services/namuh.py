@@ -481,8 +481,17 @@ class NamuhAccount:
 
     def market_buy(self, ticker: str, amount_usd: float = 0.0,
                    order_type: str = "", units: float = 0.0,
-                   limit_price: float = 0.0) -> Dict[str, Any]:
-        """미국 주식 매수 (라오어 무한매수 금액 또는 정수 주수 기준 주문)."""
+                   limit_price: float = 0.0,
+                   await_fill: bool = True) -> Dict[str, Any]:
+        """미국 주식 매수 (라오어 무한매수 금액 또는 정수 주수 기준 주문).
+
+        await_fill=False 는 LOC(장마감 지정가) 전용이다. LOC 는 마감
+        동시호가에서만 붙으므로 접수 직후 몇 초를 기다려봐야 늘 '미체결'
+        이다. 그때 예외를 던지면 호출부는 '안 샀다' 로 처리하는데 주문은
+        거래소에 살아 있어, 봉마다 주문이 쌓인다. 그래서 LOC 는 접수만
+        확인하고 (status=ACCEPTED, units=0) 체결은 다음 세션에 잔고
+        변화로 정산한다.
+        """
         sym = ticker.upper().strip()
         order_type = (order_type or DEFAULT_ORDER_TYPE).strip()
         price = limit_price if limit_price > 0 else self.get_price(sym)
@@ -548,6 +557,20 @@ class NamuhAccount:
                 f"나무증권 매수 주문 실패 ({rsp_cd}): "
                 f"{res_data.get('rsp_msg') or (res.text or '')[:160]}", res_data)
 
+        if not await_fill:
+            # LOC: 접수만 확인한다. 체결은 마감 뒤 잔고로 정산한다.
+            return {
+                "orderId": order_id,
+                "ticker": sym,
+                "units": 0.0,                 # 아직 아무것도 안 샀다
+                "requestedUnits": float(qty),
+                "price": price,
+                "amountUsd": 0.0,
+                "status": "ACCEPTED",
+                "orderType": order_type,
+                "qtyBefore": qty_before,
+            }
+
         # 접수됐다고 체결된 것이 아니다. 실제 보유 수량 변화로 확인한다.
         filled = self._await_fill(sym, qty_before, qty, "매수")
         if filled <= 0:
@@ -564,6 +587,45 @@ class NamuhAccount:
             "requestedUnits": float(qty),
             "orderType": order_type,
         }
+
+    def cancel_order(self, order_id: Any, ticker: str,
+                     qty: float = 0.0) -> Dict[str, Any]:
+        """주문 취소 (POST /gbstock/order/v1/cancel).
+
+        LOC 는 마감까지 거래소에 살아 있다. 익절로 포지션을 닫았는데 매수
+        LOC 가 남아 있으면 마감 동시호가에 체결돼 포지션이 되살아난다.
+        그래서 장부를 비울 때는 미체결 주문도 같이 거둬들여야 한다.
+
+        NYSE 는 15:50 ET 이후 LOC 취소를 받지 않는다. 그 뒤의 취소는
+        거부되므로, 호출부는 실패를 정상 경로로 다뤄야 한다.
+        """
+        sym = ticker.upper().strip()
+        inp = {
+            "act_no": self.account_no,
+            "org_orr_no": int(order_id),
+            "fc_sec_trd_nat_cd": NAT_US,
+            "iem_cd": sym,
+            "all_pat_dit_cd": "2" if qty and qty > 0 else "1",   # 2:일부, 1:전체
+        }
+        if qty and qty > 0:
+            inp["can_qty"] = int(qty)
+
+        try:
+            res = requests.post(f"{trade_base_url()}/gbstock/order/v1/cancel",
+                                headers=self._headers(), json={"Input_0": inp}, timeout=10)
+            data = res.json()
+        except Exception as e:
+            raise NamuhError(f"나무증권 주문 취소 통신 오류: {e}")
+
+        rsp_cd = str(data.get("rsp_cd", ""))
+        new_id = str((data.get("Output_0") or {}).get("orr_no") or "")
+        # 취소 완료 코드는 00192 다.
+        if res.status_code != 200 or (not new_id and rsp_cd != "00192"):
+            raise NamuhError(
+                f"나무증권 주문 취소 실패 ({rsp_cd}): "
+                f"{data.get('rsp_msg') or (res.text or '')[:160]}", data)
+        return {"cancelOrderId": new_id, "originalOrderId": str(order_id),
+                "ticker": sym, "rspCd": rsp_cd}
 
     def _await_fill(self, sym: str, qty_before: float, want: float,
                     what: str, tries: int = 6, wait: float = 1.0) -> float:

@@ -232,6 +232,52 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
     }
 
 
+# LOC 접수 창. 마감 20분 전에 열고 12분 전에 닫는다.
+#
+# NYSE 는 LOC 를 마감 10분 전(정규장 15:50 ET)까지만 받는다. 그 뒤에는
+# 접수도 취소도 되지 않는다. 마감 직전에 내야 그날 움직임이 반영된
+# 평단으로 주문할 수 있으므로 늦게 열되, 접수 마감보다 2분 앞서 닫아
+# 통신 지연에 여유를 둔다. 조기 마감일(13:00)에도 같은 폭으로 움직인다.
+LOC_WINDOW_OPEN_MIN = 20   # 마감 N분 전에 창이 열린다 (15:40 ET)
+LOC_WINDOW_CLOSE_MIN = 12  # 마감 N분 전에 창이 닫힌다 (15:48 ET)
+LOC_CUTOFF_MIN = 10        # 거래소 접수 마감 (15:50 ET) — 취소도 여기까지
+
+
+def session_date(now_dt: Optional[datetime] = None) -> str:
+    """거래일 식별자 (미국 동부 날짜). 하루 한 번 주문을 보장하는 열쇠다."""
+    now_et = datetime.now(EASTERN_TZ) if now_dt is None else now_dt.astimezone(EASTERN_TZ)
+    return now_et.date().isoformat()
+
+
+def loc_window(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
+    """지금이 LOC 를 낼 시간인지.
+
+    반환값의 `in` 이 True 일 때만 주문한다. `past` 는 그 세션의 접수 창이
+    이미 지났다는 뜻으로, 미체결 주문을 정산할 시점 판단에 쓴다.
+    """
+    now_et = datetime.now(EASTERN_TZ) if now_dt is None else now_dt.astimezone(EASTERN_TZ)
+    st = get_us_market_status(now_et)
+    close_h, close_m = (int(x) for x in st["closeTimeEt"].split(":"))
+    close_et = now_et.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
+    opens_at = close_et - timedelta(minutes=LOC_WINDOW_OPEN_MIN)
+    shuts_at = close_et - timedelta(minutes=LOC_WINDOW_CLOSE_MIN)
+
+    tradable = st["status"] in ("OPEN", "PRE_MARKET", "AFTER_MARKET")
+    return {
+        "in": bool(tradable and opens_at <= now_et < shuts_at),
+        "past": now_et >= shuts_at,
+        "sessionDate": session_date(now_et),
+        "opensAtEt": opens_at.strftime("%H:%M"),
+        "shutsAtEt": shuts_at.strftime("%H:%M"),
+        "closeEt": st["closeTimeEt"],
+        "cutoffEt": (close_et - timedelta(minutes=LOC_CUTOFF_MIN)).strftime("%H:%M"),
+        "cancellable": now_et < (close_et - timedelta(minutes=LOC_CUTOFF_MIN)),
+        "opensAtKst": opens_at.astimezone(KST_TZ).strftime("%H:%M"),
+        "isHalfDay": st["isHalfDay"],
+        "marketStatus": st["status"],
+    }
+
+
 def is_us_market_open(now_dt: Optional[datetime] = None) -> bool:
     """단순 정규장 오픈 여부 boolean 반환."""
     return get_us_market_status(now_dt)["isOpen"]
