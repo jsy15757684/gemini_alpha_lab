@@ -136,6 +136,24 @@ try:
 except Exception as e:
     check("복원 코드가 이 형식을 읽을 수 있다", False, f"{type(e).__name__}: {e}")
 
+print("\n── 모의/실계좌 도메인 분리 ──")
+_prev_mock = os.environ.get("NAMUH_MOCK")
+os.environ.pop("NAMUH_MOCK", None)
+check("기본은 실계좌(운영 도메인)다",
+      not namuh.use_mock() and namuh.trade_base_url() == namuh.BASE_URL,
+      namuh.trade_base_url())
+os.environ["NAMUH_MOCK"] = "1"
+check("NAMUH_MOCK=1 이면 잔고·주문이 모의 도메인으로 간다",
+      namuh.use_mock() and namuh.trade_base_url() == namuh.MOCK_BASE_URL,
+      namuh.trade_base_url())
+check("토큰·시세는 모의여도 운영 도메인을 쓴다 (모의 미제공)",
+      namuh.BASE_URL != namuh.MOCK_BASE_URL and "moapi" not in namuh.BASE_URL,
+      namuh.BASE_URL)
+if _prev_mock is None:
+    os.environ.pop("NAMUH_MOCK", None)
+else:
+    os.environ["NAMUH_MOCK"] = _prev_mock
+
 print("\n── OAuth 토큰 (공식 문서: 만료 전 재발급 금지) ──")
 import tempfile as _tf   # noqa: E402
 namuh.TOKEN_FILE = os.path.join(_tf.mkdtemp(prefix="ntok-"), "namuh_token.json")

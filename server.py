@@ -101,7 +101,18 @@ def _startup_log():
     ks = keystore.status()
     logger.info(f"빗썸 키: {'등록됨(' + ks['source'] + ')' if ks['connected'] else '미등록'}")
     ns = namuh_keystore.status()
-    logger.info(f"나무증권 키: {'등록됨(' + ns['source'] + ')' if ns['connected'] else '미등록'}")
+    ns = namuh_keystore.status()
+    if ns.get("connected"):
+        from services import namuh as _nm
+        _mock = _nm.use_mock()
+        logger.info(
+            f"나무증권 키: 등록됨({ns['source']}) · 계좌 {ns.get('maskedAccount') or '미설정'} · "
+            f"{'🧪 모의투자' if _mock else '💰 실계좌'} ({_nm.trade_base_url()})")
+        if not _mock:
+            logger.warning("나무증권이 실계좌로 설정돼 있습니다 — 주문이 실제로 나갑니다. "
+                           "모의로 돌리려면 NAMUH_MOCK=1 을 넣으세요.")
+    else:
+        logger.info("나무증권 키: 미등록")
     gs = gemini_keystore.status()
     logger.info(f"Gemini 키: {'등록됨(' + gs['source'] + ', ' + gs['model'] + ')' if gs['configured'] else '미등록'}")
 

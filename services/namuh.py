@@ -16,10 +16,28 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-# 운영 / 모의투자 도메인. 잔고조회 문서에 모의투자 도메인이 있다
-# (토큰 문서에는 '미제공' 으로 적혀 있어 API 별로 다를 수 있다).
+# 운영 / 모의투자 도메인.
+#
+# 실측으로 확인한 규칙이다 (2026-09-20):
+#   토큰  운영에서만 발급된다 (문서에도 모의 '미제공'). 발급받은 토큰은
+#         모의 도메인에서도 그대로 통한다
+#   시세  운영에서만 제공된다 (문서에 모의 '미제공')
+#   잔고·주문  계좌 종류를 따라간다. 모의계좌를 운영 도메인으로 조회하면
+#         11512 '데이터가 존재하지 않습니다', 반대도 실패한다
+#
+# 그래서 토큰·시세는 항상 운영으로, 잔고·주문만 갈라 보낸다.
 BASE_URL = (os.getenv("NAMUH_BASE_URL") or "https://api.nhplug.com:8443").strip()
-MOCK_BASE_URL = "https://moapi.nhplug.com:8443"
+MOCK_BASE_URL = (os.getenv("NAMUH_MOCK_BASE_URL") or "https://moapi.nhplug.com:8443").strip()
+
+
+def use_mock() -> bool:
+    """모의투자 계좌를 쓰는가. NAMUH_MOCK=1 로 켠다."""
+    return (os.getenv("NAMUH_MOCK") or "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def trade_base_url() -> str:
+    """잔고·주문이 갈 도메인. 매번 읽어 시험에서 바꿔 끼울 수 있게 한다."""
+    return MOCK_BASE_URL if use_mock() else BASE_URL
 
 # 발급받은 토큰을 프로세스 밖에 보관한다.
 #
@@ -258,7 +276,7 @@ class NamuhAccount:
         if not self.account_no:
             raise NamuhError("나무증권 계좌번호가 설정되지 않았습니다 (NAMUH_ACCOUNT_NO).")
 
-        endpoint = f"{BASE_URL}/gbstock/inquiry/v1/balance"
+        endpoint = f"{trade_base_url()}/gbstock/inquiry/v1/balance"
         body = {
             "Input_0": {
                 "act_no": self.account_no,      # 11자리 그대로 (쪼개지 않는다)
@@ -514,7 +532,7 @@ class NamuhAccount:
             inp["fc_orr_uit_pr"] = round(price, 2)
 
         try:
-            res = requests.post(f"{BASE_URL}/gbstock/order/v1/buy",
+            res = requests.post(f"{trade_base_url()}/gbstock/order/v1/buy",
                                 headers=self._headers(), json={"Input_0": inp}, timeout=10)
             res_data = res.json()
         except NamuhError:
@@ -623,7 +641,7 @@ class NamuhAccount:
             inp["fc_orr_uit_pr"] = round(price, 2)
 
         try:
-            res = requests.post(f"{BASE_URL}/gbstock/order/v1/sell",
+            res = requests.post(f"{trade_base_url()}/gbstock/order/v1/sell",
                                 headers=self._headers(), json={"Input_0": inp}, timeout=10)
             res_data = res.json()
         except NamuhError:
