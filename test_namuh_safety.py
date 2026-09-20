@@ -125,6 +125,37 @@ try:
 except Exception as e:
     check("복원 코드가 이 형식을 읽을 수 있다", False, f"{type(e).__name__}: {e}")
 
+print("\n── OAuth 토큰 (공식 문서: 만료 전 재발급 금지) ──")
+import tempfile as _tf   # noqa: E402
+namuh.TOKEN_FILE = os.path.join(_tf.mkdtemp(prefix="ntok-"), "namuh_token.json")
+_restore_network()
+
+t1 = NamuhAccount("APPKEY", "SECRET", "1234567890")
+t1._token, t1._token_expires_at = "TOK-ABC", time.time() + 86400
+t1._save_token_to_disk()
+check("발급한 토큰을 디스크에 남긴다", os.path.exists(namuh.TOKEN_FILE),
+      f"권한 {oct(os.stat(namuh.TOKEN_FILE).st_mode)[-3:]}")
+
+t2 = NamuhAccount("APPKEY", "SECRET", "1234567890")     # 재시작 흉내
+_cut_network()                                           # 발급은 불가능한 상태
+check("재시작해도 남은 토큰을 재사용한다 (재발급하지 않는다)",
+      t2.get_token() == "TOK-ABC", "통신이 끊겼는데도 토큰을 얻음")
+_restore_network()
+
+t3 = NamuhAccount("OTHERKEY", "SECRET", "1234567890")
+t3._load_token_from_disk()
+check("앱키가 다르면 저장된 토큰을 쓰지 않는다", t3._token is None, "재사용 안 함")
+
+check("토큰 파일에 앱키 원문을 저장하지 않는다",
+      "APPKEY" not in open(namuh.TOKEN_FILE, encoding="utf-8").read(), "해시만 저장")
+
+t4 = NamuhAccount("APPKEY", "SECRET", "1234567890")
+t4._token, t4._token_expires_at = "TOK-OLD", time.time() + 60   # 만료 임박
+t4._save_token_to_disk()
+t5 = NamuhAccount("APPKEY", "SECRET", "1234567890")
+t5._load_token_from_disk()
+check("만료가 임박한 토큰은 재사용하지 않는다", t5._token is None, "5분 미만 남으면 버림")
+
 print("\n── 미국 장 시간 ──")
 from datetime import datetime, timezone   # noqa: E402
 MS = namuh.market_session

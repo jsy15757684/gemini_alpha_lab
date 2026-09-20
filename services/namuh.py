@@ -18,6 +18,22 @@ logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.nhplug.com:8443"
 
+# 발급받은 토큰을 프로세스 밖에 보관한다.
+#
+# 공식 문서: "발급된 토큰정보는 24시간 유효합니다. 토큰정보 만료 전 재발급
+# 받지 않도록 유의해주세요." 그런데 토큰을 메모리에만 두면 서비스를 재시작할
+# 때마다 새로 발급받는다. 배포가 잦은 날에는 하루에도 여러 번이 된다
+# (2026-09-19 에는 12번 재시작했다). 발급 횟수 제한에 걸리면 그때부터
+# 인증이 통째로 막힌다.
+#
+# 그래서 디스크에 저장해 재시작 후에도 남은 유효기간을 쓴다.
+TOKEN_FILE = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "namuh_token.json")
+
+# 모의투자 도메인이 제공되지 않는다(공식 문서). 실계좌 키로만 호출되므로
+# 조회는 안전하지만 주문은 곧바로 실주문이다.
+HAS_SANDBOX = False
+
 # 라오어 무한매수법 대표 지원 미국 주식 ETF 및 메이저 종목
 NAMUH_STOCKS: Dict[str, Dict[str, str]] = {
     "TQQQ": {"name": "ProShares UltraPro QQQ (나스닥 3배)", "market": "NASDAQ", "leverage": "3x", "currency": "USD"},
@@ -110,12 +126,55 @@ class NamuhAccount:
         acc = self.account_no
         return (acc[:3] + "****" + acc[7:]) if len(acc) >= 8 else (acc or "")
 
+    def _token_cache_key(self) -> str:
+        """앱키가 바뀌면 저장된 토큰을 쓰지 않도록 구분자를 둔다 (키 값은 저장하지 않는다)."""
+        import hashlib
+        return hashlib.sha256(self.app_key.encode()).hexdigest()[:16]
+
+    def _load_token_from_disk(self) -> None:
+        try:
+            if not os.path.exists(TOKEN_FILE):
+                return
+            with open(TOKEN_FILE, encoding="utf-8") as f:
+                d = json.load(f)
+            if d.get("keyId") != self._token_cache_key():
+                return
+            exp = float(d.get("expiresAt") or 0)
+            if time.time() < exp - 300 and d.get("token"):
+                self._token = d["token"]
+                self._token_expires_at = exp
+                left = (exp - time.time()) / 3600.0
+                logger.info(f"저장된 나무증권 토큰을 재사용합니다 (남은 유효 {left:.1f}시간).")
+        except Exception as e:
+            logger.warning(f"저장된 나무증권 토큰을 읽지 못했습니다: {e}")
+
+    def _save_token_to_disk(self) -> None:
+        try:
+            os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
+            tmp = TOKEN_FILE + ".tmp"
+            with open(tmp, "w", encoding="utf-8") as f:
+                json.dump({"keyId": self._token_cache_key(), "token": self._token,
+                           "expiresAt": self._token_expires_at}, f)
+            os.replace(tmp, TOKEN_FILE)
+            os.chmod(TOKEN_FILE, 0o600)
+        except Exception as e:
+            logger.warning(f"나무증권 토큰을 저장하지 못했습니다: {e}")
+
     def get_token(self, force_refresh: bool = False) -> str:
-        """24시간 유효한 OAuth2 Access Token 발급 및 자동 갱신."""
+        """24시간 유효한 OAuth2 Access Token. 만료 전에는 재발급하지 않는다.
+
+        공식 문서가 '만료 전 재발급 금지' 를 명시한다. 메모리에만 두면
+        재시작마다 새로 발급받게 되므로 디스크에도 보관한다.
+        """
         with self._token_lock:
             now = time.time()
             if not force_refresh and self._token and now < (self._token_expires_at - 300):
                 return self._token
+
+            if not force_refresh and not self._token:
+                self._load_token_from_disk()
+                if self._token and time.time() < (self._token_expires_at - 300):
+                    return self._token
 
             if not self.configured:
                 raise NamuhError("나무증권 APPKEY 또는 Secret Key가 설정되지 않았습니다.")
@@ -140,7 +199,8 @@ class NamuhAccount:
             self._token = body["access_token"]
             expires_in = float(body.get("expires_in") or 86400)
             self._token_expires_at = now + expires_in
-            logger.info("나무증권 OAuth2 토큰 발급/갱신 완료")
+            self._save_token_to_disk()
+            logger.info(f"나무증권 OAuth2 토큰 발급/갱신 완료 (유효 {expires_in / 3600:.0f}시간)")
             return self._token
 
     def _headers(self, tr_id: str = "") -> Dict[str, str]:
