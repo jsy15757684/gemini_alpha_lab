@@ -99,6 +99,8 @@ class TradingBot:
         self._last_bar_time: Optional[int] = None
         # 복원 직후 첫 봉을 '이미 소비한 것' 으로 볼지 (아래 restore 참고)
         self._adopt_bar_on_start = False
+        # 미국 주식 정수 1주 매수 후 남은 잔돈 이월금 (USD)
+        self.budget_carryover = 0.0
 
     def _fetch_price(self) -> float:
         if self.broker == "namuh":
@@ -261,6 +263,21 @@ class TradingBot:
                 i = len(bars) - 1
                 self.last_rsi = bars[i].get("rsi")
 
+                # ── 미국 주식 운영 시간 및 휴장일 스케줄러 점검 ──
+                if self.broker == "namuh":
+                    try:
+                        from services.market_schedule import get_us_market_status
+                        m_stat = get_us_market_status()
+                        if not m_stat["isOpen"]:
+                            status_desc = f"미국 증시 휴장 ({m_stat['statusText']} · 다음 개장: {m_stat.get('nextOpenKst', '-')})"
+                            # 실전(LIVE) 모드에서는 장외 시간 주문 에러를 방지하기 위해 대기
+                            if self.mode == "LIVE":
+                                self.last_decision = status_desc
+                                time.sleep(poll)
+                                continue
+                    except Exception as e:
+                        logger.warning(f"[{self.bot_id}] 증시 스케줄 확인 실패: {e}")
+
                 # 재시작 직후 중복 매수 방지 (lastBarTime 이 없던 옛 봇용).
                 if self._adopt_bar_on_start:
                     self._adopt_bar_on_start = False
@@ -319,8 +336,13 @@ class TradingBot:
                         self._last_bar_time = cur_bar_time
                         if self.params.raoerVersion == "v4":
                             # V4.0 공식: 잔여 현금 / (N - T)
+                            # 미국 주식(USD)인 경우 이전 회차의 미체결 잔돈(budget_carryover)을 제외한 미배정 순수 현금 기준으로 분할
                             rem_turns = max(1, self.params.splitCount - self.pos.turn)
-                            base_chunk_krw = self.cash / rem_turns
+                            if self.currency == "USD":
+                                unalloc_cash = max(0.0, self.cash - self.budget_carryover)
+                                base_chunk_krw = unalloc_cash / rem_turns
+                            else:
+                                base_chunk_krw = self.cash / rem_turns
                         else:
                             base_chunk_krw = self.initial_krw / self.params.splitCount
                         sizing_mult = 1.0
@@ -487,7 +509,15 @@ class TradingBot:
         if invest < min_invest:
             return
         fee = self.params.feePct / 100.0
-        units = invest * (1 - fee) / price
+        if self.currency == "USD":
+            cost_per_unit = price * (1 + fee)
+            units = float(int(invest // cost_per_unit))
+            if units < 1:
+                self.log("WARNING", f"자본 부족으로 1주 미만 매수 불가 (${invest:,.2f} < ${cost_per_unit:,.2f})")
+                return
+            invest = units * price
+        else:
+            units = invest * (1 - fee) / price
 
         if self.mode == "LIVE":
             if self.broker == "namuh":
@@ -495,7 +525,7 @@ class TradingBot:
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
                 try:
-                    res = self.namuh_account.market_buy(self.coin, invest)
+                    res = self.namuh_account.market_buy(self.coin, amount_usd=invest, units=units)
                     units = float(res.get("units") or units)
                     self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
                 except namuh.NamuhError as e:
@@ -532,7 +562,8 @@ class TradingBot:
                     logger.warning(f"매수 후 잔고 조회 실패 (이론 수량 {units:.8f} 유지): {e}")
 
         self.pos = Position(units=units, entryPrice=price, peakPrice=price, turn=1, totalInvested=invest)
-        self.cash = 0.0
+        self.cash = max(0.0, self.cash - (invest * (1 + fee) if self.currency == "USD" else invest))
+        self.budget_carryover = 0.0
         self._record_trade("BUY", price, units, invest, pnl=0.0, return_pct=0.0, reason=reason)
         p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
         inv_str = f"{invest:,.2f}$" if self.currency == "USD" else f"{invest:,.0f}원"
@@ -540,28 +571,53 @@ class TradingBot:
         self._persist()
 
     def _enter_chunk(self, price: float, invest_krw: float, reason: str):
-        """라오어 무한매수 분할 매수."""
-        invest = min(self.cash, invest_krw)
-        min_invest = 10.0 if self.currency == "USD" else 5000.0
-        if invest < min_invest:
-            self.log("WARNING", f"분할 매수 잔여 현금 부족 ({self.cash:,.2f}{self.curr_symbol} < {min_invest:,.0f}{self.curr_symbol}). 매수 보류.")
-            return
+        """라오어 무한매수 분할 매수 (미국주식 정수 1주 단위 체결 및 잔돈 이월 지원)."""
         fee = self.params.feePct / 100.0
-        new_units = invest * (1 - fee) / price
 
-        if self.mode == "LIVE":
-            if self.broker == "namuh":
+        if self.currency == "USD":
+            cost_per_share = price * (1 + fee)
+            # 배정액 + 이전 회차 잔돈 이월금
+            allocated_budget = min(self.cash, invest_krw)
+            total_budget = allocated_budget + self.budget_carryover
+            units_to_buy = int(total_budget // cost_per_share)
+
+            if units_to_buy < 1:
+                # 1주 미만이므로 이번 회차는 매수하지 않고 전액 다음 회차로 이월
+                self.budget_carryover = total_budget
+                self.pos.turn += 1
+                self.last_decision = f"1주 미만 예산 이월 (${self.budget_carryover:,.2f} 누적, 주가 ${price:,.2f})"
+                self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 예산 이월] 주가(${price:,.2f}) 대비 가용 예산(${total_budget:,.2f})이 1주 미만이므로 ${self.budget_carryover:,.2f}을 다음 회차로 이월합니다.")
+                self._persist()
+                return
+
+            # 1주 이상 체결 가능
+            new_units = float(units_to_buy)
+            spent_total = new_units * cost_per_share
+            invest = new_units * price
+            # 잔돈 이월금 갱신 및 실제 현금 차감
+            self.budget_carryover = max(0.0, total_budget - spent_total)
+            self.cash = max(0.0, self.cash - spent_total)
+
+            if self.mode == "LIVE":
                 if not (self.namuh_account and self.namuh_account.configured):
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
                 try:
-                    res = self.namuh_account.market_buy(self.coin, invest)
+                    res = self.namuh_account.market_buy(self.coin, amount_usd=spent_total, units=units_to_buy)
                     new_units = float(res.get("units") or new_units)
                     self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
                 except namuh.NamuhError as e:
                     self.log("ERROR", f"나무증권 실주문 분할 매수 실패: {e.message}")
                     return
-            else:
+        else:
+            invest = min(self.cash, invest_krw)
+            min_invest = 5000.0
+            if invest < min_invest:
+                self.log("WARNING", f"분할 매수 잔여 현금 부족 ({self.cash:,.0f}원 < {min_invest:,.0f}원). 매수 보류.")
+                return
+            new_units = invest * (1 - fee) / price
+
+            if self.mode == "LIVE":
                 if not (self.account and self.account.configured):
                     self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
                     return
@@ -591,6 +647,8 @@ class TradingBot:
                 except Exception as e:
                     logger.warning(f"분할 매수 후 잔고 동기화 실패: {e}")
 
+            self.cash = max(0.0, self.cash - invest)
+
         u0 = self.pos.units
         p0 = self.pos.entryPrice
         u_total = u0 + new_units
@@ -601,14 +659,14 @@ class TradingBot:
         self.pos.peakPrice = max(self.pos.peakPrice, price)
         self.pos.turn += 1
         self.pos.totalInvested += invest
-        self.cash = max(0.0, self.cash - invest)
 
         self._record_trade("BUY_CHUNK", price, new_units, invest, pnl=0.0, return_pct=0.0, reason=reason)
         p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
         inv_str = f"{invest:,.2f}$" if self.currency == "USD" else f"{invest:,.0f}원"
         avg_str = f"{p_avg:,.2f}$" if self.currency == "USD" else f"{p_avg:,.0f}원"
+        carry_note = f" (잔돈 이월금 ${self.budget_carryover:,.2f})" if self.currency == "USD" and self.budget_carryover > 0 else ""
         self.log("BUY", f"[{self.pos.turn}/{self.params.splitCount}회차 분할매수] {new_units:.4f} {self.coin} @ {p_str} "
-                        f"({inv_str}) | 평단가 {avg_str} (총 {u_total:.4f} {self.coin}) | 사유: {reason}")
+                        f"({inv_str}) | 평단가 {avg_str} (총 {u_total:.4f} {self.coin}){carry_note} | 사유: {reason}")
         self._persist()
 
     def _exit(self, price: float, reason: str):
@@ -672,6 +730,7 @@ class TradingBot:
             self.winning_trades += 1
         self._record_trade("SELL", price, units, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
         self.pos = Position()
+        self.budget_carryover = 0.0
 
         p_str = f"{price:,.2f}$" if self.currency == "USD" else f"{price:,.0f}원"
         pnl_str = f"{pnl:+,.2f}$" if self.currency == "USD" else f"{pnl:+,.0f}원"
@@ -680,9 +739,15 @@ class TradingBot:
         self._persist()
 
     def _exit_quarter(self, price: float, reason: str):
-        """라오어 무한매수 소진 시 25% 쿼터 매도 방어."""
+        """라오어 무한매수 소진 시 25% 쿼터 매도 방어 (미국 주식은 정수 1주 단위)."""
         cut_ratio = self.params.quarterCutPct / 100.0
-        units_to_sell = self.pos.units * cut_ratio
+        if self.currency == "USD":
+            units_to_sell = float(max(1, int(round(self.pos.units * cut_ratio))))
+            if units_to_sell > self.pos.units:
+                units_to_sell = self.pos.units
+        else:
+            units_to_sell = self.pos.units * cut_ratio
+
         if units_to_sell <= 0:
             return
         fee = self.params.feePct / 100.0
@@ -752,6 +817,7 @@ class TradingBot:
             "broker": self.broker, "market": self.market, "currency": self.currency,
             "params": self.params.to_dict(),
             "cash": self.cash,
+            "budgetCarryover": round(self.budget_carryover, 2),
             "units": self.pos.units, "entryPrice": self.pos.entryPrice,
             "peakPrice": self.pos.peakPrice,
             "turn": self.pos.turn,
@@ -775,6 +841,7 @@ class TradingBot:
                   float(d["initialKrw"]), StrategyParams.from_dict(d.get("params")),
                   account=account, namuh_account=namuh_account, broker=broker)
         bot.cash = float(d.get("cash", d["initialKrw"]))
+        bot.budget_carryover = float(d.get("budgetCarryover", 0.0))
         lbt = d.get("lastBarTime")
         bot._last_bar_time = int(lbt) if lbt else None
         # 이 값이 없던 시절에 저장된 봇: 이미 포지션을 들고 있다면 어느 봉에서
@@ -799,6 +866,27 @@ class TradingBot:
         price = self.last_price or self.pos.entryPrice
         equity = self.cash + self.pos.units * price
         unreal = (price - self.pos.entryPrice) * self.pos.units if self.pos.open else 0.0
+
+        fx_rate = 1.0
+        equity_krw_conv = equity
+        cash_krw_conv = self.cash
+        inv_krw_conv = self.pos.totalInvested
+        unreal_krw_conv = unreal
+        realized_krw_conv = self.realized_pnl
+
+        if self.currency == "USD":
+            try:
+                from services.arbitrage import get_official_fx
+                fx_info = get_official_fx()
+                fx_rate = float(fx_info.get("rate") or 1380.0)
+            except Exception:
+                fx_rate = 1380.0
+            equity_krw_conv = round(equity * fx_rate, 0)
+            cash_krw_conv = round(self.cash * fx_rate, 0)
+            inv_krw_conv = round(self.pos.totalInvested * fx_rate, 0)
+            unreal_krw_conv = round(unreal * fx_rate, 0)
+            realized_krw_conv = round(self.realized_pnl * fx_rate, 0)
+
         return {
             "botId": self.bot_id,
             "coin": self.coin,
@@ -819,6 +907,13 @@ class TradingBot:
             "initialKrw": round(self.initial_krw, 2 if self.currency == "USD" else 0),
             "equityKrw": round(equity, 2 if self.currency == "USD" else 0),
             "cashKrw": round(self.cash, 2 if self.currency == "USD" else 0),
+            "budgetCarryover": round(self.budget_carryover, 2),
+            "fxRate": round(fx_rate, 2),
+            "equityKrwConverted": equity_krw_conv,
+            "cashKrwConverted": cash_krw_conv,
+            "investedKrwConverted": inv_krw_conv,
+            "unrealizedPnlKrwConverted": unreal_krw_conv,
+            "realizedPnlKrwConverted": realized_krw_conv,
             # 실제로 시장에 들어간 원금. 화면이 '무엇 대비 수익률인지' 를
             # 밝히려면 배정자본(initialKrw)과 이 값이 둘 다 필요하다.
             "investedKrw": round(self.pos.totalInvested, 2 if self.currency == "USD" else 0),
@@ -909,21 +1004,36 @@ class BotManager:
     def all_trade_history(self) -> Dict[str, Any]:
         """전체 체결 일지와 누적 손익 정산.
 
-        집계 근거는 현재 살아 있는 봇이 아니라 tradelog(영속 장부)다.
-        봇을 지웠다고 과거 체결과 실현 손익이 사라지면 그 화면을 '누적 정산'
-        이라고 부를 수 없다.
-
-        실현 손익과 체결 횟수는 매도 행(SELL*)만 센다. 봇 내부 집계
-        (realized_pnl / total_trades)가 매도에서만 증가하는 것과 같은 규칙이라
-        화면의 봇별 숫자와 합계가 어긋나지 않는다.
+        - 암호화폐(KRW)와 미국주식(USD)의 손익을 정확히 통화별로 분리 집계
+        - 서울외환시장 공시환율을 적용하여 미국 주식 실현익을 원화로 환산 합산
+        - 연간 250만 원 해외주식 양도소득세 비과세 트래커(소진율, 잔여한도, 예상세액) 제공
         """
         rows = tradelog.all_rows()
 
-        total_pnl = 0.0
-        total_trades = 0
-        winning_trades = 0
-        total_buy_krw = 0.0
-        total_sell_krw = 0.0
+        fx_rate = 1380.0
+        try:
+            from services.arbitrage import get_official_fx
+            fx_info = get_official_fx()
+            fx_rate = float(fx_info.get("rate") or 1380.0)
+        except Exception:
+            pass
+
+        # 전체 및 통화별 집계
+        crypto_pnl_krw = 0.0
+        crypto_trades = 0
+        crypto_winning = 0
+        crypto_buy_krw = 0.0
+        crypto_sell_krw = 0.0
+
+        stocks_pnl_usd = 0.0
+        stocks_trades = 0
+        stocks_winning = 0
+        stocks_buy_usd = 0.0
+        stocks_sell_usd = 0.0
+
+        current_year = datetime.now().year
+        annual_stock_pnl_usd = 0.0
+
         by_coin: Dict[str, Dict[str, Any]] = {}
 
         for t in rows:
@@ -934,50 +1044,120 @@ class BotManager:
             except (TypeError, ValueError):
                 continue
             coin = t.get("coin") or "?"
+            currency = t.get("currency", "USD" if coin in NAMUH_STOCKS else "KRW")
+            t_time = str(t.get("time", ""))
 
             c_name = t.get("coinName") or bithumb.COINS.get(coin, NAMUH_STOCKS.get(coin, {}).get("name", coin))
             stats = by_coin.setdefault(coin, {
                 "coin": coin,
                 "coinName": c_name,
-                "currency": t.get("currency", "USD" if coin in NAMUH_STOCKS else "KRW"),
+                "currency": currency,
+                "realizedPnl": 0.0,
                 "realizedPnlKrw": 0.0,
+                "realizedPnlKrwConverted": 0.0,
                 "totalTrades": 0,
                 "winningTrades": 0,
                 "winRatePct": 0.0,
             })
 
-            if "SELL" in act:
-                total_sell_krw += amt
-                total_pnl += pnl
-                total_trades += 1
-                stats["realizedPnlKrw"] += pnl
-                stats["totalTrades"] += 1
-                if pnl > 0:
-                    winning_trades += 1
-                    stats["winningTrades"] += 1
-            elif "BUY" in act:
-                total_buy_krw += amt
+            is_sell = "SELL" in act
+            is_buy = "BUY" in act
 
-        rows.sort(key=lambda x: x.get("time", ""), reverse=True)
+            if currency == "USD":
+                if is_sell:
+                    stocks_sell_usd += amt
+                    stocks_pnl_usd += pnl
+                    stocks_trades += 1
+                    stats["realizedPnl"] += pnl
+                    stats["totalTrades"] += 1
+                    if pnl > 0:
+                        stocks_winning += 1
+                        stats["winningTrades"] += 1
+                    if t_time.startswith(str(current_year)):
+                        annual_stock_pnl_usd += pnl
+                elif is_buy:
+                    stocks_buy_usd += amt
+            else:
+                if is_sell:
+                    crypto_sell_krw += amt
+                    crypto_pnl_krw += pnl
+                    crypto_trades += 1
+                    stats["realizedPnl"] += pnl
+                    stats["totalTrades"] += 1
+                    if pnl > 0:
+                        crypto_winning += 1
+                        stats["winningTrades"] += 1
+                elif is_buy:
+                    crypto_buy_krw += amt
 
-        win_rate = round(winning_trades / total_trades * 100, 2) if total_trades > 0 else 0.0
-
-        coin_summary = []
         for stats in by_coin.values():
             tot = stats["totalTrades"]
             stats["winRatePct"] = round(stats["winningTrades"] / tot * 100, 2) if tot > 0 else 0.0
-            stats["realizedPnlKrw"] = round(stats["realizedPnlKrw"], 0)
-            coin_summary.append(stats)
-        coin_summary.sort(key=lambda x: x["realizedPnlKrw"], reverse=True)
+            if stats["currency"] == "USD":
+                stats["realizedPnl"] = round(stats["realizedPnl"], 2)
+                stats["realizedPnlKrw"] = stats["realizedPnl"]
+                stats["realizedPnlKrwConverted"] = round(stats["realizedPnl"] * fx_rate, 0)
+            else:
+                stats["realizedPnl"] = round(stats["realizedPnl"], 0)
+                stats["realizedPnlKrw"] = stats["realizedPnl"]
+                stats["realizedPnlKrwConverted"] = stats["realizedPnl"]
+
+        coin_summary = list(by_coin.values())
+        coin_summary.sort(key=lambda x: x["realizedPnlKrwConverted"], reverse=True)
+
+        rows.sort(key=lambda x: x.get("time", ""), reverse=True)
+
+        annual_stock_pnl_krw = round(annual_stock_pnl_usd * fx_rate, 0)
+        deduction_limit_krw = 2_500_000.0
+        used_deduction_krw = max(0.0, min(annual_stock_pnl_krw, deduction_limit_krw))
+        remaining_deduction_krw = max(0.0, deduction_limit_krw - annual_stock_pnl_krw)
+        usage_pct = round((annual_stock_pnl_krw / deduction_limit_krw * 100.0), 1) if annual_stock_pnl_krw > 0 else 0.0
+        taxable_krw = max(0.0, annual_stock_pnl_krw - deduction_limit_krw)
+        estimated_tax_krw = round(taxable_krw * 0.22, 0)
+
+        total_trades = crypto_trades + stocks_trades
+        winning_trades = crypto_winning + stocks_winning
+        total_pnl_krw_combined = round(crypto_pnl_krw + (stocks_pnl_usd * fx_rate), 0)
+        win_rate = round(winning_trades / total_trades * 100, 2) if total_trades > 0 else 0.0
 
         return {
             "summary": {
-                "totalRealizedPnlKrw": round(total_pnl, 0),
+                "totalRealizedPnlKrw": total_pnl_krw_combined,
                 "totalTrades": total_trades,
                 "winningTrades": winning_trades,
                 "winRatePct": win_rate,
-                "totalBuyKrw": round(total_buy_krw, 0),
-                "totalSellKrw": round(total_sell_krw, 0),
+                "totalBuyKrw": round(crypto_buy_krw + (stocks_buy_usd * fx_rate), 0),
+                "totalSellKrw": round(crypto_sell_krw + (stocks_sell_usd * fx_rate), 0),
+                "crypto": {
+                    "realizedPnlKrw": round(crypto_pnl_krw, 0),
+                    "totalTrades": crypto_trades,
+                    "winningTrades": crypto_winning,
+                    "winRatePct": round(crypto_winning / crypto_trades * 100, 2) if crypto_trades > 0 else 0.0,
+                    "totalBuyKrw": round(crypto_buy_krw, 0),
+                    "totalSellKrw": round(crypto_sell_krw, 0),
+                },
+                "stocks": {
+                    "realizedPnlUsd": round(stocks_pnl_usd, 2),
+                    "realizedPnlKrwConverted": round(stocks_pnl_usd * fx_rate, 0),
+                    "fxRate": round(fx_rate, 2),
+                    "totalTrades": stocks_trades,
+                    "winningTrades": stocks_winning,
+                    "winRatePct": round(stocks_winning / stocks_trades * 100, 2) if stocks_trades > 0 else 0.0,
+                    "totalBuyUsd": round(stocks_buy_usd, 2),
+                    "totalSellUsd": round(stocks_sell_usd, 2),
+                },
+                "taxTracker": {
+                    "year": current_year,
+                    "fxRate": round(fx_rate, 2),
+                    "annualStockPnlUsd": round(annual_stock_pnl_usd, 2),
+                    "annualStockPnlKrw": annual_stock_pnl_krw,
+                    "deductionLimitKrw": deduction_limit_krw,
+                    "usedDeductionKrw": used_deduction_krw,
+                    "remainingDeductionKrw": remaining_deduction_krw,
+                    "usagePct": usage_pct,
+                    "taxableKrw": taxable_krw,
+                    "estimatedTaxKrw": estimated_tax_krw,
+                },
                 "byCoin": coin_summary,
             },
             "trades": rows[:500],

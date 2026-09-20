@@ -378,7 +378,7 @@ function botCard(b) {
   const fmtPnl = (v) => isUsd
     ? `${Number(v||0) >= 0 ? '+' : ''}$${Number(v||0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
     : `${Number(v||0) >= 0 ? '+' : ''}${won(v)}원`;
-  const fmtUnits = (u) => isUsd ? Number(u||0).toFixed(4) : Number(u||0).toFixed(6);
+  const fmtUnits = (u) => isUsd ? `${Math.round(u||0)}주` : Number(u||0).toFixed(6);
 
   const badge = !b.isRunning ? `<span class="badge badge-stop">정지됨</span>`
     : live ? `<span class="badge badge-live">실전</span>`
@@ -401,6 +401,10 @@ function botCard(b) {
     stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:var(--accent); border:1px solid rgba(59,130,246,.4);">${gemMode} (${b.params?.geminiMinConfidence}%)</span>`;
   }
 
+  if (isUsd && Number(b.budgetCarryover || 0) > 0) {
+    stratBadge += ` <span class="badge" style="background:rgba(234,179,8,.18); color:#facc15; border:1px solid rgba(234,179,8,.4);" title="1주 미만 단주로 다음 회차로 이월 누적된 예산">이월잔돈 $${Number(b.budgetCarryover).toFixed(2)}</span>`;
+  }
+
   const logs = (b.recentLogs || []).map(l =>
     `<div class="logline"><span class="t">${l.time}</span><span class="lv-${l.level}">${l.message}</span></div>`).join("");
   return `<div class="bot">
@@ -413,7 +417,10 @@ function botCard(b) {
       </div>
     </div>
     <div class="bot-stats">
-      <div><div class="stat-k">평가자산</div><div class="stat-v">${fmtCurr(b.equityKrw)}</div></div>
+      <div><div class="stat-k">평가자산</div>
+        <div class="stat-v">${fmtCurr(b.equityKrw)}</div>
+        ${isUsd ? `<div class="muted" style="font-size:0.68rem;">약 ${won(b.equityKrwConverted)}원</div>` : ""}
+      </div>
       <div title="배정자본 ${fmtCurr(b.initialKrw)} 대비 평가자산 증감. 분할매수 초반에는 '평단 대비' 보다 작게 나온다. 지금은 ${fmtCurr(b.investedKrw)}(${investedPct(b)})만 시장에 들어가 있다.">
         <div class="stat-k">수익률 <span class="muted" style="font-weight:400;">· 배정 대비</span></div>
         <div class="stat-v ${cls(b.totalReturnPct)}">${pct(b.totalReturnPct)}</div>
@@ -426,7 +433,9 @@ function botCard(b) {
         <div class="stat-k">평가손익 <span class="muted" style="font-weight:400;">· 평단 대비</span></div>
         <div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0
           ? `${fmtPnl(b.unrealizedPnlKrw)} <span style="font-size:0.7rem; font-weight:400;">${pct(b.unrealizedPnlPct)}</span>`
-          : "-"}</div></div>
+          : "-"}</div>
+        ${b.units > 0 && isUsd ? `<div class="muted" style="font-size:0.68rem;">약 ${won(b.unrealizedPnlKrwConverted)}원</div>` : ""}
+      </div>
       <div title="AI 가 정한 익절 목표와 매수 비중. 목표 수익률은 '평단 대비' 기준이다 — 배정 대비 수익률은 그보다 낮게 찍힌다."><div class="stat-k">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? '회차 <span class="muted" style="font-weight:400;">· 목표/비중</span>' : '진행 회차') : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? `${b.turn||0}/${b.splitCount||40} <span class="small" style="color:var(--accent); font-size:0.75rem;">(+${b.lastAiAnalysis?.dynamicTargetProfitPct || b.params?.targetProfitPct}% / ${b.lastAiAnalysis?.sizingMultiplier || 1.0}x)</span>` : `${b.turn||0} / ${b.splitCount||40}`) : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
       <div><div class="stat-k">거래 (익절)</div><div class="stat-v">${b.totalTrades}회</div></div>
       <div><div class="stat-k">승률</div><div class="stat-v">${b.totalTrades ? b.winRatePct + "%" : "-"}</div></div>
@@ -981,6 +990,33 @@ async function keyAction(save) {
   }
 }
 
+// ───────── 미국 증시 운영 시간 & 스케줄 ─────────
+
+async function loadUsMarketStatus() {
+  try {
+    const s = await api("/api/namuh/market_status");
+    const pill = $("usMarketPill");
+    if (!pill) return;
+    const dstLabel = s.isDst ? "서머타임(EDT)" : "표준시(EST)";
+    if (s.isOpen) {
+      pill.className = "pill ok";
+      pill.textContent = `🟢 미국 정규장 (${s.nextCloseKst ? s.nextCloseKst + ' 마감' : '운영 중'})`;
+      pill.title = `미국 증시 정규장 운영 중\n동부: ${s.easternTime} (${dstLabel})\n한국: ${s.koreanTime}\n마감: ${s.nextCloseKst || '-'}`;
+    } else if (s.status === "HOLIDAY") {
+      pill.className = "pill";
+      pill.textContent = `🏖️ 미국 증시 휴장 (${s.holidayName || '공휴일'})`;
+      pill.title = `미국 증시 공휴일 휴장: ${s.holidayName}\n동부: ${s.easternTime}\n한국: ${s.koreanTime}\n다음 개장: ${s.nextOpenKst || '-'}`;
+    } else {
+      pill.className = "pill";
+      const nextStr = s.nextOpenKst ? (s.nextOpenKst.includes(" ") ? s.nextOpenKst.split(" ")[1] : s.nextOpenKst) : "";
+      pill.textContent = `⏸️ 미국 증시 휴장 (개장 ${nextStr || '대기'})`;
+      pill.title = `${s.statusText}\n동부: ${s.easternTime} (${dstLabel})\n한국: ${s.koreanTime}\n다음 개장: ${s.nextOpenKst || '-'}`;
+    }
+  } catch (e) {
+    console.error("미국 증시 상태 조회 실패:", e);
+  }
+}
+
 // ───────── 나무증권 계정 ─────────
 
 async function loadNamuhAccount() {
@@ -1131,6 +1167,35 @@ async function loadTradeHistory() {
     if ($("mTotalBuy")) $("mTotalBuy").textContent = `${won(s.totalBuyKrw || 0)}원`;
     if ($("mTotalSell")) $("mTotalSell").textContent = `${won(s.totalSellKrw || 0)}원`;
 
+    // 해외주식 250만원 비과세 트래커 렌더링
+    const tax = s.taxTracker;
+    if (tax && $("taxAnnualPnlUsd")) {
+      const pnlUsd = tax.annualStockPnlUsd || 0;
+      const pnlKrw = tax.annualStockPnlKrw || 0;
+      const remLimit = tax.remainingDeductionKrw != null ? tax.remainingDeductionKrw : 2500000;
+      const estTax = tax.estimatedTaxKrw || 0;
+      const pctVal = Math.min(100.0, Number(tax.usagePct || 0));
+
+      $("taxAnnualPnlUsd").innerHTML = `<span class="${cls(pnlUsd)}">${pnlUsd >= 0 ? '+' : ''}$${Number(pnlUsd).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</span>`;
+      $("taxAnnualPnlKrw").innerHTML = `<span class="${cls(pnlKrw)}">${pnlKrw >= 0 ? '+' : ''}${won(pnlKrw)}원</span>`;
+      $("taxRemainingLimit").textContent = `${won(remLimit)}원`;
+      $("taxEstimatedAmount").innerHTML = estTax > 0 
+        ? `<span class="down" style="color:var(--down); font-weight:700;">${won(estTax)}원</span>` 
+        : `<span class="muted">0원 (전액 비과세)</span>`;
+      $("taxFxInfo").textContent = `기준환율: ${Number(tax.fxRate || 1380).toFixed(1)}원/$`;
+      $("taxUsagePct").textContent = `${pctVal.toFixed(1)}% (${won(tax.usedDeductionKrw || 0)}원 / ${won(tax.deductionLimitKrw || 2500000)}원)`;
+      
+      const bar = $("taxProgressBar");
+      if (bar) {
+        bar.style.width = `${pctVal}%`;
+        if (pctVal >= 100) {
+          bar.style.background = "linear-gradient(90deg, #f59e0b, #ef4444)";
+        } else {
+          bar.style.background = "linear-gradient(90deg, #3b82f6, #10b981)";
+        }
+      }
+    }
+
     // 코인별 요약 테이블
     const coinBody = $("coinSummaryBody");
     if (coinBody) {
@@ -1141,7 +1206,9 @@ async function loadTradeHistory() {
         coinBody.innerHTML = byCoin.map(c => {
           const pnl = c.realizedPnlKrw || 0;
           const isUsd = c.currency === "USD";
-          const pnlStr = isUsd ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}` : `${pnl >= 0 ? '+' : ''}${won(pnl)}원`;
+          const pnlStr = isUsd 
+            ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)} <span class="muted small" style="font-size:0.75rem;">(약 ${pnl >= 0 ? '+' : ''}${won(c.realizedPnlKrwConverted || 0)}원)</span>` 
+            : `${pnl >= 0 ? '+' : ''}${won(pnl)}원`;
           return `
             <tr>
               <td><b>${c.coinName || c.coin}</b> <span class="muted small">(${c.coin})</span></td>
@@ -1226,7 +1293,7 @@ function renderTradeRecords() {
     const pnlPct = t.returnPct != null && isSell ? t.returnPct : null;
     const isUsd = t.currency === "USD" || t.broker === "namuh";
     const fmtPrice = isUsd ? `$${Number(t.price||0).toFixed(2)}` : `${won(t.price)}원`;
-    const fmtUnits = isUsd ? Number(t.units||0).toFixed(4) : Number(t.units||0).toFixed(8);
+    const fmtUnits = isUsd ? `${Math.round(t.units||0)}주` : Number(t.units||0).toFixed(8);
     const fmtAmt = isUsd ? `$${Number(t.amountKrw||0).toFixed(2)}` : `${won(t.amountKrw)}원`;
     const fmtPnlVal = pnl != null ? (isUsd ? `${pnl >= 0 ? '+' : ''}$${Number(pnl).toFixed(2)}` : `${pnl >= 0 ? '+' : ''}${won(pnl)}원`) : '-';
 
@@ -1597,7 +1664,9 @@ async function boot() {
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadGeminiStatus(); loadEgressIp(); }
   });
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
+  if ($("usMarketPill")) $("usMarketPill").onclick = () => loadUsMarketStatus();
+
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
   timers.push(
     setInterval(loadPrices, 10000),
     setInterval(loadArbitrageRadar, 8000),
@@ -1605,11 +1674,12 @@ async function boot() {
     setInterval(loadBots, 8000),
     setInterval(loadTradeHistory, 10000),
     setInterval(loadNamuhAccount, 30000),
+    setInterval(loadUsMarketStatus, 15000),
     setInterval(renderFreshness, 1000),
   );
 
   document.addEventListener("visibilitychange", () => {
-    if (!document.hidden && started) { loadPrices(); loadBots(); loadTradeHistory(); }
+    if (!document.hidden && started) { loadPrices(); loadBots(); loadTradeHistory(); loadUsMarketStatus(); }
   });
 }
 

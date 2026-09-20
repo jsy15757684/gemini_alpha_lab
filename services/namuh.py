@@ -106,22 +106,17 @@ def _us_eastern_now(now_utc: Optional[datetime] = None) -> Tuple[datetime, bool]
 
 def market_session(now_utc: Optional[datetime] = None) -> Dict[str, Any]:
     """미국 정규장이 열려 있는지. 주문을 낼 수 있는 시간인지 판정한다.
-
-    정규장 09:30~16:00 ET, 월~금. 공휴일은 이 함수가 알지 못한다 —
-    그 경우 주문이 거부되거나 체결되지 않고, 체결 확인 단계에서 걸린다.
+    
+    services.market_schedule의 서머타임 및 NYSE 10대 공휴일 스케줄러를 기반으로 정확히 판정한다.
     """
-    et, is_dst = _us_eastern_now(now_utc)
-    weekday = et.weekday() < 5
-    mins = et.hour * 60 + et.minute
-    open_now = weekday and (9 * 60 + 30) <= mins < (16 * 60)
+    from services.market_schedule import get_us_market_status
+    st = get_us_market_status(now_utc)
     return {
-        "open": open_now,
-        "etTime": et.strftime("%Y-%m-%d %H:%M"),
-        "tz": "EDT" if is_dst else "EST",
-        "reason": "" if open_now else (
-            "주말 (미국 정규장 휴장)" if not weekday else
-            f"정규장 시간 밖 (09:30~16:00 ET · 현재 {et.strftime('%H:%M')} "
-            f"{'EDT' if is_dst else 'EST'})"),
+        "open": st["isOpen"],
+        "etTime": st.get("easternTime", ""),
+        "tz": "EDT" if st.get("isDst") else "EST",
+        "reason": "" if st["isOpen"] else f"{st['statusText']} (개장 예정: {st.get('nextOpenKst', '-')})",
+        "details": st,
     }
 
 
@@ -484,21 +479,20 @@ class NamuhAccount:
                 f"미국 정규장이 열려 있지 않아 {what}를 보류합니다 — {ses['reason']}. "
                 f"닫힌 장에 낸 주문은 체결되지 않는데 장부에는 남을 수 있습니다.")
 
-    def market_buy(self, ticker: str, amount_usd: float,
-                   order_type: str = "") -> Dict[str, Any]:
-        """미국 주식 매수 (라오어 무한매수 금액 기준 주문)."""
+    def market_buy(self, ticker: str, amount_usd: float = 0.0,
+                   order_type: str = "", units: float = 0.0) -> Dict[str, Any]:
+        """미국 주식 매수 (라오어 무한매수 금액 또는 정수 주수 기준 주문)."""
         sym = ticker.upper().strip()
         order_type = (order_type or DEFAULT_ORDER_TYPE).strip()
         price = self.get_price(sym)
         if price <= 0:
             raise NamuhError(f"현재가를 조회할 수 없습니다: {sym}")
 
-        # 배정액을 넘지 않게 **내림**한다.
-        #
-        # 예전에는 max(1, int(...)) 라, 1회 배정액이 1주 값보다 작으면 무조건
-        # 1주를 샀다. 40분할로 $1,000 을 굴리면 1회 $25 인데 TQQQ 1주 $75 가
-        # 나가 13회차에 자금이 바닥난다. 분할매수의 전제가 깨진다.
-        qty = int(amount_usd // price)
+        if units > 0:
+            qty = int(units)
+        else:
+            # 배정액을 넘지 않게 내림한다.
+            qty = int(amount_usd // price)
         if qty < 1:
             raise NamuhError(
                 f"1회 배정액 ${amount_usd:,.2f} 이 {sym} 1주 값 ${price:,.2f} 보다 "

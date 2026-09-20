@@ -581,6 +581,25 @@ def namuh_candles(symbol: str = Query(...), interval: str = Query("1h")):
             "candles": bars, "params": p.to_dict(), "dataSource": "namuh-plug"}
 
 
+@app.get("/api/namuh/market_status")
+def namuh_market_status():
+    """미국 증시 운영 시간, 서머타임 및 휴장일 판정 정보."""
+    from services.market_schedule import get_us_market_status
+    return get_us_market_status()
+
+
+@app.get("/api/namuh/tax")
+def namuh_tax_status():
+    """해외주식 연간 250만 원 비과세 소진율 및 예상 세액 정보."""
+    history = bot_manager.all_trade_history()
+    summary = history.get("summary", {})
+    return {
+        "success": True,
+        "taxTracker": summary.get("taxTracker", {}),
+        "stocksSummary": summary.get("stocks", {}),
+    }
+
+
 # ───────────────────────── Gemini AI ─────────────────────────
 
 class GeminiKeyRequest(BaseModel):

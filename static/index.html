@@ -35,6 +35,7 @@
       <span class="brand-name">알파랩 (빗썸 &amp; 나무증권)</span>
     </div>
     <div class="topbar-right">
+      <span class="pill" id="usMarketPill" style="cursor: pointer;" title="미국 증시 운영 시간 상세">🇺🇸 증시 확인 중…</span>
       <span class="pill" id="namuhPill">나무증권 확인 중…</span>
       <span class="pill" id="accountPill">빗썸 확인 중…</span>
       <button class="btn btn-ghost" id="logoutBtn">로그아웃</button>
@@ -461,6 +462,50 @@
             <div class="metric-k">총 매도 금액</div>
             <div class="metric-v" id="mTotalSell">0원</div>
           </div>
+        </div>
+
+        <!-- 해외주식 연간 250만원 양도소득세 비과세 트래커 -->
+        <div class="card" style="background: rgba(30, 41, 59, 0.5); border: 1px solid rgba(59, 130, 246, 0.3); border-radius: 8px; padding: 14px 16px; margin-top: 16px;">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 10px; flex-wrap: wrap; gap: 6px;">
+            <div style="display: flex; align-items: center; gap: 8px;">
+              <span style="font-size: 1.1rem;">🇺🇸</span>
+              <span style="font-weight: 700; font-size: 0.95rem; color: #60a5fa;">해외주식 양도소득세 비과세 트래커</span>
+              <span class="badge" style="background: rgba(59, 130, 246, 0.2); color: #93c5fd; font-size: 0.75rem;">연간 250만 원 기본공제</span>
+            </div>
+            <div class="muted small" id="taxFxInfo">기준환율: 1,380.0원/$</div>
+          </div>
+          
+          <div style="display: grid; grid-template-columns: repeat(auto-fit, minmax(130px, 1fr)); gap: 10px; margin-bottom: 12px;">
+            <div>
+              <div class="muted small">당해연도 실현익 (USD)</div>
+              <div style="font-size: 1.05rem; font-weight: 700;" id="taxAnnualPnlUsd">$0.00</div>
+            </div>
+            <div>
+              <div class="muted small">환산 실현익 (원화)</div>
+              <div style="font-size: 1.05rem; font-weight: 700;" id="taxAnnualPnlKrw">0원</div>
+            </div>
+            <div>
+              <div class="muted small">비과세 잔여 한도</div>
+              <div style="font-size: 1.05rem; font-weight: 700; color: #34d399;" id="taxRemainingLimit">2,500,000원</div>
+            </div>
+            <div>
+              <div class="muted small">예상 양도세 (22%)</div>
+              <div style="font-size: 1.05rem; font-weight: 700;" id="taxEstimatedAmount">0원</div>
+            </div>
+          </div>
+
+          <div style="margin-top: 6px;">
+            <div style="display: flex; justify-content: space-between; font-size: 0.8rem; margin-bottom: 4px;">
+              <span class="muted">비과세 공제 한도 소진율</span>
+              <span style="font-weight: 700;" id="taxUsagePct">0.0% (0원 / 2,500,000원)</span>
+            </div>
+            <div style="width: 100%; height: 8px; background: rgba(255, 255, 255, 0.1); border-radius: 4px; overflow: hidden;">
+              <div id="taxProgressBar" style="width: 0%; height: 100%; background: linear-gradient(90deg, #3b82f6, #10b981); transition: width 0.3s ease;"></div>
+            </div>
+          </div>
+          <p class="muted small" style="margin-top: 8px; margin-bottom: 0; font-size: 0.74rem;">
+            💡 해외주식 매매차익은 매년 1월 1일 ~ 12월 31일 실현손익 합산 250만 원까지 전액 비과세이며, 초과분에 대해 22%(양도세 20% + 지방소득세 2%)가 부과됩니다. 손실 난 종목과 상계 처리하여 절세할 수 있습니다.
+          </p>
         </div>
 
         <div style="margin-top: 18px;">
