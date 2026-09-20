@@ -590,6 +590,43 @@ class TradingBot:
         self.log("BUY", f"매수 {units:.4f} {self.coin} @ {p_str} ({inv_str}) | 사유: {reason}")
         self._persist()
 
+    def _skip_turn(self, price: float, total_budget: float, chased: bool,
+                   where: str, limit_desc: str, note: str = "") -> None:
+        """이번 봉에 못 샀을 때의 처리. **회차(T)는 올리지 않는다.**
+
+        라오어에서 회차는 '몇 번 샀는가' 다. 평단과 분할 소진, 쿼터매도 발동
+        시점이 전부 이 값에 걸려 있다. 예전에는 LOC 미체결에도 turn 을 올려서,
+        평단 +5~12% 구간(익절선엔 못 미치고 LOC 선은 넘는 구간)에 머물면
+        **한 주도 안 사고 40회를 다 태운 뒤 수익 중인 포지션을 쿼터매도**
+        했다 (실측: 9회 시도 0주 매수, turn 10/10).
+
+        이월금도 두 경우를 갈라야 한다.
+
+        - chased=True (종가가 LOC 선 위) : 그냥 안 산 것이다. 배정액은
+          현금에서 빠진 적이 없으니 다음 봉에 그대로 다시 배정된다.
+          여기서 이월금에 더하면 안 산 돈을 눈덩이처럼 쌓아, 나중에 한 번에
+          지르게 된다.
+        - chased=False (1주 값에 못 미치는 잔돈) : 이건 진짜 이월이다.
+          모아야 언젠가 1주가 된다.
+        """
+        if chased:
+            head = f"{where} 미체결"
+            detail = (note or (f"종가 ${price:,.2f} > {limit_desc} — 추격매수 방지"
+                               if limit_desc else "미체결"))
+            self.last_decision = (
+                f"{head} ({detail}) · 회차 유지 {self.pos.turn}/{self.params.splitCount}")
+            self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 {head}] {detail} "
+                             f"— 회차를 소진하지 않고 다음 봉에 다시 시도합니다.")
+        else:
+            self.budget_carryover = total_budget
+            self.last_decision = (
+                f"1주 미만 예산 이월 (${self.budget_carryover:,.2f} 누적, 주가 ${price:,.2f}) · "
+                f"회차 유지 {self.pos.turn}/{self.params.splitCount}")
+            self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 {where} 이월] "
+                             f"주가(${price:,.2f}) 대비 가용 예산(${total_budget:,.2f})이 1주 미만 "
+                             f"— ${self.budget_carryover:,.2f} 를 다음 봉으로 이월합니다 (회차 유지).")
+        self._persist()
+
     def _enter_chunk(self, price: float, invest_krw: float, reason: str):
         """라오어 무한매수 분할 매수 (원조 반반 LOC 및 미국주식 정수 1주 단위 체결/잔돈 이월 지원)."""
         fee = self.params.feePct / 100.0
@@ -639,13 +676,11 @@ class TradingBot:
                     actual_spent = spent_a + spent_b
 
                     if total_units_to_buy < 1:
-                        # 둘 다 미체결 (종가가 평단+5% 초과) 또는 1주 미만
-                        self.budget_carryover = total_budget
-                        self.pos.turn += 1
-                        reason_detail = f"종가(${price:,.2f}) > 평단+5%(${loc_b_price:,.2f}) 추격매수 방지 미체결" if price > loc_b_price else "가용 예산 1주 미만"
-                        self.last_decision = f"반반 LOC 미체결/이월 ({reason_detail}, 잔돈 ${self.budget_carryover:,.2f} 누적)"
-                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 전반전 반반 LOC 미체결] {reason_detail} -> ${self.budget_carryover:,.2f} 전액 다음 회차로 이월.")
-                        self._persist()
+                        self._skip_turn(
+                            price, total_budget,
+                            chased=(price > loc_b_price),
+                            where="전반전 반반 LOC",
+                            limit_desc=f"평단+5%(${loc_b_price:,.2f})")
                         return
 
                     fill_desc = []
@@ -668,10 +703,9 @@ class TradingBot:
                             self.log("ERROR", f"나무증권 실주문 반반 LOC 매수 실패: {e.message}")
                             return
                         if filled < 1:
-                            self.budget_carryover = total_budget
-                            self.pos.turn += 1
-                            self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 반반 LOC] 체결 수량 0주 — ${total_budget:,.2f} 전액 이월.")
-                            self._persist()
+                            self._skip_turn(price, total_budget, chased=True,
+                                            where="전반전 반반 LOC", limit_desc="",
+                                            note="체결 수량 0주")
                             return
                         # 요청과 체결이 다르면 **체결분으로** 정산한다.
                         total_units_to_buy = filled
@@ -690,20 +724,15 @@ class TradingBot:
                     # ── [후반전 T > N/2]: 1.0회 전액 평단 LOC 집중 ──
                     loc_price = avg_price
                     if price > loc_price:
-                        self.budget_carryover = total_budget
-                        self.pos.turn += 1
-                        self.last_decision = f"후반전 LOC 미체결 (종가 ${price:,.2f} > 평단 ${loc_price:,.2f}, 잔돈 ${self.budget_carryover:,.2f} 누적)"
-                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 후반전 LOC 미체결] 종가(${price:,.2f}) > 평단(${loc_price:,.2f})로 평단 보호를 위해 ${self.budget_carryover:,.2f} 전액 이월.")
-                        self._persist()
+                        self._skip_turn(price, total_budget, chased=True,
+                                        where="후반전 평단 LOC",
+                                        limit_desc=f"평단(${loc_price:,.2f})")
                         return
 
                     units_to_buy = int(total_budget // cost_per_share)
                     if units_to_buy < 1:
-                        self.budget_carryover = total_budget
-                        self.pos.turn += 1
-                        self.last_decision = f"1주 미만 예산 이월 (${self.budget_carryover:,.2f} 누적, 주가 ${price:,.2f})"
-                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 후반전 LOC 이월] 주가(${price:,.2f}) 대비 가용 예산(${total_budget:,.2f})이 1주 미만이므로 ${self.budget_carryover:,.2f}을 다음 회차로 이월합니다.")
-                        self._persist()
+                        self._skip_turn(price, total_budget, chased=False,
+                                        where="후반전 평단 LOC", limit_desc="")
                         return
 
                     new_units = float(units_to_buy)
@@ -721,10 +750,9 @@ class TradingBot:
                             self.log("ERROR", f"나무증권 실주문 후반전 LOC 매수 실패: {e.message}")
                             return
                         if new_units < 1:
-                            self.budget_carryover = total_budget
-                            self.pos.turn += 1
-                            self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 후반전 LOC] 체결 수량 0주 — ${total_budget:,.2f} 전액 이월.")
-                            self._persist()
+                            self._skip_turn(price, total_budget, chased=True,
+                                            where="후반전 평단 LOC", limit_desc="",
+                                            note="체결 수량 0주")
                             return
 
                     # 장부는 주문이 확정된 뒤에, 실제 체결 수량으로 움직인다.
@@ -737,11 +765,8 @@ class TradingBot:
                 # 1회차 첫 매수이거나 단일 매수(single) 모드
                 units_to_buy = int(total_budget // cost_per_share)
                 if units_to_buy < 1:
-                    self.budget_carryover = total_budget
-                    self.pos.turn += 1
-                    self.last_decision = f"1주 미만 예산 이월 (${self.budget_carryover:,.2f} 누적, 주가 ${price:,.2f})"
-                    self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 예산 이월] 주가(${price:,.2f}) 대비 가용 예산(${total_budget:,.2f})이 1주 미만이므로 ${self.budget_carryover:,.2f}을 다음 회차로 이월합니다.")
-                    self._persist()
+                    self._skip_turn(price, total_budget, chased=False,
+                                    where="분할 매수", limit_desc="")
                     return
 
                 new_units = float(units_to_buy)
@@ -759,10 +784,9 @@ class TradingBot:
                         self.log("ERROR", f"나무증권 실주문 분할 매수 실패: {e.message}")
                         return
                     if new_units < 1:
-                        self.budget_carryover = total_budget
-                        self.pos.turn += 1
-                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차] 체결 수량 0주 — ${total_budget:,.2f} 전액 이월.")
-                        self._persist()
+                        self._skip_turn(price, total_budget, chased=True,
+                                        where="분할 매수", limit_desc="",
+                                        note="체결 수량 0주")
                         return
 
                 # 장부는 주문이 확정된 뒤에, 실제 체결 수량으로 움직인다.

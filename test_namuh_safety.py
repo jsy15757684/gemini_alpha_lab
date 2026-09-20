@@ -415,6 +415,39 @@ check("부분 체결은 체결 수량만큼만 현금을 깎는다",
       abs((_c0 - _b.cash) - 2 * _cps) < 0.01 and _b.pos.units == 2.0,
       f"5주 요청 → 2주 체결 · 차감 ${_c0 - _b.cash:,.2f}")
 
+# ── 못 산 봉이 회차를 까먹지 않는가 ──
+#
+# 라오어에서 회차는 '몇 번 샀는가' 다. 평단·분할 소진·쿼터매도가 전부 이
+# 값에 걸려 있다. 예전에는 LOC 미체결에도 turn 을 올려서, 평단 +5~12%
+# 구간에 머물면 한 주도 안 사고 40회를 다 태운 뒤 **수익 중인 포지션을
+# 쿼터매도** 했다 (실측: 9회 시도 0주 매수, turn 10/10).
+_b = _bot(None)
+_b.mode = "PAPER"
+_b.pos.units, _b.pos.entryPrice, _b.pos.turn = 10.0, 100.0, 1
+_c0 = _b.cash
+for _ in range(9):
+    _b._enter_chunk(price=108.0, invest_krw=200.0, reason="검증")   # 평단 +8%
+check("LOC 미체결은 회차를 소진하지 않는다",
+      _b.pos.turn == 1, f"9회 시도 후 turn={_b.pos.turn}/{_b.params.splitCount}")
+check("미체결된 배정액을 이월금으로 쌓지 않는다",
+      _b.budget_carryover == 0.0 and abs(_b.cash - _c0) < 1e-9,
+      f"이월 ${_b.budget_carryover:,.2f} · 현금 ${_b.cash:,.2f} 그대로")
+
+_b._enter_chunk(price=99.0, invest_krw=200.0, reason="검증")        # 평단 아래
+check("체결되면 회차가 정상적으로 오른다",
+      _b.pos.turn == 2 and _b.pos.units > 10.0,
+      f"turn={_b.pos.turn} · 보유 {_b.pos.units}주")
+
+# 1주 값에 못 미치는 잔돈은 진짜 이월이다 — 이건 계속 모아야 한다
+_c = _bot(None)
+_c.mode = "PAPER"
+_c.pos.units, _c.pos.entryPrice, _c.pos.turn = 1.0, 250.0, 1
+for _ in range(3):
+    _c._enter_chunk(price=240.0, invest_krw=30.0, reason="검증")
+check("1주 미만 잔돈은 회차 유지하며 계속 누적된다",
+      _c.pos.turn == 1 and _c.budget_carryover > 60.0,
+      f"turn={_c.pos.turn} · 이월 ${_c.budget_carryover:,.2f}")
+
 # ── 매크로 기어: 지표를 못 받으면 '모른다' 로 가야 한다 ──
 #
 # 예전 폴백은 evaluate_regime(500, 480, 18.5) 였다. 주석은 '중립 2단' 인데

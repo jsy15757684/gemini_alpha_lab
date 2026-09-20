@@ -143,11 +143,22 @@ def test_first_half_surge_no_fill():
 
     # 2회차: 주가가 $55로 급등 ($55 > $50*1.05 = $52.5)
     bot._enter_chunk(price=55.0, invest_krw=100.0, reason="2회차 종가 $55 (급등)")
-    assert bot.pos.turn == 2
+    # 미체결은 '안 산 것' 이다. 회차(T)는 몇 번 샀는지를 세므로 올리지 않는다.
+    # 예전에는 여기서 turn 을 올려, 평단 +5~12% 구간에 머물면 한 주도 안 사고
+    # 40회를 다 태운 뒤 수익 중인 포지션을 쿼터매도했다.
+    assert bot.pos.turn == 1, bot.pos.turn
     assert bot.pos.units == 2.0  # 매수 안 함, 2주 유지
-    assert bot.budget_carryover == 100.0  # 이번 회차 배정액 $100 전액 이월
+    # 안 쓴 배정액은 현금에서 빠진 적이 없다. 이월금으로 쌓으면 눈덩이처럼
+    # 불어나 나중에 한 번에 지르게 된다.
+    assert bot.budget_carryover == 0.0, bot.budget_carryover
     assert bot.cash == initial_cash_after_1  # 현금 미차감
-    print(f"  · 2회차 급등 미체결: 보유 {bot.pos.units}주 유지, 전액 이월 ${bot.budget_carryover}")
+    print(f"  · 2회차 급등 미체결: 보유 {bot.pos.units}주 유지, 회차 유지 T={bot.pos.turn}, 이월 ${bot.budget_carryover}")
+
+    # 가격이 내려오면 그 회차가 정상적으로 체결된다
+    bot._enter_chunk(price=48.0, invest_krw=100.0, reason="3회차 종가 $48")
+    assert bot.pos.turn == 2, bot.pos.turn
+    assert bot.pos.units > 2.0
+    print(f"  · 가격 회복 후 정상 체결: 보유 {bot.pos.units}주, T={bot.pos.turn}")
     print("  ✅ 전반전 급등 추격매수 방지 검증 통과")
 
 
@@ -175,17 +186,17 @@ def test_second_half_entry_price_loc():
 
     # 1) 종가가 평단 초과 ($52 > $50) -> 후반전에는 평단 낮추기 위해 매수하지 않고 전액 이월!
     bot._enter_chunk(price=52.0, invest_krw=100.0, reason="후반전 $52")
-    assert bot.pos.turn == 26
+    assert bot.pos.turn == 25, bot.pos.turn   # 미체결 → 회차 유지
     assert bot.pos.units == 2.0
-    assert bot.budget_carryover == 100.0
-    print(f"  · 후반전 평단 초과 시 전액 이월: ${bot.budget_carryover}")
+    assert bot.budget_carryover == 0.0, bot.budget_carryover
+    print(f"  · 후반전 평단 초과 시 미체결 (회차 유지 T={bot.pos.turn}, 이월 ${bot.budget_carryover})")
 
-    # 2) 종가가 평단 이하 ($48 <= $50) -> 100% 예산 투입 ($100 + 이월 $100 = $200)
-    # $200 // $48 = 4주 매수 ($192 지출, $8 이월)
+    # 2) 종가가 평단 이하 ($48 <= $50) -> 배정액 $100 투입
+    # $100 // $48 = 2주 매수 ($96 지출, $4 이월)
     bot._enter_chunk(price=48.0, invest_krw=100.0, reason="후반전 $48")
-    assert bot.pos.turn == 27
-    assert bot.pos.units == 6.0  # 2 + 4 = 6주
-    assert bot.budget_carryover == 8.0
+    assert bot.pos.turn == 26, bot.pos.turn
+    assert bot.pos.units == 4.0, bot.pos.units   # 2 + 2 = 4주
+    assert bot.budget_carryover == 4.0, bot.budget_carryover
     print(f"  · 후반전 평단 이하 집중 매수: 총 {bot.pos.units}주, 잔돈이월 ${bot.budget_carryover}")
     print("  ✅ 후반전 평단 LOC 집중 검증 통과")
 
