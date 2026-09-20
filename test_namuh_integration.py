@@ -19,6 +19,9 @@ class TestNamuhIntegration(unittest.TestCase):
         self.assertIn("SOXL", NAMUH_STOCKS)
         self.assertIn("UPRO", NAMUH_STOCKS)
         self.assertEqual(NAMUH_STOCKS["TQQQ"]["currency"], "USD")
+        # 3배 레버리지 ETF 만 취급한다 (개별주 제거)
+        self.assertNotIn("AAPL", NAMUH_STOCKS)
+        self.assertTrue(all(v["leverage"] == "3x" for v in NAMUH_STOCKS.values()))
 
     def test_trading_bot_namuh_init(self):
         p = StrategyParams(strategyType="raoer_infinite", raoerVersion="v4", splitCount=40)

@@ -136,6 +136,23 @@ try:
 except Exception as e:
     check("복원 코드가 이 형식을 읽을 수 있다", False, f"{type(e).__name__}: {e}")
 
+print("\n── 취급 종목 (3배 레버리지 ETF 만) ──")
+from services.namuh import NAMUH_STOCKS   # noqa: E402
+check("3배 ETF 5종만 남아 있다", set(NAMUH_STOCKS) == {"TQQQ", "SOXL", "UPRO", "TECL", "FNGU"},
+      " · ".join(sorted(NAMUH_STOCKS)))
+check("1배 개별주가 없다", all(v["leverage"] == "3x" for v in NAMUH_STOCKS.values()),
+      "NVDA·AAPL·TSLA 제거됨")
+check("거래소 코드가 종목 마스터와 맞다",
+      NAMUH_STOCKS["TQQQ"]["market"] == "NASDAQ"
+      and all(NAMUH_STOCKS[t]["market"] == "NYSE" for t in ("SOXL", "UPRO", "TECL", "FNGU")),
+      "TQQQ=NQQ 나스닥 · 나머지 NYY 뉴욕")
+_srv = open("server.py", encoding="utf-8").read()
+check("서버가 목록에 없는 종목의 배포를 막는다",
+      "나무증권 지원 종목이 아닙니다" in _srv, "deploy 가드")
+_trd = open("services/trader.py", encoding="utf-8").read()
+check("목록에서 빠진 종목의 봇은 재가동하지 않는다",
+      "지원하지 않는 해외주식 종목이라 재가동하지 않습니다" in _trd, "restore 가드")
+
 print("\n── 모의/실계좌 도메인 분리 ──")
 _prev_mock = os.environ.get("NAMUH_MOCK")
 os.environ.pop("NAMUH_MOCK", None)

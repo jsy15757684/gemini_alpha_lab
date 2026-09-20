@@ -67,15 +67,20 @@ ORDER_TYPE_NAMES = {"00": "지정가", "03": "시장가", "12": "LOC(장마감 �
 DEFAULT_ORDER_TYPE = (os.getenv("NAMUH_ORDER_TYPE") or ORD_MARKET).strip()
 
 # 라오어 무한매수법 대표 지원 미국 주식 ETF 및 메이저 종목
+# 이 프로그램은 **미국 3배 레버리지 ETF 만** 다룬다.
+#
+# 개별주(NVDA·AAPL·TSLA)는 뺐다. 무한매수법은 자금을 쪼개 계속 담는 전략이라
+# 대상이 늘어날수록 자본이 분산되고, 1배 종목은 이 전략을 쓸 이유가 약하다.
+# 종목을 늘리려면 여기에 추가하면 된다 — 서버가 이 목록으로 배포를 검증한다.
+#
+# 거래소 코드는 나무증권 종목 마스터(m_gtsstock.mst)와 대조해 확인했다
+# (NQQ=나스닥, NYY=뉴욕). 5종 모두 일치한다.
 NAMUH_STOCKS: Dict[str, Dict[str, str]] = {
     "TQQQ": {"name": "ProShares UltraPro QQQ (나스닥 3배)", "market": "NASDAQ", "leverage": "3x", "currency": "USD"},
     "SOXL": {"name": "Direxion Daily Semiconductor Bull 3X (반도체 3배)", "market": "NYSE", "leverage": "3x", "currency": "USD"},
     "UPRO": {"name": "ProShares UltraPro S&P500 (S&P500 3배)", "market": "NYSE", "leverage": "3x", "currency": "USD"},
     "TECL": {"name": "Direxion Daily Technology Bull 3X (기술주 3배)", "market": "NYSE", "leverage": "3x", "currency": "USD"},
     "FNGU": {"name": "MicroSectors FANG+ 3X (빅테크 3배)", "market": "NYSE", "leverage": "3x", "currency": "USD"},
-    "NVDA": {"name": "NVIDIA (엔비디아)", "market": "NASDAQ", "leverage": "1x", "currency": "USD"},
-    "AAPL": {"name": "Apple (애플)", "market": "NASDAQ", "leverage": "1x", "currency": "USD"},
-    "TSLA": {"name": "Tesla (테슬라)", "market": "NASDAQ", "leverage": "1x", "currency": "USD"},
 }
 
 

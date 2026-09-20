@@ -257,11 +257,11 @@ async function loadPrices() {
 // ───────── 봇 ─────────
 
 let currentMarket = "crypto"; // "crypto" | "stock"
-let STOCKS = [
-  { code: "TQQQ", name: "ProShares UltraPro QQQ (나스닥 3배)" },
-  { code: "SOXL", name: "Direxion Daily Semiconductor Bull 3X (반도체 3배)" },
-  { code: "UPRO", name: "ProShares UltraPro S&P500 (S&P500 3배)" },
-];
+// 취급 종목은 서버(/api/namuh/stocks)가 유일한 출처다. 화면에 목록을 박아두면
+// 서버와 어긋난다 — 실제로 화면 3종 / 서버 5종으로 갈라져 있었다. 서버가 그
+// 목록으로 배포를 검증하므로, 화면이 다른 것을 보여주면 고를 수 없는 종목이
+// 뜨거나 고를 수 있는 종목이 숨는다.
+let STOCKS = [];
 
 function setMarket(market) {
   currentMarket = market;
@@ -285,7 +285,10 @@ function setMarket(market) {
 
   const list = isStock ? STOCKS : COINS;
   if ($("botCoin")) {
-    $("botCoin").innerHTML = list.map(c => `<option value="${c.code}">${c.name} (${c.code})</option>`).join("");
+    $("botCoin").innerHTML = list.length
+      ? list.map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`).join("")
+      : `<option value="">${isStock ? "종목 목록을 받지 못했습니다" : "코인 목록 없음"}</option>`;
+    $("botCoin").disabled = !list.length;
   }
 }
 
@@ -1356,7 +1359,13 @@ async function boot() {
     if (sData && sData.stocks) {
       STOCKS = sData.stocks.map(s => ({ code: s.code, name: s.name }));
     }
-  } catch (e) { console.warn("나무증권 종목 조회 실패:", e); }
+  } catch (e) {
+    // 목록을 못 받으면 비워 둔다. 오래된 목록을 보여주면 서버가 거부하는
+    // 종목을 고르게 되거나, 고를 수 있는 종목이 숨는다.
+    STOCKS = [];
+    console.warn("나무증권 종목 조회 실패:", e);
+  }
+  if (currentMarket === "stock") setMarket("stock");
 
   // ───────── 차익거래 (Arbitrage) 핸들러 ─────────
   // 값을 못 받은 항목은 0 이 아니라 '—' 로 보여준다.
