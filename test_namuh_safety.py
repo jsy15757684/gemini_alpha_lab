@@ -125,6 +125,87 @@ try:
 except Exception as e:
     check("복원 코드가 이 형식을 읽을 수 있다", False, f"{type(e).__name__}: {e}")
 
+print("\n── 미국 장 시간 ──")
+from datetime import datetime, timezone   # noqa: E402
+MS = namuh.market_session
+cases = [
+    ("평일 10:30 EDT (정규장)", datetime(2026, 9, 17, 14, 30, tzinfo=timezone.utc), True),
+    ("평일 01:00 EDT (야간)", datetime(2026, 9, 17, 5, 0, tzinfo=timezone.utc), False),
+    ("토요일 11:30 EDT", datetime(2026, 9, 19, 15, 30, tzinfo=timezone.utc), False),
+    ("겨울 10:30 EST (정규장)", datetime(2026, 1, 15, 15, 30, tzinfo=timezone.utc), True),
+    ("개장 1분 전 09:29", datetime(2026, 9, 17, 13, 29, tzinfo=timezone.utc), False),
+    ("마감 정각 16:00", datetime(2026, 9, 17, 20, 0, tzinfo=timezone.utc), False),
+]
+ok = all(MS(t)["open"] is exp for _, t, exp in cases)
+check("정규장 판정이 서머타임까지 맞다", ok,
+      " · ".join(f"{n}={'열림' if MS(t)['open'] else '닫힘'}" for n, t, _ in cases[:3]))
+
+print("\n── 주문 수량 ──")
+namuh._price_cache.clear()
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+a3 = _acct()
+
+try:
+    a3.market_buy("TQQQ", 25.0)
+    check("1주 값보다 작은 배정액으로 매수하지 않는다", False, "주문이 나갔다")
+except NamuhError as e:
+    check("1주 값보다 작은 배정액으로 매수하지 않는다", True, str(e)[:56])
+
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+unconf = NamuhAccount()            # 키 미등록 = 모의 경로
+r = unconf.market_buy("TQQQ", 400.0)
+check("배정액을 넘지 않게 내림한다", r["units"] == 5.0 and r["amountUsd"] <= 400.0,
+      f"$400 → {r['units']:.0f}주 = ${r['amountUsd']:,.2f}")
+
+try:
+    a3.market_sell("TQQQ", 0.4)
+    check("1주 미만은 매도 주문을 내지 않는다", False, "주문이 나갔다")
+except NamuhError as e:
+    check("1주 미만은 매도 주문을 내지 않는다", True, str(e)[:56])
+
+print("\n── 장 마감 중 주문 ──")
+_restore_network()
+requests.get = lambda *a_, **k: _Resp(200, payload)
+import services.namuh as _nm       # noqa: E402
+_orig_ms = _nm.market_session
+_nm.market_session = lambda *a_, **k: {"open": False, "etTime": "-", "tz": "EDT",
+                                       "reason": "주말 (미국 정규장 휴장)"}
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+a4 = _acct()
+try:
+    a4.market_buy("TQQQ", 400.0)
+    check("장이 닫혀 있으면 매수 주문을 내지 않는다", False, "주문이 나갔다")
+except NamuhError as e:
+    check("장이 닫혀 있으면 매수 주문을 내지 않는다", True, str(e)[:56])
+try:
+    a4.market_sell("TQQQ", 5)
+    check("장이 닫혀 있으면 매도 주문을 내지 않는다", False, "주문이 나갔다")
+except NamuhError as e:
+    check("장이 닫혀 있으면 매도 주문을 내지 않는다", True, str(e)[:56])
+_nm.market_session = _orig_ms
+
+print("\n── 체결 확인 ──")
+_nm.market_session = lambda *a_, **k: {"open": True, "etTime": "-", "tz": "EDT", "reason": ""}
+# 주문은 접수되지만(rt_cd=0) 보유 수량이 변하지 않는다 = 지정가 미체결
+requests.post = lambda *a_, **k: _Resp(200, {"rt_cd": "0", "output": {"ODNO": "X1"}})
+a5 = _acct()
+a5._await_fill = lambda *a_, **k: 0.0          # 대기 시간 없이 미체결 상황만 재현
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+try:
+    a5.market_buy("TQQQ", 400.0)
+    check("접수만 되고 체결 안 되면 장부를 바꾸지 않는다", False, "체결로 기록했다")
+except NamuhError as e:
+    check("접수만 되고 체결 안 되면 장부를 바꾸지 않는다", True, str(e)[:56])
+
+a6 = _acct()
+a6._await_fill = lambda *a_, **k: 3.0          # 5주 요청에 3주만 체결
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+r = a6.market_buy("TQQQ", 400.0)
+check("부분 체결은 실제 체결 수량으로 기록한다",
+      r["units"] == 3.0 and r["status"] == "PARTIAL" and r["requestedUnits"] == 5.0,
+      f"요청 {r['requestedUnits']:.0f}주 → 체결 {r['units']:.0f}주 ({r['status']})")
+_nm.market_session = _orig_ms
+
 _restore_network()
 namuh._price_cache.clear()
 
