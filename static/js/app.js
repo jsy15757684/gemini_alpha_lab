@@ -185,10 +185,6 @@ function readParams(prefix) {
       p.raoerMaxProfitPct = parseFloat($("bp_raoerMaxProfitPct")?.value || "20.0");
       p.raoerMaxMultiplier = parseFloat($("bp_raoerMaxMultiplier")?.value || "2.0");
       p.raoerTrendMode = $("bp_raoerTrendMode")?.value || "off";
-    } else if (stratType === "raoer_vr") {
-      p.strategyType = "raoer_vr";
-      p.vrGradient = parseFloat($("bp_vrGradient")?.value || "10.0");
-      p.vrBandPct = parseFloat($("bp_vrBandPct")?.value || "15.0");
     } else if (stratType === "usdt_premium") {
       p.strategyType = "usdt_premium";
       p.useGemini = false;
@@ -366,8 +362,6 @@ function botCard(b) {
     } else {
       stratBadge = `<span class="badge" style="background:rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(16,185,129,.4);">🔄 무한매수 ${vTag} (T=${b.turn||0}/${b.splitCount||40})</span>`;
     }
-  } else if (b.strategyType === "raoer_vr") {
-    stratBadge = `<span class="badge" style="background:rgba(245,158,11,.18); color:#fbbf24; border:1px solid rgba(245,158,11,.4);">⚖️ 밸류리밸런싱 VR</span>`;
   } else if (b.params?.useGemini) {
     // 하이브리드는 화면에서 없앴지만, 예전에 만든 봇이 남아 있을 수 있다.
     const gemMode = b.params?.geminiMode === "ai_only" ? "✨ AI 전용" : "🧬 하이브리드(구)";
@@ -833,7 +827,6 @@ async function clearGeminiKey() {
 function toggleStrategyUI() {
   const type = $("botStrategyType")?.value || "raoer_v4";
   const raoerOpts = $("raoerBotOptions");
-  const raoerVrOpts = $("raoerVrBotOptions");
   const gemOptions = $("geminiBotOptions");
   const quantSettings = $("quantBotSettings");
   const raoerAiSub = $("raoerAiSubOptions");
@@ -880,7 +873,6 @@ function toggleStrategyUI() {
 
   const isRaoer = (type === "raoer_v4" || type === "raoer_v1");
   if (raoerOpts) raoerOpts.classList.toggle("hidden", !isRaoer);
-  if (raoerVrOpts) raoerVrOpts.classList.toggle("hidden", type !== "raoer_vr");
   if (gemOptions) gemOptions.classList.toggle("hidden", type !== "gemini_ai");
   // 진입 규칙·지표 설정을 쓰는 전략이 이 탭에 더는 없다. '전통 기술적 지표'
   // 와 '퀀트 하이브리드' 를 뺐고, 'AI 전용' 은 지표 조건을 보지 않는다
@@ -1199,6 +1191,7 @@ function renderTradeRecords() {
     let actBadge = `<span class="badge">${t.action}</span>`;
     if (t.action === "BUY") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">일반매수</span>`;
     else if (t.action === "BUY_CHUNK") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">분할매수 (T=${t.turn || 1})</span>`;
+    // VR 전략은 제거했지만 옛 장부에 기록이 남아 있을 수 있다.
     else if (t.action === "BUY_VR") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">VR매수</span>`;
     else if (t.action === "SELL") actBadge = `<span class="badge" style="background:rgba(239,68,68,0.18); color:var(--down);">전량매도(익절)</span>`;
     else if (t.action === "SELL_QUARTER") actBadge = `<span class="badge" style="background:rgba(245,158,11,0.18); color:var(--warn);">쿼터방어(손절)</span>`;

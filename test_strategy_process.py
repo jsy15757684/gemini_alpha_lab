@@ -409,6 +409,21 @@ check("추세 조절 boost_up 이 상한에 막히지 않는다",
 
 print()
 print("── 제거한 전략이 되살아나지 않는다 ──")
+_html = open("static/index.html", encoding="utf-8").read()
+_js = open("static/js/app.js", encoding="utf-8").read()
+_stg = open("services/strategy.py", encoding="utf-8").read()
+_trd = open("services/trader.py", encoding="utf-8").read()
+check("밸류리밸런싱 VR 이 화면·엔진에서 사라졌다",
+      "raoer_vr" not in _html and "raoer_vr" not in _js
+      and "raoer_vr" not in _stg and "raoer_vr" not in _trd,
+      "index.html · app.js · strategy.py · trader.py 모두 0건")
+check("VR 파라미터를 넣어도 기본 전략으로 교정한다",
+      StrategyParams.from_dict({"strategyType": "raoer_vr"}).strategyType == "quant_ai",
+      "quant_ai")
+check("옛 VR 체결 기록은 일지에서 여전히 읽힌다",
+      "BUY_VR" in _js and "SELL_VR" in _js,
+      "지난 장부를 못 읽게 만들지 않는다")
+
 # '전통 기술적 지표' 와 '퀀트 하이브리드' 를 화면에서 뺐다. 하이브리드는
 # 진입 규칙 설정 화면까지 함께 뺐으므로, API 로 만들면 사용자가 본 적 없는
 # 기본 조건으로 매매하게 된다. 그 함정을 서버가 막는지 본다.

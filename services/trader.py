@@ -189,8 +189,6 @@ class TradingBot:
                              f"기준은 서울외환시장 공시환율")
             self.log("INFO", "손익은 프리미엄뿐 아니라 원/달러 환율 변동에도 좌우됩니다 "
                              "— 무위험 차익거래가 아닙니다.")
-        elif self.params.strategyType == "raoer_vr":
-            self.log("INFO", f"⚖️ [라오어 밸류리밸런싱 VR] 기울기 G={self.params.vrGradient} · 리밸런싱 밴드 ±{self.params.vrBandPct}%")
         elif self.params.useGemini:
             gem_mode_label = "순수 AI 매매" if self.params.geminiMode == "ai_only" else "하이브리드 (지표+AI 승인)"
             self.log("INFO", f"🤖 [Gemini AI 전략] {gem_mode_label} · 최소 신뢰도 {self.params.geminiMinConfidence}% 이상 진입")
@@ -468,23 +466,6 @@ class TradingBot:
                         else:
                             self.last_decision = (f"김프 대기 중 (현재 {prem:+.2f}%, "
                                                   f"목표 ≥ {sell_at}%, 평가 {pnl_pct:+.2f}%)")
-
-                elif self.params.strategyType == "raoer_vr":
-                    # 라오어 밸류리밸런싱 VR:
-                    cur_bar_time = bars[-1].get("time") if bars else None
-                    if cur_bar_time and cur_bar_time != self._last_bar_time:
-                        self._last_bar_time = cur_bar_time
-                        from services.strategy import decide_raoer_vr
-                        equity = self.cash + self.pos.units * price
-                        d = decide_raoer_vr(price, self.pos, self.params, equity, self.cash)
-                        self.last_decision = d.reason
-                        if d.action == "SELL_PARTIAL":
-                            amt = d.detail.get("amount", 0.0)
-                            self._exit_partial(price, amt / price, d.reason)
-                        elif d.action == "BUY_PARTIAL":
-                            amt = d.detail.get("amount", 0.0)
-                            self._enter_partial(price, amt, d.reason)
-                        self.pos.vrTargetV = d.detail.get("targetV", self.pos.vrTargetV)
 
                 elif self.params.useGemini:
                     # 1) 포지션 보유 중인 경우: 익절/손절/트레일링스탑 리스크 관리 우선 확인
@@ -865,92 +846,6 @@ class TradingBot:
                          f"손익 {pnl_str} ({pnl_pct:+.2f}%) | 회차 조정: T={self.pos.turn} | 사유: {reason}")
         self._persist()
 
-    def _enter_partial(self, price: float, invest_krw: float, reason: str):
-        invest = min(self.cash, invest_krw)
-        if invest < 5000:
-            return
-        fee = self.params.feePct / 100.0
-        new_units = invest * (1 - fee) / price
-
-        if self.mode == "LIVE":
-            if not (self.account and self.account.configured):
-                return
-            bal_before = 0.0
-            try:
-                b = self.account.get_balance()
-                bal_before = float(b.get("coins", {}).get(self.coin, 0.0))
-            except Exception:
-                pass
-
-            try:
-                res = self.account.market_buy(self.coin, invest)
-            except bithumb.BithumbError as e:
-                self.log("ERROR", f"VR 부분 매수 실패: {e.message}")
-                return
-
-            try:
-                time.sleep(0.5)
-                b = self.account.get_balance()
-                bal_after = float(b.get("coins", {}).get(self.coin, 0.0))
-                delta = bal_after - bal_before
-                if delta > 0 and abs(delta - new_units) / max(new_units, 1e-8) < 0.2:
-                    new_units = delta
-            except Exception:
-                pass
-
-        u0 = self.pos.units
-        p0 = self.pos.entryPrice
-        u_total = u0 + new_units
-        p_avg = (u0 * p0 + new_units * price) / u_total if u_total > 0 else price
-
-        self.pos.units = u_total
-        self.pos.entryPrice = p_avg
-        self.cash = max(0.0, self.cash - invest)
-        self._record_trade("BUY_VR", price, new_units, invest, pnl=0.0, return_pct=0.0, reason=reason)
-        self.log("BUY", f"[VR 리밸런싱 매수] {new_units:.8f} {self.coin} ({invest:,.0f}원) | 사유: {reason}")
-        self._persist()
-
-    def _exit_partial(self, price: float, sell_units: float, reason: str):
-        units_to_sell = min(self.pos.units, sell_units)
-        if units_to_sell <= 0:
-            return
-        fee = self.params.feePct / 100.0
-
-        if self.mode == "LIVE":
-            if not (self.account and self.account.configured):
-                return
-            try:
-                bal = self.account.get_balance()
-                actual_coin = bal.get("coinsAvailable", {}).get(self.coin) or bal.get("coins", {}).get(self.coin, 0.0)
-                if actual_coin < units_to_sell:
-                    units_to_sell = actual_coin
-            except Exception as e:
-                pass
-
-            try:
-                res = self.account.market_sell(self.coin, units_to_sell)
-            except bithumb.BithumbError as e:
-                self.log("ERROR", f"VR 부분 매도 실패: {e.message}")
-                return
-
-        proceeds = units_to_sell * price * (1 - fee)
-        sold_ratio = (units_to_sell / self.pos.units) if self.pos.units > 0 else 1.0
-        cost = (self.pos.totalInvested * sold_ratio) if self.pos.totalInvested > 0 \
-               else units_to_sell * self.pos.entryPrice
-        self.pos.totalInvested = max(0.0, self.pos.totalInvested - cost)
-        pnl = proceeds - cost
-        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
-        self.pos.units -= units_to_sell
-        self.cash += proceeds
-        self.realized_pnl += pnl
-        self.total_trades += 1
-        if pnl > 0:
-            self.winning_trades += 1
-        self._record_trade("SELL_VR", price, units_to_sell, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
-        self.log("SELL", f"[VR 리밸런싱 매도] {units_to_sell:.8f} {self.coin} ({proceeds:,.0f}원) | 사유: {reason}")
-        self._persist()
-
-    # ── 영속화 ──
     def snapshot(self) -> Dict[str, Any]:
         """디스크에 저장할 최소 상태. 로그와 지표는 저장하지 않는다(재계산 가능)."""
         return {
@@ -963,7 +858,6 @@ class TradingBot:
             "peakPrice": self.pos.peakPrice,
             "turn": self.pos.turn,
             "totalInvested": self.pos.totalInvested,
-            "vrTargetV": self.pos.vrTargetV,
             "realizedPnl": self.realized_pnl,
             "totalTrades": self.total_trades, "winningTrades": self.winning_trades,
             "tradeHistory": self.trade_history,
@@ -994,7 +888,7 @@ class TradingBot:
                            peakPrice=float(d.get("peakPrice", 0.0)),
                            turn=int(d.get("turn", 0)),
                            totalInvested=float(d.get("totalInvested", 0.0)),
-                           vrTargetV=float(d.get("vrTargetV", 0.0)))
+                           )
         bot.realized_pnl = float(d.get("realizedPnl", 0.0))
         bot.total_trades = int(d.get("totalTrades", 0))
         bot.winning_trades = int(d.get("winningTrades", 0))
