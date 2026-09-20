@@ -356,8 +356,21 @@ namuh._price_cache.clear()
 # USD 분기를 만들면서 현금 차감이 주문보다 **앞**으로 갔다. 주문이 거부되면
 # return 하므로 현금만 줄고 주식은 늘지 않았다 (실측 $250.10 / $294.12 증발).
 # 디스크에는 바로 안 쓰이지만, 다음 매수가 성공하는 순간 틀어진 값이 저장된다.
+# 저장 경로를 임시 디렉터리로 갈아끼운 뒤에 봇 모듈을 import 한다.
+# 이걸 빼먹으면 테스트가 개발 기계의 data/bots.json · trades.json 을 덮어쓴다.
 import tempfile                                     # noqa: E402
-os.environ["APP_DATA_DIR"] = tempfile.mkdtemp(prefix="namuh-safety-")
+_SANDBOX = tempfile.mkdtemp(prefix="namuh-safety-")
+
+from services import botstore                       # noqa: E402
+botstore.STORE_FILE = os.path.join(_SANDBOX, "bots.json")
+botstore._DATA_DIR = _SANDBOX
+botstore.arb_store.path = os.path.join(_SANDBOX, "arb_bots.json")
+
+from services import tradelog                       # noqa: E402
+tradelog.LOG_FILE = os.path.join(_SANDBOX, "trades.json")
+tradelog._rows.clear()
+tradelog._loaded = True        # 운영 일지를 읽지 않는다
+
 from services.trader import TradingBot              # noqa: E402
 from services.strategy import StrategyParams        # noqa: E402
 

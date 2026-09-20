@@ -11,6 +11,21 @@ import sys
 # 프로젝트 루트 경로 추가
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+# 저장 경로를 임시 디렉터리로 갈아끼운 뒤에 봇 모듈을 import 한다.
+# 이걸 빼먹으면 테스트가 개발 기계의 data/bots.json · trades.json 을 덮어쓴다.
+import tempfile                                    # noqa: E402
+_SANDBOX = tempfile.mkdtemp(prefix="namuh-features-")
+
+from services import botstore                      # noqa: E402
+botstore.STORE_FILE = os.path.join(_SANDBOX, "bots.json")
+botstore._DATA_DIR = _SANDBOX
+botstore.arb_store.path = os.path.join(_SANDBOX, "arb_bots.json")
+
+from services import tradelog                      # noqa: E402
+tradelog.LOG_FILE = os.path.join(_SANDBOX, "trades.json")
+tradelog._rows.clear()
+tradelog._loaded = True        # 운영 일지를 읽지 않는다
+
 from services import market_schedule, trader, strategy, namuh
 import server
 
