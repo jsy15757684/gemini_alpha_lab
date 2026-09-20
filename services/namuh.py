@@ -16,7 +16,10 @@ import requests
 
 logger = logging.getLogger(__name__)
 
-BASE_URL = "https://api.nhplug.com:8443"
+# 운영 / 모의투자 도메인. 잔고조회 문서에 모의투자 도메인이 있다
+# (토큰 문서에는 '미제공' 으로 적혀 있어 API 별로 다를 수 있다).
+BASE_URL = (os.getenv("NAMUH_BASE_URL") or "https://api.nhplug.com:8443").strip()
+MOCK_BASE_URL = "https://moapi.nhplug.com:8443"
 
 # 발급받은 토큰을 프로세스 밖에 보관한다.
 #
@@ -30,9 +33,8 @@ BASE_URL = "https://api.nhplug.com:8443"
 TOKEN_FILE = os.path.join(
     os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "namuh_token.json")
 
-# 모의투자 도메인이 제공되지 않는다(공식 문서). 실계좌 키로만 호출되므로
-# 조회는 안전하지만 주문은 곧바로 실주문이다.
-HAS_SANDBOX = False
+# 국가코드 (fc_sec_trd_nat_cd). 지금은 미국만 쓴다.
+NAT_US = "200"
 
 # 라오어 무한매수법 대표 지원 미국 주식 ETF 및 메이저 종목
 NAMUH_STOCKS: Dict[str, Dict[str, str]] = {
@@ -204,16 +206,16 @@ class NamuhAccount:
             return self._token
 
     def _headers(self, tr_id: str = "") -> Dict[str, str]:
-        token = self.get_token()
-        h = {
-            "Authorization": f"Bearer {token}",
-            "appkey": self.app_key,
-            "appsecretkey": self.app_secret,
-            "Content-Type": "application/json; charset=UTF-8",
+        """나무증권은 TR ID 헤더를 쓰지 않는다. Bearer 토큰과 content-type 뿐이다.
+
+        tr_id 인자는 옛 호출부 호환을 위해 남겨두고 무시한다 —
+        한국투자증권 규격(tr_id, appkey, appsecret 헤더)을 쓰고 있었는데
+        실제 응답은 IGW40401 '제공하지 않는 API URI' 였다.
+        """
+        return {
+            "content-type": "application/json; charset=UTF-8",
+            "Authorization": f"Bearer {self.get_token()}",
         }
-        if tr_id:
-            h["tr_id"] = tr_id
-        return h
 
     def test_connection(self) -> Dict[str, Any]:
         """API Key 유효성 및 계좌 연결 테스트."""
@@ -233,71 +235,81 @@ class NamuhAccount:
             return {"success": False, "message": str(e)}
 
     def get_balance(self) -> Dict[str, Any]:
-        """해외주식 잔고 및 예수금(USD/KRW) 조회."""
+        """해외주식 잔고 조회 (POST /gbstock/inquiry/v1/balance).
+
+        공식 문서 기준이다. 예전에는 한국투자증권 규격(GET
+        /uapi/overseas-stock/..., TR ID TTTS3012R, 계좌번호 8+2 분할)을
+        쓰고 있었고 실제 응답은 IGW40401 '제공하지 않는 API URI' 였다.
+        """
         if not self.configured:
             raise NamuhError("나무증권 계정 키가 설정되지 않았습니다.")
+        if not self.account_no:
+            raise NamuhError("나무증권 계좌번호가 설정되지 않았습니다 (NAMUH_ACCOUNT_NO).")
 
-        # 계좌번호 분리 (앞 8자리 + 뒤 2자리)
-        acc_prefix = self.account_no[:8] if len(self.account_no) >= 8 else self.account_no
-        acc_suffix = self.account_no[8:10] if len(self.account_no) >= 10 else "01"
-
-        endpoint = f"{BASE_URL}/uapi/overseas-stock/v1/trading/inquire-balance"
-        headers = self._headers(tr_id="TTTS3012R")  # 해외주식 잔고 조회 TR
-        params = {
-            "CANO": acc_prefix,
-            "ACNT_PRDT_CD": acc_suffix,
-            "OVRS_EXCG_CD": "NASD",
-            "TR_CRCY_CD": "USD",
-            "CTX_AREA_FK200": "",
-            "CTX_AREA_NK200": "",
-        }
-
-        try:
-            res = requests.get(endpoint, headers=headers, params=params, timeout=10)
-            if res.status_code != 200:
-                # 예전에는 여기서 '성공 · 예수금 $10,000 · 보유 없음' 을 돌려줬다.
-                # 서버가 거부했는데 없는 돈을 만들어내는 셈이라, LIVE 가동
-                # 전 잔고 확인과 거래소 대조가 통째로 무력화된다.
-                body_txt = (res.text or "")[:200]
-                raise NamuhError(
-                    f"나무증권 잔고 조회 실패 (HTTP {res.status_code}): {body_txt}")
-            body = res.json()
-            output1 = body.get("output1", [])
-            output2 = body.get("output2", {})
-
-            usd_avail = float(output2.get("ovrs_ord_psbl_amt", 0.0) or output2.get("frcr_dncl_amt_2", 0.0))
-            usd_total = float(output2.get("tot_evlu_pfls_amt", 0.0) or usd_avail)
-
-            holdings: Dict[str, Dict[str, Any]] = {}
-            for item in output1:
-                ticker = item.get("ovrs_pdno", "").strip().upper()
-                qty = float(item.get("ovrs_cblc_qty", 0.0))
-                avg_price = float(item.get("pchs_avg_pric", 0.0))
-                eval_amt = float(item.get("ovrs_stck_evlu_amt", 0.0))
-                if qty > 0:
-                    holdings[ticker] = {
-                        "qty": qty,
-                        "avgPrice": avg_price,
-                        "evalAmountUsd": eval_amt,
-                        "currency": "USD",
-                    }
-
-            return {
-                "success": True,
-                "usdAvailable": usd_avail,
-                "usdTotal": usd_total,
-                # 종목 → 상세. 대조에 쓰는 '종목 → 수량' 은 아래에 따로 둔다.
-                # 예전에는 이 dict 를 소비부가 list 로 순회해(AttributeError)
-                # 거래소 대조가 통째로 동작하지 않았다. 형식을 한 곳에서 정한다.
-                "holdings": holdings,
-                "qtyByTicker": {t: v["qty"] for t, v in holdings.items()},
-                "accountNo": self.masked_account(),
+        endpoint = f"{BASE_URL}/gbstock/inquiry/v1/balance"
+        body = {
+            "Input_0": {
+                "act_no": self.account_no,      # 11자리 그대로 (쪼개지 않는다)
+                "qut_iqr_dit_cd": "9",          # 9.전체
+                "fc_sec_trd_nat_cd": NAT_US,    # 200.미국
+                "cur_cd": "USD",
+                "xns_dit_cd": "0",              # 비용 미포함
             }
-        except NamuhError:
-            raise
+        }
+        try:
+            res = requests.post(endpoint, headers=self._headers(),
+                                json=body, timeout=10)
         except Exception as e:
-            # 통신 예외도 가짜 잔고로 덮지 않는다. 모르는 것은 모른다고 한다.
             raise NamuhError(f"나무증권 잔고 조회 통신 오류: {e}")
+
+        if res.status_code != 200:
+            raise NamuhError(
+                f"나무증권 잔고 조회 실패 (HTTP {res.status_code}): {(res.text or '')[:200]}")
+        try:
+            b = res.json()
+        except Exception:
+            raise NamuhError(f"나무증권 잔고 응답을 해석하지 못했습니다: {(res.text or '')[:200]}")
+
+        # 성공 코드는 rt_cd 가 아니라 rsp_cd 다. 조회 성공은 00166.
+        rsp_cd = str(b.get("rsp_cd", ""))
+        if "Output_0" not in b and rsp_cd not in ("00166", "0"):
+            raise NamuhError(
+                f"나무증권 잔고 조회 거부 ({rsp_cd}): {b.get('rsp_msg') or str(b)[:160]}")
+
+        o0 = b.get("Output_0") or {}
+        usd_avail = float(o0.get("fc_dca") or 0.0)          # 외화예수금
+        usd_total = float(o0.get("fc_aet_amt") or usd_avail)  # 외화자산금액
+
+        holdings: Dict[str, Dict[str, Any]] = {}
+        for it in (b.get("Output_1") or []):
+            tkr = str(it.get("iem_cd", "")).strip().upper()
+            qty = float(it.get("cns_bse_bnc_qty") or 0.0)   # 체결기준잔고수량
+            if not tkr or qty <= 0:
+                continue
+            holdings[tkr] = {
+                "qty": qty,
+                "sellableQty": float(it.get("sll_pbl_qty1") or qty),
+                "avgPrice": float(it.get("fc_phs_uit_pr") or 0.0),   # 외화매입단가
+                "lastPrice": float(it.get("fc_sec_end_pr") or 0.0),  # 외화증권종가
+                "evalAmountUsd": float(it.get("fc_eal_amt") or 0.0),
+                "pnlUsd": float(it.get("fc_eal_pls_amt") or 0.0),
+                "name": str(it.get("iem_nm", "")).strip(),
+                "currency": str(it.get("cur_cd", "USD")).strip() or "USD",
+            }
+
+        return {
+            "success": True,
+            "usdAvailable": usd_avail,
+            "usdTotal": usd_total,
+            "krwDeposit": float(o0.get("krw_dca") or 0.0),
+            "totalAssetKrw": float(o0.get("tot_aet_amt") or 0.0),
+            "holdings": holdings,
+            # 대조에 쓰는 표준 형식. 매도가능 수량 기준이 안전하다.
+            "qtyByTicker": {t: v["qty"] for t, v in holdings.items()},
+            "sellableByTicker": {t: v["sellableQty"] for t, v in holdings.items()},
+            "accountNo": self.masked_account(),
+            "rspCd": rsp_cd,
+        }
 
     def get_price(self, ticker: str) -> float:
         """미국 주식 현재가(USD) 조회."""
