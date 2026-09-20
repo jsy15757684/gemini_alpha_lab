@@ -254,6 +254,43 @@ let currentMarket = "crypto"; // "crypto" | "stock"
 // 뜨거나 고를 수 있는 종목이 숨는다.
 let STOCKS = [];
 
+// 봇 가동 화면의 '운용 자본' 밑에 붙일 잔고 힌트. 두 계좌 조회가 각각 다른
+// 주기로 돌기 때문에 마지막 응답을 들고 있다가 시장 전환 때 다시 그린다.
+let lastBithumbAccount = null;
+let lastNamuhAccount = null;
+
+function renderCapitalHint() {
+  const el = $("capitalHint");
+  if (!el) return;
+  const isStock = currentMarket === "stock";
+  const a = isStock ? lastNamuhAccount : lastBithumbAccount;
+
+  if (!a) { el.textContent = "잔고 확인 중…"; el.className = "muted small"; return; }
+  if (!a.connected) {
+    el.textContent = isStock ? "나무증권 미연동 — 계정 탭에서 API 키를 등록하세요."
+                             : "빗썸 미연동 — 계정 탭에서 API 키를 등록하세요.";
+    el.className = "muted small"; return;
+  }
+  if (!a.balanceOk) {
+    el.textContent = `잔고 조회 실패: ${a.error || "인증 확인 필요"}`;
+    el.className = "small"; el.style.color = "var(--bad)"; return;
+  }
+
+  el.className = "muted small"; el.style.color = "";
+  if (isStock) {
+    const avail = Number(a.usdAvailable || 0);
+    const total = Number(a.usdTotal || 0);
+    const fmt = (v) => v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+    const mockTag = a.mock ? " · 🧪 모의계좌" : "";
+    el.innerHTML = `투자가능 달러 <b style="color:var(--accent)">$${fmt(avail)}</b>`
+      + (total && Math.abs(total - avail) >= 0.01 ? ` · 총 외화자산 $${fmt(total)}` : "")
+      + mockTag;
+  } else {
+    el.innerHTML = `투자가능 원화 <b style="color:var(--accent)">${won(a.krwAvailable)}원</b>`
+      + ` · 총 보유 ${won(a.krwTotal)}원`;
+  }
+}
+
 function setMarket(market) {
   currentMarket = market;
   const isStock = market === "stock";
@@ -281,6 +318,7 @@ function setMarket(market) {
       : `<option value="">${isStock ? "종목 목록을 받지 못했습니다" : "코인 목록 없음"}</option>`;
     $("botCoin").disabled = !list.length;
   }
+  renderCapitalHint();
 }
 
 async function deployBot() {
@@ -868,6 +906,8 @@ function toggleStrategyUI() {
 async function loadAccount() {
   try {
     const a = await api("/api/account");
+    lastBithumbAccount = a;
+    renderCapitalHint();
     const pill = $("accountPill");
     if (!a.connected) {
       pill.className = "pill"; pill.textContent = "빗썸 미연동";
@@ -946,6 +986,8 @@ async function keyAction(save) {
 async function loadNamuhAccount() {
   try {
     const a = await api("/api/namuh/account");
+    lastNamuhAccount = a;
+    renderCapitalHint();
     const pill = $("namuhPill");
     if (pill) {
       if (!a.connected) {
@@ -963,7 +1005,8 @@ async function loadNamuhAccount() {
       stEl.innerHTML = [
         ["연동 상태", a.connected ? "등록됨" : "미등록"],
         ["앱 키", a.maskedKey || "-"],
-        ["계좌번호", a.accountNo ? `${a.accountNo.slice(0, 4)}****` : "-"],
+        ["계좌번호", a.maskedAccount || "-"],
+        ["계좌 구분", a.connected ? (a.mock ? "🧪 모의투자" : "💰 실계좌") : "-"],
         ["보관 위치", a.source === "env" ? "환경변수" : a.source === "disk" ? "서버 파일(평문)" : "-"],
         ["인증 확인", a.connected ? (a.balanceOk ? "성공 (OAuth2 토큰 정상)" : "실패") : "-"],
       ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("")
@@ -988,12 +1031,15 @@ async function loadNamuhAccount() {
         const usdTot = Number(a.usdTotal || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         balBox.innerHTML = `
           <div class="kv">
-            <div class="kv-row"><span class="kv-k">주문가능 외화 (USD)</span><span class="kv-v" style="font-weight:700; color:var(--accent);">$${usdAvail}</span></div>
-            <div class="kv-row"><span class="kv-k">총 외화 예수금</span><span class="kv-v">$${usdTot}</span></div>
+            <div class="kv-row"><span class="kv-k">투자가능 달러 (USD)</span><span class="kv-v" style="font-weight:700; color:var(--accent);">$${usdAvail}</span></div>
+            <div class="kv-row"><span class="kv-k">총 외화자산</span><span class="kv-v">$${usdTot}</span></div>
             ${holdings.length ? holdings.map(h => `
               <div class="kv-row">
                 <span class="kv-k"><b>${h.symbol}</b> (${h.name || h.symbol})</span>
-                <span class="kv-v">${Number(h.quantity || 0).toFixed(4)}주 @ $${Number(h.avgPrice || 0).toFixed(2)}</span>
+                <span class="kv-v">${Number(h.quantity || 0).toFixed(4)}주 @ $${Number(h.avgPrice || 0).toFixed(2)}`
+                + (h.evalAmountUsd ? ` · 평가 $${Number(h.evalAmountUsd).toFixed(2)}` : "")
+                + (h.pnlUsd ? ` (${Number(h.pnlUsd) >= 0 ? "+" : ""}$${Number(h.pnlUsd).toFixed(2)})` : "")
+                + `</span>
               </div>`).join("") : `<div class="kv-row"><span class="kv-k">보유 ETF</span><span class="kv-v muted">보유 주식 없음</span></div>`}
           </div>`;
       }

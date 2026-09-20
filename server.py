@@ -496,15 +496,30 @@ def namuh_stocks():
 @app.get("/api/namuh/account")
 def namuh_account_status():
     st = namuh_keystore.status()
+    st["mock"] = namuh.use_mock()
     if namuh_keystore.account.configured:
         try:
             bal = namuh_keystore.account.get_balance()
+            # get_balance 는 종목코드를 키로 한 dict 를 준다. 화면은 배열을
+            # 기대하므로 여기서 한 번만 바꿔준다 — 이걸 빼먹어서 보유 ETF 가
+            # 항상 '없음' 으로 나왔었다.
+            holdings = [
+                {"symbol": t, "name": v.get("name") or t,
+                 "quantity": v.get("qty", 0.0),
+                 "sellableQty": v.get("sellableQty", 0.0),
+                 "avgPrice": v.get("avgPrice", 0.0),
+                 "lastPrice": v.get("lastPrice", 0.0),
+                 "evalAmountUsd": v.get("evalAmountUsd", 0.0),
+                 "pnlUsd": v.get("pnlUsd", 0.0)}
+                for t, v in (bal.get("holdings") or {}).items()
+            ]
             st.update({
                 "balanceOk": True,
                 "usdAvailable": bal.get("usdAvailable", 0.0),
                 "usdTotal": bal.get("usdTotal", 0.0),
-                "krwEquivalent": bal.get("krwEquivalent", 0.0),
-                "holdings": bal.get("holdings", []),
+                "krwDeposit": bal.get("krwDeposit", 0.0),
+                "totalAssetKrw": bal.get("totalAssetKrw", 0.0),
+                "holdings": holdings,
             })
         except namuh.NamuhError as e:
             st.update({"balanceOk": False, "error": e.message})
