@@ -153,8 +153,12 @@ class NamuhAccount:
         try:
             res = requests.get(endpoint, headers=headers, params=params, timeout=10)
             if res.status_code != 200:
-                # 에러 응답이라도 시뮬레이션 편의를 위해 fallback 처리
-                return self._mock_balance()
+                # 예전에는 여기서 '성공 · 예수금 $10,000 · 보유 없음' 을 돌려줬다.
+                # 서버가 거부했는데 없는 돈을 만들어내는 셈이라, LIVE 가동
+                # 전 잔고 확인과 거래소 대조가 통째로 무력화된다.
+                body_txt = (res.text or "")[:200]
+                raise NamuhError(
+                    f"나무증권 잔고 조회 실패 (HTTP {res.status_code}): {body_txt}")
             body = res.json()
             output1 = body.get("output1", [])
             output2 = body.get("output2", {})
@@ -180,23 +184,18 @@ class NamuhAccount:
                 "success": True,
                 "usdAvailable": usd_avail,
                 "usdTotal": usd_total,
+                # 종목 → 상세. 대조에 쓰는 '종목 → 수량' 은 아래에 따로 둔다.
+                # 예전에는 이 dict 를 소비부가 list 로 순회해(AttributeError)
+                # 거래소 대조가 통째로 동작하지 않았다. 형식을 한 곳에서 정한다.
                 "holdings": holdings,
+                "qtyByTicker": {t: v["qty"] for t, v in holdings.items()},
                 "accountNo": self.masked_account(),
             }
+        except NamuhError:
+            raise
         except Exception as e:
-            logger.warning(f"나무증권 잔고 조회 통신 예외: {e}")
-            return self._mock_balance()
-
-    def _mock_balance(self) -> Dict[str, Any]:
-        """미등록 또는 모의 계좌용 기본 응답."""
-        return {
-            "success": True,
-            "usdAvailable": 10000.0,
-            "usdTotal": 10000.0,
-            "holdings": {},
-            "accountNo": self.masked_account() or "SIMULATED",
-            "isSimulated": True,
-        }
+            # 통신 예외도 가짜 잔고로 덮지 않는다. 모르는 것은 모른다고 한다.
+            raise NamuhError(f"나무증권 잔고 조회 통신 오류: {e}")
 
     def get_price(self, ticker: str) -> float:
         """미국 주식 현재가(USD) 조회."""
@@ -246,12 +245,18 @@ class NamuhAccount:
         except Exception as e:
             logger.warning(f"공개 시세 수신 실패 ({sym}): {e}")
 
-        # 3) Fallback 기본값 (TQQQ 약 $75 등)
-        default_prices = {"TQQQ": 75.50, "SOXL": 42.20, "UPRO": 78.10, "NVDA": 118.00, "AAPL": 225.00, "TSLA": 240.00}
-        fallback = default_prices.get(sym, 50.0)
-        with _price_lock:
-            _price_cache[sym] = (time.time(), fallback)
-        return fallback
+        # 3) 둘 다 실패하면 값을 지어내지 않는다.
+        #
+        # 예전에는 여기서 {"TQQQ": 75.50, ...} 같은 기본값을 돌려주고 캐시에까지
+        # 넣었다. 그러면 통신이 끊긴 상태에서도 봇은 정상 시세로 알고 매수·익절·
+        # 손절을 판단한다. 이 프로젝트에서 같은 종류의 버그를 두 번 고쳤다
+        # (환율 1385.0, 바이낸스 BTC $65,000). 세 번은 없다.
+        #
+        # 봇 루프는 시세 예외를 이미 '판단 보류' 로 처리한다(trader.py). 여기서
+        # 예외를 올려야 그 안전장치가 작동한다.
+        raise NamuhError(
+            f"{sym} 현재가를 받지 못했습니다 (나무증권·공개시세 모두 실패). "
+            f"추정치로 매매하지 않습니다.")
 
     def get_candles(self, ticker: str, interval: str = "24h", limit: int = 100) -> List[Dict[str, Any]]:
         """미국 주식 캔들 데이터 수신."""
@@ -286,18 +291,15 @@ class NamuhAccount:
             logger.warning(f"미국 주식 캔들 수신 예외 ({sym}): {e}")
 
         if not candles:
-            # 합성 캔들 (오류 시에도 엔진이 멈추지 않도록)
-            now_ms = int(time.time() * 1000)
-            base_p = self.get_price(sym)
-            for k in range(limit, 0, -1):
-                candles.append({
-                    "time": now_ms - (k * 86400000),
-                    "open": base_p,
-                    "high": base_p * 1.01,
-                    "low": base_p * 0.99,
-                    "close": base_p,
-                    "volume": 100000.0,
-                })
+            # 합성 캔들을 만들지 않는다.
+            #
+            # 예전에는 현재가로 limit 개의 가짜 봉(고가 ×1.01, 저가 ×0.99)을
+            # 찍어냈다. 그 위에서 RSI·MACD·이동평균이 계산되므로, 지표가
+            # 가리키는 것이 시장이 아니라 만들어낸 숫자가 된다. 봇 루프는
+            # 캔들 예외를 '판단 보류' 로 처리한다 — 그쪽이 맞다.
+            raise NamuhError(
+                f"{sym} 캔들을 받지 못했습니다 ({interval}). 합성 데이터로 "
+                f"지표를 계산하지 않습니다.")
         return candles[-limit:] if limit else candles
 
     def market_buy(self, ticker: str, amount_usd: float) -> Dict[str, Any]:

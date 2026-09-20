@@ -1267,8 +1267,17 @@ class BotManager:
             else:
                 try:
                     namuh_bal = namuh_account.get_balance()
-                    for h in namuh_bal.get("holdings", []):
-                        namuh_exchange[h.get("symbol", "").upper()] = float(h.get("quantity", 0))
+                    # get_balance() 가 정하는 형식을 그대로 쓴다.
+                    # 예전에는 dict 인 holdings 를 list 로 순회해 AttributeError
+                    # 가 났고(키 이름도 symbol/quantity 로 달랐다), 거래소 대조가
+                    # 통째로 동작하지 않았다. 형식은 namuh.get_balance 한 곳에서
+                    # 정하고 여기서는 받아 쓰기만 한다.
+                    qty_map = namuh_bal.get("qtyByTicker")
+                    if qty_map is None:
+                        qty_map = {t: (v or {}).get("qty", 0.0)
+                                   for t, v in (namuh_bal.get("holdings") or {}).items()}
+                    for tkr, qty in qty_map.items():
+                        namuh_exchange[str(tkr).upper()] = float(qty or 0.0)
                     namuh_balance_known = True
                 except Exception as e:
                     namuh_balance_error = str(e)
