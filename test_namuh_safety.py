@@ -351,6 +351,95 @@ _nm.market_session = _orig_ms
 _restore_network()
 namuh._price_cache.clear()
 
+# ── 주문이 실패해도 장부가 틀어지지 않는가 ──
+#
+# USD 분기를 만들면서 현금 차감이 주문보다 **앞**으로 갔다. 주문이 거부되면
+# return 하므로 현금만 줄고 주식은 늘지 않았다 (실측 $250.10 / $294.12 증발).
+# 디스크에는 바로 안 쓰이지만, 다음 매수가 성공하는 순간 틀어진 값이 저장된다.
+import tempfile                                     # noqa: E402
+os.environ["APP_DATA_DIR"] = tempfile.mkdtemp(prefix="namuh-safety-")
+from services.trader import TradingBot              # noqa: E402
+from services.strategy import StrategyParams        # noqa: E402
+
+
+class _Refusing:
+    configured = True
+
+    def market_buy(self, *a, **k):
+        raise NamuhError("주문 거부 (테스트)")
+
+
+class _ZeroFill:
+    """접수는 됐는데 한 주도 안 붙은 응답."""
+    configured = True
+
+    def market_buy(self, *a, **k):
+        return {"orderId": "T", "units": 0}
+
+
+def _bot(acct, held_turn=0):
+    p = StrategyParams(strategyType="raoer_infinite", raoerVersion="v4",
+                       splitCount=10, targetProfitPct=10.0, locMode="half_half")
+    b = TradingBot(bot_id="SAFETY", coin="TQQQ", interval="1h", mode="LIVE",
+                   capital_krw=1000.0, params=p, broker="namuh")
+    b.namuh_account = acct
+    if held_turn:
+        b.pos.units, b.pos.entryPrice, b.pos.turn = 4.0, 50.0, held_turn
+    return b
+
+
+for _label, _acct, _turn in (("주문 거부", _Refusing, 0), ("체결 0주", _ZeroFill, 0)):
+    for _path, _held, _price in (("1회차/단일", 0, 50.0),
+                                 ("전반전 반반LOC", 1, 49.0),
+                                 ("후반전 평단LOC", 6, 49.0)):
+        _b = _bot(_acct(), _held)
+        _c0, _u0 = _b.cash, _b.pos.units
+        _b._enter_chunk(price=_price, invest_krw=300.0, reason="검증")
+        check(f"{_label} 시 현금이 줄지 않는다 ({_path})",
+              abs(_b.cash - _c0) < 1e-9 and _b.pos.units == _u0,
+              f"현금 ${_c0:,.2f} 유지 · 보유 {_u0}주 유지")
+
+# 부분 체결은 **체결분만** 정산해야 한다 (요청 수량으로 깎으면 안 된다)
+class _PartialFill:
+    configured = True
+
+    def market_buy(self, *a, **k):
+        return {"orderId": "T", "units": 2}
+
+
+_b = _bot(_PartialFill())
+_c0 = _b.cash
+_b._enter_chunk(price=50.0, invest_krw=300.0, reason="검증")
+_cps = 50.0 * (1 + _b.params.feePct / 100.0)
+check("부분 체결은 체결 수량만큼만 현금을 깎는다",
+      abs((_c0 - _b.cash) - 2 * _cps) < 0.01 and _b.pos.units == 2.0,
+      f"5주 요청 → 2주 체결 · 차감 ${_c0 - _b.cash:,.2f}")
+
+# ── 매크로 기어: 지표를 못 받으면 '모른다' 로 가야 한다 ──
+#
+# 예전 폴백은 evaluate_regime(500, 480, 18.5) 였다. 주석은 '중립 2단' 인데
+# 실제 판정은 3단 고속 질주(1.2배 · 목표 12%) 였다. 야후가 막히면 봇이
+# 가장 공격적으로 사들이는 구조였다.
+from services import macro_regime as _mr            # noqa: E402
+
+_mr._REGIME_CACHE = None
+_orig_qqq = _mr._fetch_qqq_sma200
+_mr._fetch_qqq_sma200 = lambda: (_ for _ in ()).throw(RuntimeError("HTTP 429"))
+_reg = _mr.get_macro_regime(force_refresh=True)
+_mr._fetch_qqq_sma200 = _orig_qqq
+_mr._REGIME_CACHE = None
+
+check("지표 수신 실패 시 공격 기어로 가지 않는다",
+      _reg["gear"] == _mr.GEAR_NEUTRAL, _reg["gearName"])
+check("지표 수신 실패 시 매수 배수를 건드리지 않는다",
+      _reg["sizingMultiplier"] == 1.0, f"{_reg['sizingMultiplier']}x")
+check("지표 수신 실패 시 목표 익절률을 덮어쓰지 않는다",
+      _reg["recommendedTargetProfitPct"] is None,
+      "None → 봇이 제 설정을 그대로 쓴다")
+check("지표 없이 시세를 지어내지 않는다",
+      _reg["qqqPrice"] is None and _reg["vix"] is None and _reg.get("degraded") is True,
+      "qqqPrice · vix 모두 None · degraded=True")
+
 print(f"\n{'=' * 58}")
 if FAIL:
     print(f"통과 {len(PASS)}개 · 실패 {len(FAIL)}개")

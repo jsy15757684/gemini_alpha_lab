@@ -648,9 +648,6 @@ class TradingBot:
                         self._persist()
                         return
 
-                    self.budget_carryover = max(0.0, total_budget - actual_spent)
-                    self.cash = max(0.0, self.cash - actual_spent)
-
                     fill_desc = []
                     if units_a > 0:
                         fill_desc.append(f"평단LOC {units_a}주")
@@ -664,11 +661,27 @@ class TradingBot:
                             return
                         try:
                             res = self.namuh_account.market_buy(self.coin, amount_usd=actual_spent, units=total_units_to_buy, order_type="12")
-                            total_units_to_buy = int(res.get("units") or total_units_to_buy)
+                            _ru = res.get("units")
+                            filled = int(_ru) if _ru is not None else total_units_to_buy
                             self.log("ORDER", f"나무증권 실주문 반반 LOC 매수 접수 ({fill_summary}, 주문번호 {res.get('orderId')})")
                         except namuh.NamuhError as e:
                             self.log("ERROR", f"나무증권 실주문 반반 LOC 매수 실패: {e.message}")
                             return
+                        if filled < 1:
+                            self.budget_carryover = total_budget
+                            self.pos.turn += 1
+                            self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 반반 LOC] 체결 수량 0주 — ${total_budget:,.2f} 전액 이월.")
+                            self._persist()
+                            return
+                        # 요청과 체결이 다르면 **체결분으로** 정산한다.
+                        total_units_to_buy = filled
+                        actual_spent = total_units_to_buy * cost_per_share
+
+                    # 장부는 주문이 확정된 뒤에 움직인다. 이 두 줄이 주문보다
+                    # 앞에 있으면, 주문이 거부돼 return 하는 순간 현금만 줄고
+                    # 주식은 늘지 않는다 (실측: 한 번에 $294 증발).
+                    self.budget_carryover = max(0.0, total_budget - actual_spent)
+                    self.cash = max(0.0, self.cash - actual_spent)
 
                     new_units = float(total_units_to_buy)
                     invest = new_units * price
@@ -694,22 +707,31 @@ class TradingBot:
                         return
 
                     new_units = float(units_to_buy)
-                    spent_total = new_units * cost_per_share
-                    invest = new_units * price
-                    self.budget_carryover = max(0.0, total_budget - spent_total)
-                    self.cash = max(0.0, self.cash - spent_total)
 
                     if self.mode == "LIVE":
                         if not (self.namuh_account and self.namuh_account.configured):
                             self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                             return
                         try:
-                            res = self.namuh_account.market_buy(self.coin, amount_usd=spent_total, units=units_to_buy, order_type="12", limit_price=loc_price)
-                            new_units = float(res.get("units") or new_units)
+                            res = self.namuh_account.market_buy(self.coin, amount_usd=new_units * cost_per_share, units=units_to_buy, order_type="12", limit_price=loc_price)
+                            _ru = res.get("units")
+                            new_units = float(_ru) if _ru is not None else new_units
                             self.log("ORDER", f"나무증권 실주문 후반전 LOC 매수 접수 (주문번호 {res.get('orderId')})")
                         except namuh.NamuhError as e:
                             self.log("ERROR", f"나무증권 실주문 후반전 LOC 매수 실패: {e.message}")
                             return
+                        if new_units < 1:
+                            self.budget_carryover = total_budget
+                            self.pos.turn += 1
+                            self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차 후반전 LOC] 체결 수량 0주 — ${total_budget:,.2f} 전액 이월.")
+                            self._persist()
+                            return
+
+                    # 장부는 주문이 확정된 뒤에, 실제 체결 수량으로 움직인다.
+                    spent_total = new_units * cost_per_share
+                    invest = new_units * price
+                    self.budget_carryover = max(0.0, total_budget - spent_total)
+                    self.cash = max(0.0, self.cash - spent_total)
 
             else:
                 # 1회차 첫 매수이거나 단일 매수(single) 모드
@@ -723,22 +745,31 @@ class TradingBot:
                     return
 
                 new_units = float(units_to_buy)
-                spent_total = new_units * cost_per_share
-                invest = new_units * price
-                self.budget_carryover = max(0.0, total_budget - spent_total)
-                self.cash = max(0.0, self.cash - spent_total)
 
                 if self.mode == "LIVE":
                     if not (self.namuh_account and self.namuh_account.configured):
                         self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                         return
                     try:
-                        res = self.namuh_account.market_buy(self.coin, amount_usd=spent_total, units=units_to_buy)
-                        new_units = float(res.get("units") or new_units)
+                        res = self.namuh_account.market_buy(self.coin, amount_usd=new_units * cost_per_share, units=units_to_buy)
+                        _ru = res.get("units")
+                        new_units = float(_ru) if _ru is not None else new_units
                         self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
                     except namuh.NamuhError as e:
                         self.log("ERROR", f"나무증권 실주문 분할 매수 실패: {e.message}")
                         return
+                    if new_units < 1:
+                        self.budget_carryover = total_budget
+                        self.pos.turn += 1
+                        self.log("INFO", f"[{self.pos.turn}/{self.params.splitCount}회차] 체결 수량 0주 — ${total_budget:,.2f} 전액 이월.")
+                        self._persist()
+                        return
+
+                # 장부는 주문이 확정된 뒤에, 실제 체결 수량으로 움직인다.
+                spent_total = new_units * cost_per_share
+                invest = new_units * price
+                self.budget_carryover = max(0.0, total_budget - spent_total)
+                self.cash = max(0.0, self.cash - spent_total)
         else:
             invest = min(self.cash, invest_krw)
             min_invest = 5000.0

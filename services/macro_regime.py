@@ -122,6 +122,39 @@ def evaluate_regime(qqq_price: float, sma_200: float, vix: float) -> Dict[str, A
     }
 
 
+def neutral_regime(note: str) -> Dict[str, Any]:
+    """지표를 못 받았을 때 쓰는 **진짜** 중립 국면.
+
+    예전에는 evaluate_regime(500, 480, 18.5) 를 기본값으로 썼다. 주석에는
+    '기본 안전 국면(중립 2단)' 이라고 적혀 있었지만, 그 숫자는 200일선 위 +
+    VIX 20 미만이라 실제로는 **3단 고속 질주**(1.2배 매수 · 목표 12%) 로
+    판정됐다. 야후가 막히면 봇이 가장 공격적으로 사들이는 구조였다.
+
+    국면을 모를 때는 모른다고 해야 한다. 그래서 여기서는 없는 시세를
+    지어내지 않고, 배수 1.0 · 목표 익절률 없음(봇이 제 설정을 그대로 씀)
+    으로 돌려준다. degraded 플래그로 화면에서도 구분한다.
+    """
+    return {
+        "gear": GEAR_NEUTRAL,
+        "gearNumber": 2,
+        "gearName": "🔄 2단 단기 순환 (지표 없음)",
+        "badgeColor": "#6b7280",
+        "sizingMultiplier": 1.0,
+        # None 이면 트레이더가 목표 익절률을 덮어쓰지 않는다 (봇 설정 유지).
+        "recommendedTargetProfitPct": None,
+        "description": f"나스닥·VIX 지표를 받지 못해 국면을 판정할 수 없습니다. {note} "
+                       f"기어 개입 없이 봇의 기본 설정(1.0배 · 설정된 목표 익절률)으로 운용합니다.",
+        "qqqPrice": None,
+        "qqqSma200": None,
+        "qqqDiffPct": None,
+        "isQqqAbove200": None,
+        "vix": None,
+        "degraded": True,
+        "note": note,
+        "updatedAt": time.strftime("%Y-%m-%d %H:%M:%S"),
+    }
+
+
 def get_macro_regime(force_refresh: bool = False) -> Dict[str, Any]:
     """현재 매크로 국면과 적응형 기어 상태를 반환한다 (15분 캐시)."""
     global _REGIME_CACHE, _LAST_FETCH_TIME
@@ -145,8 +178,9 @@ def get_macro_regime(force_refresh: bool = False) -> Dict[str, Any]:
         logger.warning(f"[MacroRegime] 지표 수신 실패: {e}")
         with _CACHE_LOCK:
             if _REGIME_CACHE:
-                return dict(_REGIME_CACHE)
-            # 초기 데이터 부재 시 기본 안전 국면(중립 2단) 반환
-            default_regime = evaluate_regime(500.0, 480.0, 18.5)
-            default_regime["note"] = "기본 중립값 (통신 대기)"
-            return default_regime
+                # 직전에 받아둔 값이 있으면 그대로 쓰되, 최신이 아님을 밝힌다.
+                stale = dict(_REGIME_CACHE)
+                stale["stale"] = True
+                stale["note"] = f"최신 지표 수신 실패 — {int(time.time() - _LAST_FETCH_TIME)}초 전 값 사용"
+                return stale
+            return neutral_regime(f"수신 실패: {e}")
