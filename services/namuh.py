@@ -36,6 +36,18 @@ TOKEN_FILE = os.path.join(
 # 국가코드 (fc_sec_trd_nat_cd). 지금은 미국만 쓴다.
 NAT_US = "200"
 
+# 현물호가유형코드 (ahi_nmn_pr_tp_cd). 공식 문서 기준.
+ORD_LIMIT = "00"    # 지정가 — fc_orr_uit_pr 필수. 미체결 가능
+ORD_MARKET = "03"   # 시장가 — 단가 불필요. 즉시 체결
+ORD_LOC = "12"      # LOC(장마감 지정가) — 라오어 원전이 쓰는 방식. 단가 필수
+ORDER_TYPE_NAMES = {"00": "지정가", "03": "시장가", "12": "LOC(장마감 지정가)"}
+
+# 기본 주문 유형. 시장가를 쓴다 — 함수 이름(market_buy/market_sell)과 맞고,
+# 지정가로 내면 미체결로 끝나 회차만 소비될 수 있다. 3배 레버리지 ETF 는
+# 호가 스프레드가 있으니 슬리피지는 감수하는 선택이다.
+# NAMUH_ORDER_TYPE 으로 바꿀 수 있다 (00/03/12).
+DEFAULT_ORDER_TYPE = (os.getenv("NAMUH_ORDER_TYPE") or ORD_MARKET).strip()
+
 # 라오어 무한매수법 대표 지원 미국 주식 ETF 및 메이저 종목
 NAMUH_STOCKS: Dict[str, Dict[str, str]] = {
     "TQQQ": {"name": "ProShares UltraPro QQQ (나스닥 3배)", "market": "NASDAQ", "leverage": "3x", "currency": "USD"},
@@ -311,8 +323,53 @@ class NamuhAccount:
             "rspCd": rsp_cd,
         }
 
+    def quote(self, ticker: str) -> Dict[str, Any]:
+        """해외주식 현재가 상세 (POST /gbstock/quote/v1/current).
+
+        현재가뿐 아니라 최우선 호가까지 준다. 실제로 체결될 가격은 호가이므로
+        지정가·LOC 주문을 낼 때 이 값을 쓰는 것이 맞다.
+        """
+        sym = ticker.upper().strip()
+        if not self.configured:
+            raise NamuhError("나무증권 계정 키가 설정되지 않았습니다.")
+        try:
+            res = requests.post(f"{BASE_URL}/gbstock/quote/v1/current",
+                                headers=self._headers(),
+                                json={"Input_0": {"iem_cd": sym}}, timeout=8)
+            b = res.json()
+        except Exception as e:
+            raise NamuhError(f"나무증권 시세 조회 통신 오류 ({sym}): {e}")
+
+        rsp_cd = str(b.get("rsp_cd", ""))
+        o = b.get("Output_0") or {}
+        if res.status_code != 200 or not o:
+            raise NamuhError(
+                f"나무증권 시세 조회 거부 ({rsp_cd}): "
+                f"{b.get('rsp_msg') or (res.text or '')[:160]}")
+
+        price = float(o.get("trdprc") or 0.0)
+        if price <= 0:
+            raise NamuhError(f"{sym} 현재가가 0 입니다 (응답 {rsp_cd}).")
+        return {
+            "ticker": sym,
+            "price": price,
+            "bid": float(o.get("best_bid1") or 0.0),
+            "ask": float(o.get("best_ask1") or 0.0),
+            "prevClose": float(o.get("hst_trdprc") or 0.0),
+            "changePct": float(o.get("pctchng") or 0.0),
+            "open": float(o.get("open_prc") or 0.0),
+            "high": float(o.get("high") or 0.0),
+            "low": float(o.get("low") or 0.0),
+            "volume": float(o.get("acvol") or 0.0),
+            "exchange": str(o.get("exch_id") or "").strip(),
+            "name": str(o.get("iem_nm") or "").strip(),
+            "currency": str(o.get("currency_unit") or "USD").strip(),
+            "marketPeriod": str(o.get("marketperiod_cls") or "").strip(),
+            "source": "namuh",
+        }
+
     def get_price(self, ticker: str) -> float:
-        """미국 주식 현재가(USD) 조회."""
+        """미국 주식 현재가(USD)."""
         sym = ticker.upper().strip()
         with _price_lock:
             now = time.time()
@@ -321,37 +378,22 @@ class NamuhAccount:
                 if now - t < _PRICE_TTL and p > 0:
                     return p
 
-        # 1) Namuh PLUG 해외주식 현재가 TR 조회
+        # 1) 나무증권 현재가 (공식 규격). 이것이 실제 매매하는 시세다.
         if self.configured:
             try:
-                headers = self._headers(tr_id="HHDFS00000300")
-                market = NAMUH_STOCKS.get(sym, {}).get("market", "NASD")
-                if market == "NASDAQ":
-                    market = "NAS"
-                elif market == "NYSE":
-                    market = "NYS"
+                p = self.quote(sym)["price"]
+                with _price_lock:
+                    _price_cache[sym] = (time.time(), p)
+                return p
+            except NamuhError as e:
+                logger.warning(f"나무증권 시세 실패, 공개 시세로 넘어갑니다 ({sym}): {e}")
 
-                endpoint = f"{BASE_URL}/uapi/overseas-price/v1/quotations/price"
-                params = {"AUTH": "", "EXCD": market, "SYMB": sym}
-                res = requests.get(endpoint, headers=headers, params=params, timeout=6)
-                if res.status_code == 200:
-                    d = res.json().get("output", {})
-                    price = float(d.get("last") or d.get("ovrs_nmix_prpr", 0.0))
-                    if price > 0:
-                        with _price_lock:
-                            _price_cache[sym] = (time.time(), price)
-                        return price
-            except Exception as e:
-                logger.warning(f"나무증권 시세 조회 예외 ({sym}): {e}")
-
-        # 2) 공개 무료 시세 Fallback (Yahoo Finance 등 실시간 REST)
+        # 2) 공개 시세 (Yahoo Finance). 출처가 다르다는 것을 숨기지 않는다.
         try:
             url = f"https://query1.finance.yahoo.com/v8/finance/chart/{sym}?interval=1m&range=1d"
-            h = {"User-Agent": "Mozilla/5.0"}
-            res = requests.get(url, headers=h, timeout=5)
+            res = requests.get(url, headers={"User-Agent": "Mozilla/5.0"}, timeout=5)
             if res.status_code == 200:
-                data = res.json()
-                price = float(data["chart"]["result"][0]["meta"]["regularMarketPrice"])
+                price = float(res.json()["chart"]["result"][0]["meta"]["regularMarketPrice"])
                 if price > 0:
                     with _price_lock:
                         _price_cache[sym] = (time.time(), price)
@@ -359,15 +401,7 @@ class NamuhAccount:
         except Exception as e:
             logger.warning(f"공개 시세 수신 실패 ({sym}): {e}")
 
-        # 3) 둘 다 실패하면 값을 지어내지 않는다.
-        #
-        # 예전에는 여기서 {"TQQQ": 75.50, ...} 같은 기본값을 돌려주고 캐시에까지
-        # 넣었다. 그러면 통신이 끊긴 상태에서도 봇은 정상 시세로 알고 매수·익절·
-        # 손절을 판단한다. 이 프로젝트에서 같은 종류의 버그를 두 번 고쳤다
-        # (환율 1385.0, 바이낸스 BTC $65,000). 세 번은 없다.
-        #
-        # 봇 루프는 시세 예외를 이미 '판단 보류' 로 처리한다(trader.py). 여기서
-        # 예외를 올려야 그 안전장치가 작동한다.
+        # 받지 못하면 값을 지어내지 않는다.
         raise NamuhError(
             f"{sym} 현재가를 받지 못했습니다 (나무증권·공개시세 모두 실패). "
             f"추정치로 매매하지 않습니다.")
@@ -427,9 +461,11 @@ class NamuhAccount:
                 f"미국 정규장이 열려 있지 않아 {what}를 보류합니다 — {ses['reason']}. "
                 f"닫힌 장에 낸 주문은 체결되지 않는데 장부에는 남을 수 있습니다.")
 
-    def market_buy(self, ticker: str, amount_usd: float) -> Dict[str, Any]:
+    def market_buy(self, ticker: str, amount_usd: float,
+                   order_type: str = "") -> Dict[str, Any]:
         """미국 주식 매수 (라오어 무한매수 금액 기준 주문)."""
         sym = ticker.upper().strip()
+        order_type = (order_type or DEFAULT_ORDER_TYPE).strip()
         price = self.get_price(sym)
         if price <= 0:
             raise NamuhError(f"현재가를 조회할 수 없습니다: {sym}")
@@ -462,41 +498,44 @@ class NamuhAccount:
         self._require_market_open("매수")
         qty_before = self.held_qty(sym)
 
-        # 실주문 API (Namuh PLUG 해외주식 주문)
-        acc_prefix = self.account_no[:8]
-        acc_suffix = self.account_no[8:10] if len(self.account_no) >= 10 else "01"
-        endpoint = f"{BASE_URL}/uapi/overseas-stock/v1/trading/order"
-        headers = self._headers(tr_id="TTTT1002U")  # 해외주식 매수주문 TR
-        body = {
-            "CANO": acc_prefix,
-            "ACNT_PRDT_CD": acc_suffix,
-            "OVRS_EXCG_CD": NAMUH_STOCKS.get(sym, {}).get("market", "NASD")[:4],
-            "PDNO": sym,
-            "ORD_QTY": str(qty),
-            "OVRS_ORD_UNPR": f"{price:.2f}",
-            "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": "00",  # 지정가 (LOC 주문 코드는 34 등 시장별 매핑)
+        # 공식 문서: POST /gbstock/order/v1/buy
+        # 예전에는 한국투자증권 규격(/uapi/overseas-stock/v1/trading/order,
+        # TR TTTT1002U, CANO 8+2 분할)을 쓰고 있었다.
+        inp = {
+            "act_no": self.account_no,          # 11자리 그대로
+            "fc_sec_trd_nat_cd": NAT_US,        # 200.미국
+            "iem_cd": sym,                      # 예: AAPL (순수 티커)
+            "orr_qty": int(qty),
+            "ahi_nmn_pr_tp_cd": order_type,
+            "wtm_cur_knd_cd": "1",              # 1.해당통화(USD)
         }
+        # 단가는 지정가 계열에서만 필수다 (00/11/12/61/62/63). 소수점 2자리.
+        if order_type != ORD_MARKET:
+            inp["fc_orr_uit_pr"] = round(price, 2)
+
         try:
-            res = requests.post(endpoint, headers=headers, json=body, timeout=10)
+            res = requests.post(f"{BASE_URL}/gbstock/order/v1/buy",
+                                headers=self._headers(), json={"Input_0": inp}, timeout=10)
             res_data = res.json()
-            if res.status_code != 200 or res_data.get("rt_cd") != "0":
-                msg = res_data.get("msg1") or res.text
-                raise NamuhError(f"나무증권 매수 주문 실패: {msg}", res_data)
         except NamuhError:
             raise
         except Exception as e:
             raise NamuhError(f"나무증권 매수 주문 통신 오류: {e}")
 
-        # 체결 확인. 지정가(ORD_DVSN=00) 라 접수됐다고 체결된 것이 아니다.
-        # 예전에는 SUBMITTED 를 그대로 체결로 기록해, 안 채워진 주문이
-        # 장부에만 주식으로 남았다.
-        order_id = res_data.get("output", {}).get("ODNO", f"ORD-{int(time.time())}")
+        # 주문 완료 코드는 00171 이다 (rt_cd 가 아니다).
+        rsp_cd = str(res_data.get("rsp_cd", ""))
+        order_id = str((res_data.get("Output_0") or {}).get("orr_no") or "")
+        if res.status_code != 200 or (not order_id and rsp_cd != "00171"):
+            raise NamuhError(
+                f"나무증권 매수 주문 실패 ({rsp_cd}): "
+                f"{res_data.get('rsp_msg') or (res.text or '')[:160]}", res_data)
+
+        # 접수됐다고 체결된 것이 아니다. 실제 보유 수량 변화로 확인한다.
         filled = self._await_fill(sym, qty_before, qty, "매수")
         if filled <= 0:
             raise NamuhError(
-                f"매수 주문({order_id})이 체결되지 않았습니다 — 지정가 "
-                f"${price:,.2f} 미체결. 장부를 바꾸지 않습니다.")
+                f"매수 주문({order_id})이 체결되지 않았습니다 — {ORDER_TYPE_NAMES.get(order_type, order_type)} "
+                f"${price:,.2f}. 장부를 바꾸지 않습니다.")
         return {
             "orderId": order_id,
             "ticker": sym,
@@ -505,6 +544,7 @@ class NamuhAccount:
             "amountUsd": filled * price,
             "status": "FILLED" if filled >= qty else "PARTIAL",
             "requestedUnits": float(qty),
+            "orderType": order_type,
         }
 
     def _await_fill(self, sym: str, qty_before: float, want: float,
@@ -530,9 +570,11 @@ class NamuhAccount:
             logger.warning(f"{sym} {what} 부분 체결: {moved:.0f}/{want:.0f}주")
         return max(0.0, moved)
 
-    def market_sell(self, ticker: str, units: float) -> Dict[str, Any]:
+    def market_sell(self, ticker: str, units: float,
+                    order_type: str = "") -> Dict[str, Any]:
         """미국 주식 매도 (전량 또는 쿼터 매도)."""
         sym = ticker.upper().strip()
+        order_type = (order_type or DEFAULT_ORDER_TYPE).strip()
         price = self.get_price(sym)
 
         # 없는 주식을 팔지 않는다. 예전에는 max(1, int(units)) 라
@@ -568,37 +610,40 @@ class NamuhAccount:
             qty = int(qty_before)
             proceeds = qty * price
 
-        acc_prefix = self.account_no[:8]
-        acc_suffix = self.account_no[8:10] if len(self.account_no) >= 10 else "01"
-        endpoint = f"{BASE_URL}/uapi/overseas-stock/v1/trading/order"
-        headers = self._headers(tr_id="TTTT1006U")  # 해외주식 매도주문 TR
-        body = {
-            "CANO": acc_prefix,
-            "ACNT_PRDT_CD": acc_suffix,
-            "OVRS_EXCG_CD": NAMUH_STOCKS.get(sym, {}).get("market", "NASD")[:4],
-            "PDNO": sym,
-            "ORD_QTY": str(qty),
-            "OVRS_ORD_UNPR": f"{price:.2f}",
-            "ORD_SVR_DVSN_CD": "0",
-            "ORD_DVSN": "00",
+        # 공식 문서: POST /gbstock/order/v1/sell
+        # 매도에는 증거금통화종류코드(wtm_cur_knd_cd)가 없다.
+        inp = {
+            "act_no": self.account_no,
+            "fc_sec_trd_nat_cd": NAT_US,
+            "iem_cd": sym,
+            "orr_qty": int(qty),
+            "ahi_nmn_pr_tp_cd": order_type,
         }
+        if order_type != ORD_MARKET:
+            inp["fc_orr_uit_pr"] = round(price, 2)
+
         try:
-            res = requests.post(endpoint, headers=headers, json=body, timeout=10)
+            res = requests.post(f"{BASE_URL}/gbstock/order/v1/sell",
+                                headers=self._headers(), json={"Input_0": inp}, timeout=10)
             res_data = res.json()
-            if res.status_code != 200 or res_data.get("rt_cd") != "0":
-                msg = res_data.get("msg1") or res.text
-                raise NamuhError(f"나무증권 매도 주문 실패: {msg}", res_data)
         except NamuhError:
             raise
         except Exception as e:
             raise NamuhError(f"나무증권 매도 주문 통신 오류: {e}")
 
-        order_id = res_data.get("output", {}).get("ODNO", f"ORD-{int(time.time())}")
+        rsp_cd = str(res_data.get("rsp_cd", ""))
+        order_id = str((res_data.get("Output_0") or {}).get("orr_no") or "")
+        if res.status_code != 200 or (not order_id and rsp_cd != "00171"):
+            raise NamuhError(
+                f"나무증권 매도 주문 실패 ({rsp_cd}): "
+                f"{res_data.get('rsp_msg') or (res.text or '')[:160]}", res_data)
+
         filled = self._await_fill(sym, qty_before, qty, "매도")
         if filled <= 0:
             raise NamuhError(
-                f"매도 주문({order_id})이 체결되지 않았습니다 — 지정가 "
-                f"${price:,.2f} 미체결. 장부를 바꾸지 않습니다.")
+                f"매도 주문({order_id})이 체결되지 않았습니다 — "
+                f"{ORDER_TYPE_NAMES.get(order_type, order_type)} ${price:,.2f}. "
+                f"장부를 바꾸지 않습니다.")
         return {
             "orderId": order_id,
             "ticker": sym,
@@ -607,6 +652,7 @@ class NamuhAccount:
             "proceedsUsd": filled * price,
             "status": "FILLED" if filled >= qty else "PARTIAL",
             "requestedUnits": float(qty),
+            "orderType": order_type,
         }
 
 

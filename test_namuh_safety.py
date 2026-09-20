@@ -53,7 +53,7 @@ def _restore_network():
 
 
 def _acct(token=True):
-    a = NamuhAccount("APPKEY", "SECRET", "1234567890")
+    a = NamuhAccount("APPKEY", "SECRET", "12345678901")
     if token:
         a._token = "FAKE"
         a._token_expires_at = time.time() + 9999
@@ -141,29 +141,29 @@ import tempfile as _tf   # noqa: E402
 namuh.TOKEN_FILE = os.path.join(_tf.mkdtemp(prefix="ntok-"), "namuh_token.json")
 _restore_network()
 
-t1 = NamuhAccount("APPKEY", "SECRET", "1234567890")
+t1 = NamuhAccount("APPKEY", "SECRET", "12345678901")
 t1._token, t1._token_expires_at = "TOK-ABC", time.time() + 86400
 t1._save_token_to_disk()
 check("발급한 토큰을 디스크에 남긴다", os.path.exists(namuh.TOKEN_FILE),
       f"권한 {oct(os.stat(namuh.TOKEN_FILE).st_mode)[-3:]}")
 
-t2 = NamuhAccount("APPKEY", "SECRET", "1234567890")     # 재시작 흉내
+t2 = NamuhAccount("APPKEY", "SECRET", "12345678901")     # 재시작 흉내
 _cut_network()                                           # 발급은 불가능한 상태
 check("재시작해도 남은 토큰을 재사용한다 (재발급하지 않는다)",
       t2.get_token() == "TOK-ABC", "통신이 끊겼는데도 토큰을 얻음")
 _restore_network()
 
-t3 = NamuhAccount("OTHERKEY", "SECRET", "1234567890")
+t3 = NamuhAccount("OTHERKEY", "SECRET", "12345678901")
 t3._load_token_from_disk()
 check("앱키가 다르면 저장된 토큰을 쓰지 않는다", t3._token is None, "재사용 안 함")
 
 check("토큰 파일에 앱키 원문을 저장하지 않는다",
       "APPKEY" not in open(namuh.TOKEN_FILE, encoding="utf-8").read(), "해시만 저장")
 
-t4 = NamuhAccount("APPKEY", "SECRET", "1234567890")
+t4 = NamuhAccount("APPKEY", "SECRET", "12345678901")
 t4._token, t4._token_expires_at = "TOK-OLD", time.time() + 60   # 만료 임박
 t4._save_token_to_disk()
-t5 = NamuhAccount("APPKEY", "SECRET", "1234567890")
+t5 = NamuhAccount("APPKEY", "SECRET", "12345678901")
 t5._load_token_from_disk()
 check("만료가 임박한 토큰은 재사용하지 않는다", t5._token is None, "5분 미만 남으면 버림")
 
@@ -230,14 +230,18 @@ print("\n── 체결 확인 ──")
 _nm.market_session = lambda *a_, **k: {"open": True, "etTime": "-", "tz": "EDT", "reason": ""}
 
 
+_ORDERS = []
+
+
 def _route(url, *a_, **k):
     """잔고와 주문이 같은 POST 라 URL 로 갈라준다."""
     u = url if isinstance(url, str) else ""
     if "/balance" in u:
         return _Resp(200, payload)                       # 보유 12주 고정
-    # 주문 경로는 아직 공식 문서를 받지 못해 옛 계약(rt_cd) 그대로다.
-    # 여기서 검증하는 것은 '체결 확인' 로직이지 주문 규격이 아니다.
-    return _Resp(200, {"rt_cd": "0", "output": {"ODNO": "X1"}})
+    # 공식 문서의 주문 응답: Output_0.orr_no · rsp_cd 00171
+    _ORDERS.append((u, k.get("json")))
+    return _Resp(200, {"rsp_cd": "00171", "rsp_msg": "주문이 완료되었습니다.",
+                       "Output_0": {"orr_no": 548597}})
 
 
 requests.post = _route
@@ -259,6 +263,46 @@ r = a6.market_buy("TQQQ", 400.0)
 check("부분 체결은 실제 체결 수량으로 기록한다",
       r["units"] == 3.0 and r["status"] == "PARTIAL" and r["requestedUnits"] == 5.0,
       f"요청 {r['requestedUnits']:.0f}주 → 체결 {r['units']:.0f}주 ({r['status']})")
+
+check("주문 응답의 orr_no 를 주문번호로 쓴다", r["orderId"] == "548597", r["orderId"])
+
+print("\n── 주문 규격 (공식 문서 대조) ──")
+_ORDERS.clear()
+a8 = _acct(); a8._await_fill = lambda *a_, **k: 5.0
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+a8.market_buy("TQQQ", 400.0)
+url, body = _ORDERS[-1]
+inp = (body or {}).get("Input_0", {})
+check("매수 URL 이 /gbstock/order/v1/buy 다", url.endswith("/gbstock/order/v1/buy"), url[-32:])
+check("계좌번호를 11자리 그대로 보낸다 (쪼개지 않는다)",
+      inp.get("act_no") == a8.account_no and len(inp.get("act_no", "")) == 11,
+      f"act_no {len(inp.get('act_no',''))}자리")
+check("국가코드·종목코드가 문서 형식이다",
+      inp.get("fc_sec_trd_nat_cd") == "200" and inp.get("iem_cd") == "TQQQ",
+      f"{inp.get('fc_sec_trd_nat_cd')} · {inp.get('iem_cd')}")
+check("기본 주문이 시장가(03)다",
+      inp.get("ahi_nmn_pr_tp_cd") == "03" and "fc_orr_uit_pr" not in inp,
+      "시장가라 단가를 보내지 않는다")
+check("매수에는 증거금통화종류코드를 보낸다", inp.get("wtm_cur_knd_cd") == "1", "1.해당통화")
+
+_ORDERS.clear()
+a9 = _acct(); a9._await_fill = lambda *a_, **k: 5.0
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+a9.market_buy("TQQQ", 400.0, order_type=namuh.ORD_LOC)
+inp = (_ORDERS[-1][1] or {}).get("Input_0", {})
+check("LOC(12) 등 지정가 계열은 단가를 함께 보낸다",
+      inp.get("ahi_nmn_pr_tp_cd") == "12" and inp.get("fc_orr_uit_pr") == 75.50,
+      f"유형 12 · 단가 ${inp.get('fc_orr_uit_pr')}")
+
+_ORDERS.clear()
+a10 = _acct(); a10._await_fill = lambda *a_, **k: 10.0
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+a10.market_sell("TQQQ", 10)
+url, body = _ORDERS[-1]
+inp = (body or {}).get("Input_0", {})
+check("매도 URL 이 /gbstock/order/v1/sell 다", url.endswith("/gbstock/order/v1/sell"), url[-32:])
+check("매도에는 증거금통화종류코드를 보내지 않는다",
+      "wtm_cur_knd_cd" not in inp, "문서에 없는 필드는 보내지 않는다")
 
 # 잔고보다 많이 팔려고 하면 있는 만큼만
 a7 = _acct()
