@@ -595,14 +595,14 @@ class TradingBot:
         """이번 봉에 못 샀을 때의 처리. **회차(T)는 올리지 않는다.**
 
         라오어에서 회차는 '몇 번 샀는가' 다. 평단과 분할 소진, 쿼터매도 발동
-        시점이 전부 이 값에 걸려 있다. 예전에는 LOC 미체결에도 turn 을 올려서,
-        평단 +5~12% 구간(익절선엔 못 미치고 LOC 선은 넘는 구간)에 머물면
+        시점이 전부 이 값에 걸려 있다. 예전에는 미체결에도 turn 을 올려서,
+        평단 +5~12% 구간(익절선엔 못 미치고 상한선은 넘는 구간)에 머물면
         **한 주도 안 사고 40회를 다 태운 뒤 수익 중인 포지션을 쿼터매도**
         했다 (실측: 9회 시도 0주 매수, turn 10/10).
 
         이월금도 두 경우를 갈라야 한다.
 
-        - chased=True (종가가 LOC 선 위) : 그냥 안 산 것이다. 배정액은
+        - chased=True (종가가 상한선 위) : 그냥 안 산 것이다. 배정액은
           현금에서 빠진 적이 없으니 다음 봉에 그대로 다시 배정된다.
           여기서 이월금에 더하면 안 산 돈을 눈덩이처럼 쌓아, 나중에 한 번에
           지르게 된다.
@@ -628,7 +628,15 @@ class TradingBot:
         self._persist()
 
     def _enter_chunk(self, price: float, invest_krw: float, reason: str):
-        """라오어 무한매수 분할 매수 (원조 반반 LOC 및 미국주식 정수 1주 단위 체결/잔돈 이월 지원)."""
+        """라오어 무한매수 분할 매수 (원조 반반 매수 · 미국주식 정수 1주 · 잔돈 이월).
+
+        라오어 원전은 LOC(장마감 지정가)를 쓰지만, 이 봇은 봉마다 현재가를
+        보고 그 자리에서 판단한다. LOC 는 마감 동시호가에만 붙어서 6초
+        체결 확인을 통과하지 못하고, 그 사이 주문은 거래소에 살아 있어
+        봉마다 주문이 쌓인다. 그래서 **평단(또는 평단+5%)을 상한으로 건
+        지정가**를 쓴다. 현재가가 이미 상한 아래일 때만 주문하므로 즉시
+        체결되고, '상한 위로는 안 산다' 는 보장은 그대로다.
+        """
         fee = self.params.feePct / 100.0
 
         if self.currency == "USD":
@@ -637,13 +645,13 @@ class TradingBot:
             allocated_budget = min(self.cash, invest_krw)
             total_budget = allocated_budget + self.budget_carryover
 
-            # 반반 LOC 모드 여부 판정 (이미 1회차 이상 보유 중이며 locMode == "half_half")
+            # 반반 매수 모드 판정 (이미 1회차 이상 보유 중이며 locMode == "half_half")
             if self.pos.open and self.params.locMode == "half_half":
                 avg_price = self.pos.entryPrice
                 half_count = self.params.splitCount // 2
 
                 if self.pos.turn <= half_count:
-                    # ── [전반전 T <= N/2]: 0.5회 평단 LOC + 0.5회 평단*1.05 LOC ──
+                    # ── [전반전 T <= N/2]: 0.5회 평단 상한 + 0.5회 평단*1.05 상한 ──
                     loc_a_price = avg_price
                     loc_b_price = round(avg_price * 1.05, 2)
                     half_budget = total_budget / 2.0
@@ -679,32 +687,48 @@ class TradingBot:
                         self._skip_turn(
                             price, total_budget,
                             chased=(price > loc_b_price),
-                            where="전반전 반반 LOC",
+                            where="전반전 반반 지정가",
                             limit_desc=f"평단+5%(${loc_b_price:,.2f})")
                         return
 
                     fill_desc = []
                     if units_a > 0:
-                        fill_desc.append(f"평단LOC {units_a}주")
+                        fill_desc.append(f"평단상한 {units_a}주")
                     if units_b > 0:
-                        fill_desc.append(f"평단+5%LOC {units_b}주")
+                        fill_desc.append(f"평단+5%상한 {units_b}주")
                     fill_summary = " + ".join(fill_desc)
 
                     if self.mode == "LIVE":
                         if not (self.namuh_account and self.namuh_account.configured):
                             self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                             return
-                        try:
-                            res = self.namuh_account.market_buy(self.coin, amount_usd=actual_spent, units=total_units_to_buy, order_type="12")
-                            _ru = res.get("units")
-                            filled = int(_ru) if _ru is not None else total_units_to_buy
-                            self.log("ORDER", f"나무증권 실주문 반반 LOC 매수 접수 ({fill_summary}, 주문번호 {res.get('orderId')})")
-                        except namuh.NamuhError as e:
-                            self.log("ERROR", f"나무증권 실주문 반반 LOC 매수 실패: {e.message}")
-                            return
+                        # 두 다리는 **상한이 다르다**. 한 건으로 합쳐 보내면
+                        # 그 차이가 사라지고, 예전처럼 지정가를 안 실으면
+                        # 시장가가 되어 평단 위로도 사버린다. 각자 낸다.
+                        filled = 0
+                        for _leg_name, _leg_units, _leg_limit in (
+                                ("평단", units_a, loc_a_price),
+                                ("평단+5%", units_b, loc_b_price)):
+                            if _leg_units < 1:
+                                continue
+                            try:
+                                res = self.namuh_account.market_buy(
+                                    self.coin, amount_usd=_leg_units * cost_per_share,
+                                    units=_leg_units, order_type=namuh.ORD_LIMIT,
+                                    limit_price=_leg_limit)
+                                _ru = res.get("units")
+                                _got = int(_ru) if _ru is not None else _leg_units
+                                filled += max(0, _got)
+                                self.log("ORDER",
+                                         f"나무증권 실주문 {_leg_name} 지정가 ${_leg_limit:,.2f} "
+                                         f"{_got}주 체결 (주문번호 {res.get('orderId')})")
+                            except namuh.NamuhError as e:
+                                # 한 다리가 실패해도 다른 다리 체결분은 살린다.
+                                self.log("ERROR",
+                                         f"나무증권 실주문 {_leg_name} 다리 실패: {e.message}")
                         if filled < 1:
                             self._skip_turn(price, total_budget, chased=True,
-                                            where="전반전 반반 LOC", limit_desc="",
+                                            where="전반전 반반 지정가", limit_desc="",
                                             note="체결 수량 0주")
                             return
                         # 요청과 체결이 다르면 **체결분으로** 정산한다.
@@ -721,18 +745,18 @@ class TradingBot:
                     invest = new_units * price
 
                 else:
-                    # ── [후반전 T > N/2]: 1.0회 전액 평단 LOC 집중 ──
+                    # ── [후반전 T > N/2]: 1.0회 전액 평단 상한 집중 ──
                     loc_price = avg_price
                     if price > loc_price:
                         self._skip_turn(price, total_budget, chased=True,
-                                        where="후반전 평단 LOC",
+                                        where="후반전 평단 상한",
                                         limit_desc=f"평단(${loc_price:,.2f})")
                         return
 
                     units_to_buy = int(total_budget // cost_per_share)
                     if units_to_buy < 1:
                         self._skip_turn(price, total_budget, chased=False,
-                                        where="후반전 평단 LOC", limit_desc="")
+                                        where="후반전 평단 상한", limit_desc="")
                         return
 
                     new_units = float(units_to_buy)
@@ -742,16 +766,19 @@ class TradingBot:
                             self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                             return
                         try:
-                            res = self.namuh_account.market_buy(self.coin, amount_usd=new_units * cost_per_share, units=units_to_buy, order_type="12", limit_price=loc_price)
+                            res = self.namuh_account.market_buy(
+                                self.coin, amount_usd=new_units * cost_per_share,
+                                units=units_to_buy, order_type=namuh.ORD_LIMIT,
+                                limit_price=loc_price)
                             _ru = res.get("units")
                             new_units = float(_ru) if _ru is not None else new_units
-                            self.log("ORDER", f"나무증권 실주문 후반전 LOC 매수 접수 (주문번호 {res.get('orderId')})")
+                            self.log("ORDER", f"나무증권 실주문 후반전 평단 지정가 ${loc_price:,.2f} 매수 접수 (주문번호 {res.get('orderId')})")
                         except namuh.NamuhError as e:
-                            self.log("ERROR", f"나무증권 실주문 후반전 LOC 매수 실패: {e.message}")
+                            self.log("ERROR", f"나무증권 실주문 후반전 평단 지정가 매수 실패: {e.message}")
                             return
                         if new_units < 1:
                             self._skip_turn(price, total_budget, chased=True,
-                                            where="후반전 평단 LOC", limit_desc="",
+                                            where="후반전 평단 상한", limit_desc="",
                                             note="체결 수량 0주")
                             return
 

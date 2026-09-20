@@ -461,6 +461,76 @@ check("1주 미만 잔돈은 회차 유지하며 계속 누적된다",
       _c.pos.turn == 1 and _c.budget_carryover > 60.0,
       f"turn={_c.pos.turn} · 이월 ${_c.budget_carryover:,.2f}")
 
+# ── 반반 매수의 두 다리가 각자의 상한으로 따로 나가는가 ──
+#
+# 예전에는 두 다리를 한 건으로 합쳐 보내면서 지정가도 안 실었다. 그러면
+# 시장가가 되어 '평단 위로는 안 산다' 는 보장이 사라지는데, 로그에는
+# "평단LOC 3주 + 평단+5%LOC 3주" 라고 두 다리로 적혔다.
+#
+# 주문 종류도 바꿨다. LOC(12, 장마감 지정가)는 마감 동시호가에만 붙어서
+# 6초 체결 확인을 통과하지 못한다. 그 사이 주문은 거래소에 살아 있어
+# 봉마다 쌓인다. 현재가가 이미 상한 아래일 때만 주문하므로 지정가(00)면
+# 즉시 체결되고 상한 보장도 그대로다.
+_SENT = []
+
+
+class _RecordingAccount:
+    configured = True
+
+    def market_buy(self, ticker, amount_usd=0.0, order_type="", units=0.0,
+                   limit_price=0.0):
+        _SENT.append({"units": int(units), "orderType": order_type,
+                      "limitPrice": round(limit_price, 2)})
+        return {"orderId": f"T{len(_SENT)}", "units": int(units)}
+
+
+_b = _bot(_RecordingAccount())
+_b.pos.units, _b.pos.entryPrice, _b.pos.turn = 4.0, 50.0, 1
+_SENT.clear()
+_b._enter_chunk(price=49.0, invest_krw=400.0, reason="검증")   # 평단 이하 → 두 다리 다 체결
+
+check("반반 매수는 두 다리를 따로 낸다", len(_SENT) == 2,
+      f"주문 {len(_SENT)}건: " + " · ".join(f"{o['units']}주@${o['limitPrice']}" for o in _SENT))
+check("두 다리의 상한이 서로 다르다 (평단 / 평단+5%)",
+      len(_SENT) == 2 and _SENT[0]["limitPrice"] == 50.00 and _SENT[1]["limitPrice"] == 52.50,
+      f"{[o['limitPrice'] for o in _SENT]} (평단 $50.00 · 평단+5% $52.50)")
+check("시장가가 아니라 지정가로 나간다",
+      all(o["orderType"] == namuh.ORD_LIMIT for o in _SENT),
+      f"주문종류 {[o['orderType'] for o in _SENT]} (00=지정가)")
+check("장마감 지정가(LOC)는 쓰지 않는다",
+      all(o["orderType"] != namuh.ORD_LOC for o in _SENT),
+      "6초 체결 확인을 통과 못 해 주문이 거래소에 쌓인다")
+
+# 평단 초과 ~ 평단+5% 이내면 B 다리 하나만 나가야 한다
+_b2 = _bot(_RecordingAccount())
+_b2.pos.units, _b2.pos.entryPrice, _b2.pos.turn = 4.0, 50.0, 1
+_SENT.clear()
+_b2._enter_chunk(price=51.0, invest_krw=400.0, reason="검증")
+check("평단 초과 구간에서는 평단+5% 다리만 나간다",
+      len(_SENT) == 1 and _SENT[0]["limitPrice"] == 52.50,
+      f"주문 {len(_SENT)}건 · 상한 ${_SENT[0]['limitPrice'] if _SENT else '-'}")
+
+# 한 다리가 실패해도 다른 다리 체결분은 살아야 한다
+class _OneLegFails:
+    configured = True
+    calls = 0
+
+    def market_buy(self, ticker, amount_usd=0.0, order_type="", units=0.0,
+                   limit_price=0.0):
+        type(self).calls += 1
+        if type(self).calls == 1:
+            raise NamuhError("첫 다리 거부 (테스트)")
+        return {"orderId": "T", "units": int(units)}
+
+
+_b3 = _bot(_OneLegFails())
+_b3.pos.units, _b3.pos.entryPrice, _b3.pos.turn = 4.0, 50.0, 1
+_c0 = _b3.cash
+_b3._enter_chunk(price=49.0, invest_krw=400.0, reason="검증")
+check("한 다리가 실패해도 나머지 체결분은 장부에 남는다",
+      _b3.pos.units > 4.0 and _b3.cash < _c0,
+      f"보유 {_b3.pos.units}주 · 현금 ${_b3.cash:,.2f}")
+
 # ── 매크로 기어: 지표를 못 받으면 '모른다' 로 가야 한다 ──
 #
 # 예전 폴백은 evaluate_regime(500, 480, 18.5) 였다. 주석은 '중립 2단' 인데
