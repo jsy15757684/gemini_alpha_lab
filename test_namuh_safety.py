@@ -90,7 +90,7 @@ except NamuhError as e:
     check("통신이 끊기면 가짜 잔고를 만들지 않는다", True, str(e)[:52])
 
 _restore_network()
-requests.get = lambda *a_, **k: _Resp(500, {"rt_cd": "1", "msg1": "조회 권한 없음"})
+requests.post = lambda *a_, **k: _Resp(500, {"rsp_cd": "IGW9999", "rsp_msg": "조회 권한 없음"})
 a2 = _acct()
 try:
     b = a2.get_balance()
@@ -103,15 +103,26 @@ check("가짜 잔고를 만드는 코드가 남아 있지 않다",
 
 print("\n── 거래소 대조 형식 ──")
 _restore_network()
+# 공식 문서의 응답 형식 그대로
 payload = {
-    "output1": [{"ovrs_pdno": "TQQQ", "ovrs_cblc_qty": "12", "pchs_avg_pric": "70.0",
-                 "ovrs_stck_evlu_amt": "900.0"}],
-    "output2": {"ovrs_ord_psbl_amt": "500.0", "tot_evlu_pfls_amt": "1400.0"},
+    "rsp_cd": "00166", "rsp_msg": "조회가 완료되었습니다.",
+    "Output_0": {"fc_dca": 500.0, "fc_aet_amt": 1400.0,
+                 "krw_dca": 700000, "tot_aet_amt": 1900000},
+    "Output_1": [{"iem_cd": "TQQQ", "iem_nm": "프로셰어즈 QQQ 3배",
+                  "cns_bse_bnc_qty": 12, "sll_pbl_qty1": 10,
+                  "fc_phs_uit_pr": 70.0, "fc_sec_end_pr": 75.0,
+                  "fc_eal_amt": 900.0, "fc_eal_pls_amt": 60.0, "cur_cd": "USD"}],
 }
-requests.get = lambda *a_, **k: _Resp(200, payload)
+requests.post = lambda *a_, **k: _Resp(200, payload)
 bal = _acct().get_balance()
 check("보유 종목을 읽는다", bal["holdings"].get("TQQQ", {}).get("qty") == 12.0,
       f"TQQQ {bal['holdings'].get('TQQQ', {}).get('qty')}주")
+check("체결기준잔고와 매도가능수량을 구분한다",
+      bal["qtyByTicker"] == {"TQQQ": 12.0} and bal["sellableByTicker"] == {"TQQQ": 10.0},
+      "잔고 12주 · 매도가능 10주")
+check("외화 예수금·자산을 Output_0 에서 읽는다",
+      bal["usdAvailable"] == 500.0 and bal["usdTotal"] == 1400.0,
+      f"예수금 ${bal['usdAvailable']:,.0f} · 자산 ${bal['usdTotal']:,.0f}")
 check("대조용 '종목→수량' 을 함께 준다",
       bal.get("qtyByTicker") == {"TQQQ": 12.0}, str(bal.get("qtyByTicker")))
 
@@ -217,16 +228,29 @@ _nm.market_session = _orig_ms
 
 print("\n── 체결 확인 ──")
 _nm.market_session = lambda *a_, **k: {"open": True, "etTime": "-", "tz": "EDT", "reason": ""}
-# 주문은 접수되지만(rt_cd=0) 보유 수량이 변하지 않는다 = 지정가 미체결
-requests.post = lambda *a_, **k: _Resp(200, {"rt_cd": "0", "output": {"ODNO": "X1"}})
-a5 = _acct()
-a5._await_fill = lambda *a_, **k: 0.0          # 대기 시간 없이 미체결 상황만 재현
+
+
+def _route(url, *a_, **k):
+    """잔고와 주문이 같은 POST 라 URL 로 갈라준다."""
+    u = url if isinstance(url, str) else ""
+    if "/balance" in u:
+        return _Resp(200, payload)                       # 보유 12주 고정
+    # 주문 경로는 아직 공식 문서를 받지 못해 옛 계약(rt_cd) 그대로다.
+    # 여기서 검증하는 것은 '체결 확인' 로직이지 주문 규격이 아니다.
+    return _Resp(200, {"rt_cd": "0", "output": {"ODNO": "X1"}})
+
+
+requests.post = _route
 namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+
+a5 = _acct()
+a5._await_fill = lambda *a_, **k: 0.0          # 미체결 상황 재현 (대기 없이)
 try:
     a5.market_buy("TQQQ", 400.0)
     check("접수만 되고 체결 안 되면 장부를 바꾸지 않는다", False, "체결로 기록했다")
 except NamuhError as e:
-    check("접수만 되고 체결 안 되면 장부를 바꾸지 않는다", True, str(e)[:56])
+    check("접수만 되고 체결 안 되면 장부를 바꾸지 않는다",
+          "체결되지 않았습니다" in str(e), str(e)[:56])
 
 a6 = _acct()
 a6._await_fill = lambda *a_, **k: 3.0          # 5주 요청에 3주만 체결
@@ -235,6 +259,14 @@ r = a6.market_buy("TQQQ", 400.0)
 check("부분 체결은 실제 체결 수량으로 기록한다",
       r["units"] == 3.0 and r["status"] == "PARTIAL" and r["requestedUnits"] == 5.0,
       f"요청 {r['requestedUnits']:.0f}주 → 체결 {r['units']:.0f}주 ({r['status']})")
+
+# 잔고보다 많이 팔려고 하면 있는 만큼만
+a7 = _acct()
+a7._await_fill = lambda *a_, **k: 12.0
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+r = a7.market_sell("TQQQ", 50)
+check("계좌 보유량을 넘겨 팔지 않는다", r["requestedUnits"] == 12.0,
+      f"50주 요청 → 계좌 보유 12주만 주문")
 _nm.market_session = _orig_ms
 
 _restore_network()
