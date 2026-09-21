@@ -1213,7 +1213,8 @@ async function namuhKeyAction(save) {
     });
     if (save || r.success) {
       setAlert($("namuhKeyResult"),
-        `연결 성공 — 주문가능 $${Number(r.usdAvailable || 0).toFixed(2)}` +
+        // 잔고는 balance 안에 있다. 최상위에서 찾으면 늘 $0.00 로 보인다.
+        `연결 성공 — 주문가능 $${Number((r.balance || {}).usdAvailable || 0).toFixed(2)}` +
         (save ? " · 저장했습니다." : ""), "ok");
       if ($("namuhAppSecretInput")) $("namuhAppSecretInput").value = "";
       await loadNamuhAccount();

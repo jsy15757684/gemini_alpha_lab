@@ -286,7 +286,9 @@ def deploy_bot(req: DeployRequest):
             test = namuh_keystore.account.test_connection()
             if not test.get("success"):
                 raise HTTPException(400, f"나무증권 실계좌 연결 실패: {test.get('message')}")
-            usd_avail = float(test.get("usdAvailable", 0))
+            # test_connection 은 잔고를 balance 안에 담아 돌려준다. 최상위에서
+            # 찾으면 늘 0 이라, 자본이 얼마든 실전 가동이 막혔다.
+            usd_avail = float((test.get("balance") or {}).get("usdAvailable", 0))
             if usd_avail < req.capitalKrw:
                 raise HTTPException(400, f"나무증권 주문가능 외화(${usd_avail:,.2f})가 운용 자본(${req.capitalKrw:,.2f})보다 적습니다.")
 
