@@ -360,13 +360,36 @@ async function deployBot() {
   const isStock = currentMarket === "stock";
   const isUsdt = $("botStrategyType")?.value === "usdt_premium";
 
-  if (mode === "LIVE") {
-    const brokerName = isStock ? "농협 나무증권" : "빗썸";
-    const currName = isStock ? "미국 달러(USD)" : "원화";
-    if (!confirm(
-        `실전 모드로 가동합니다.\n\n${brokerName} 계좌에서 실제 ${currName}로 주문이 나가며 손실이 발생할 수 있습니다.\n계속하시겠습니까?`))
-      return;
+  // 만들기 **전에** 무엇이 만들어지는지 그대로 보여준다.
+  //
+  // 화면에서 드롭다운을 안 바꾸면 조용히 기본값으로 만들어진다. 실제로
+  // 모의투자·24h·원전LOC 로 세 번 연속 만들어졌는데, 봇이 뜬 뒤 로그를
+  // 봐야 알 수 있었다. 값을 눈앞에 늘어놓으면 그 자리에서 잡힌다.
+  const params = readParams("bp_");
+  const modeLabel = mode === "LIVE"
+    ? (isStock ? "실전 — 나무증권 실주문 (미국 달러)" : "실전 — 빗썸 실주문 (원화)")
+    : "모의투자 — 주문이 나가지 않습니다";
+  const curr = isStock ? "$" : "원";
+  const summary = ["이 설정으로 봇을 만듭니다.", ""];
+  summary.push(`종목      : ${isUsdt ? "USDT" : $("botCoin").value}`);
+  summary.push(`매매 모드 : ${modeLabel}`);
+  summary.push(`운용 자본 : ${curr === "$" ? "$" : ""}${Number($("botCapital").value || 0).toLocaleString()}${curr === "원" ? "원" : ""}`);
+  if (params.strategyType === "raoer_infinite") {
+    const locLabel = { half_half: "라오어 원전 반반 LOC (하루 한 번 · 마감 직전)",
+                       half_half_now: "반반 지정가 즉시 체결 (봉마다)",
+                       single: "단일 묶음 시장가" }[params.locMode] || params.locMode;
+    if (isStock) summary.push(`체결 방식 : ${locLabel}`);
+    if (!(isStock && params.locMode === "half_half"))
+      summary.push(`캔들 간격 : ${$("botInterval").value}`);
+    summary.push(`분할·익절 : ${params.splitCount}분할 · +${params.targetProfitPct}%`);
+    if (isStock) summary.push(`매크로 기어: ${params.useMacroGear ? "켬 (목표·배수를 국면이 덮어씀)" : "끔"}`);
+    if (params.raoerUseAi) summary.push(`AI 동적   : 켬`);
   }
+  summary.push("");
+  summary.push(mode === "LIVE"
+    ? "⚠️ 실제 주문이 나가며 손실이 발생할 수 있습니다. 계속하시겠습니까?"
+    : "위 설정이 맞습니까? (틀리면 취소하고 화면에서 고치세요)");
+  if (!confirm(summary.join("\n"))) return;
   btn.disabled = true; btn.textContent = "가동 중…";
   try {
     await api("/api/bot/deploy", {
@@ -377,7 +400,7 @@ async function deployBot() {
         // 캔들을 안 쓰는 전략이라 화면에서 칸을 숨겼다. 서버는 유효한 값을
         // 요구하므로 고정값을 보낸다 (캔들 갱신 주기로만 쓰인다).
         interval: isUsdt ? "1h" : $("botInterval").value, mode,
-        capitalKrw: parseFloat($("botCapital").value), params: readParams("bp_"),
+        capitalKrw: parseFloat($("botCapital").value), params,
       }),
     });
     await loadBots();
