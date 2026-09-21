@@ -541,10 +541,12 @@ async function loadBots() {
     const byId = Object.fromEntries(bots.map(b => [b.botId, b]));
     $("botList").querySelectorAll("[data-stop]").forEach(el =>
       el.onclick = () => actOnBot("/api/bot/stop", el.dataset.stop,
-        liquidationNotice(byId[el.dataset.stop] || {}, "정지")));
+        liquidationNotice(byId[el.dataset.stop] || {}, "정지"),
+        byId[el.dataset.stop] || {}));
     $("botList").querySelectorAll("[data-del]").forEach(el =>
       el.onclick = () => actOnBot("/api/bot/delete", el.dataset.del,
-        liquidationNotice(byId[el.dataset.del] || {}, "정지·삭제")));
+        liquidationNotice(byId[el.dataset.del] || {}, "정지·삭제"),
+        byId[el.dataset.del] || {}));
   } catch (e) { console.error("봇 목록 실패:", e); }
 }
 
@@ -591,8 +593,31 @@ function liquidationNotice(b, action) {
   return lines.join("\n");
 }
 
-async function actOnBot(url, botId, message) {
+// 실전 봇이 물량을 들고 있으면 [확인] 한 번으로는 못 넘어가게 한다.
+//
+// 확인창이 아무리 자세해도 버튼 하나면 반사적으로 눌린다. 실제로 TQQQ 를
+// 지우려다 28회차까지 쌓은 XRP 봇이 청산된 적이 있다 (2026-09-21, +4.01%
+// 이익 실현이라 손해는 없었지만 누적 평단이 초기화됐다). 종목코드를 직접
+// 쓰게 하면, 지우려던 것과 다른 종목이 떠 있을 때 손이 멈춘다.
+function requireTypedConfirm(b, action) {
+  const sym = String(b.coin || "").toUpperCase();
+  const typed = prompt(
+    `⚠️ ${sym} 실전 봇을 ${action}합니다.\n\n` +
+    `보유 ${Number(b.units || 0)} ${sym} 전부가 시장가로 팔립니다. 되돌릴 수 없습니다.\n\n` +
+    `지우려는 종목이 ${sym} 이 맞으면, 아래에 ${sym} 를 그대로 입력하세요.`, "");
+  if (typed === null) return false;                 // 취소
+  if (String(typed).trim().toUpperCase() !== sym) {
+    alert(`입력한 값이 ${sym} 와 달라 중단했습니다. 아무것도 팔지 않았습니다.`);
+    return false;
+  }
+  return true;
+}
+
+async function actOnBot(url, botId, message, bot) {
+  const b = bot || {};
+  const guarded = b.mode === "LIVE" && Number(b.units || 0) > 0;
   if (!confirm(message)) return;
+  if (guarded && !requireTypedConfirm(b, url.endsWith("delete") ? "삭제" : "정지")) return;
   try {
     await api(url, { method: "POST", headers: { "Content-Type": "application/json" },
                      body: JSON.stringify({ botId }) });
@@ -1485,6 +1510,18 @@ async function boot() {
                  "", "되돌릴 수 없습니다. 계속하시겠습니까?"]).join("\n");
     }
     if (!confirm(msg)) return;
+    // 전체 정지는 여러 종목을 한꺼번에 판다. 개별 삭제와 같은 기준으로,
+    // 실전 포지션이 하나라도 있으면 타이핑을 요구한다.
+    if (live.length) {
+      const typed = prompt(
+        `⚠️ 실전 포지션 ${live.length}건(${live.map(b => b.coin).join(", ")})을 전부 시장가로 팝니다.\n\n` +
+        `되돌릴 수 없습니다. 진행하려면 전체정지 를 입력하세요.`, "");
+      if (typed === null) return;
+      if (String(typed).trim().replace(/\s/g, "") !== "전체정지") {
+        alert("입력이 달라 중단했습니다. 아무것도 팔지 않았습니다.");
+        return;
+      }
+    }
     try { await api("/api/bot/stop_all", { method: "POST" }); await loadBots(); await loadTradeHistory(); }
     catch (e) { alert(e.message); }
   };
