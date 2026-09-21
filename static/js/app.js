@@ -433,84 +433,84 @@ function botCard(b) {
   const fmtCurr = (v) => isUsd
     ? `$${Number(v||0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
     : won(v);
-  const fmtPnl = (v) => isUsd
-    ? `${Number(v||0) >= 0 ? '+' : ''}$${Number(v||0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
-    : `${Number(v||0) >= 0 ? '+' : ''}${won(v)}원`;
-  const fmtUnits = (u) => isUsd ? `${Math.round(u||0)}주` : Number(u||0).toFixed(6);
+  const fmtPnl = (v) => `${Number(v||0) >= 0 ? '+' : ''}${fmtCurr(v)}${isUsd ? '' : '원'}`;
+  const fmtUnits = (u) => isUsd ? `${Math.round(u||0)}주` : Number(u||0).toFixed(4);
 
-  const badge = !b.isRunning ? `<span class="badge badge-stop">정지됨</span>`
-    : live ? `<span class="badge badge-live">실전</span>`
-           : `<span class="badge badge-paper">모의</span>`;
-  const brokerBadge = isNamuh
-    ? `<span class="badge" style="background:rgba(16,185,129,.2); color:#34d399; border:1px solid rgba(16,185,129,.4);">🇺🇸 나무증권</span>`
-    : `<span class="badge" style="background:rgba(249,115,22,.2); color:#fb923c; border:1px solid rgba(249,115,22,.4);">🪙 빗썸</span>`;
+  // 정체성 줄. 예전에는 거래소·모드·전략·회차·기어·이월을 전부 색 배지로
+  // 달아 제목보다 배지가 눈에 먼저 들어왔다. 위험과 직결되는 '실전' 만
+  // 색을 쓰고 나머지는 회색 글씨로 내린다.
+  const meta = [
+    isNamuh ? "나무증권" : "빗썸",
+    b.interval,
+    b.strategyType === "raoer_infinite"
+      ? `무한매수 ${(b.raoerVersion || b.params?.raoerVersion || "v4").toUpperCase()}${b.params?.raoerUseAi ? " · AI" : ""}`
+      : "",
+  ].filter(Boolean).join(" · ");
 
-  let stratBadge = "";
-  if (b.strategyType === "raoer_infinite") {
-    const vTag = (b.raoerVersion || b.params?.raoerVersion || "v4").toUpperCase() === "V4" ? "V4.0" : "V1.0";
-    if (b.params?.raoerUseAi) {
-      stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:#60a5fa; border:1px solid rgba(59,130,246,.4);">✨ AI 무한매수 ${vTag} (T=${b.turn||0}/${b.splitCount||40})</span>`;
-    } else {
-      stratBadge = `<span class="badge" style="background:rgba(16,185,129,.18); color:#34d399; border:1px solid rgba(16,185,129,.4);">🔄 무한매수 ${vTag} (T=${b.turn||0}/${b.splitCount||40})</span>`;
-    }
-  } else if (b.params?.useGemini) {
-    // 하이브리드는 화면에서 없앴지만, 예전에 만든 봇이 남아 있을 수 있다.
-    const gemMode = b.params?.geminiMode === "ai_only" ? "✨ AI 전용" : "🧬 하이브리드(구)";
-    stratBadge = `<span class="badge" style="background:rgba(59,130,246,.2); color:var(--accent); border:1px solid rgba(59,130,246,.4);">${gemMode} (${b.params?.geminiMinConfidence}%)</span>`;
-  }
+  const state = !b.isRunning
+    ? `<span class="tag tag-stop">정지됨</span>`
+    : (live ? `<span class="tag tag-live">실전</span>` : `<span class="tag tag-paper">모의</span>`);
 
-  if (isUsd && Number(b.budgetCarryover || 0) > 0) {
-    stratBadge += ` <span class="badge" style="background:rgba(234,179,8,.18); color:#facc15; border:1px solid rgba(234,179,8,.4);" title="1주 미만 단주로 다음 회차로 이월 누적된 예산">이월잔돈 $${Number(b.budgetCarryover).toFixed(2)}</span>`;
-  }
-
+  // 부가 정보(기어·이월금)는 판단 줄 끝에 회색으로 붙인다. 카드 머리에서
+  // 빼야 종목명이 먼저 읽힌다.
+  const extras = [];
   if (b.macroRegime && (b.params?.useMacroGear ?? true)) {
     const mg = b.macroRegime;
-    const gearCol = mg.gear === "3_BULL" ? "#3b82f6" : (mg.gear === "1_BEAR" ? "#ef4444" : "#10b981");
-    const gearText = mg.gear === "3_BULL" ? "🚀 3단 고속" : (mg.gear === "1_BEAR" ? "🛡️ 1단 방어" : "🔄 2단 순환");
-    stratBadge += ` <span class="badge" style="background:${gearCol}22; color:${gearCol}; border:1px solid ${gearCol}55;" title="매크로 기어: ${mg.gearName}\nQQQ $${mg.qqqPrice} (SMA200 대비 ${mg.qqqDiffPct > 0 ? '+' : ''}${mg.qqqDiffPct}%)\nVIX: ${mg.vix}\n매수배수: ${mg.sizingMultiplier}x / 목표: +${mg.recommendedTargetProfitPct}%">${gearText}</span>`;
+    const short = mg.gear === "3_BULL" ? "3단 고속" : (mg.gear === "1_BEAR" ? "1단 방어" : "2단 순환");
+    extras.push(`기어 ${short} ${mg.sizingMultiplier}x`);
   }
+  if (isUsd && Number(b.budgetCarryover || 0) > 0)
+    extras.push(`이월 $${Number(b.budgetCarryover).toFixed(2)}`);
 
-  if (isUsd && (b.params?.locMode || "half_half") === "half_half") {
-    stratBadge += ` <span class="badge" style="background:rgba(99,102,241,.18); color:#a5b4fc; border:1px solid rgba(99,102,241,.4);" title="라오어 원조 반반 LOC 매수 모드 (전반전 평단/평단+5% · 후반전 평단)">반반LOC</span>`;
-  }
+  const turnPct = Math.round((Number(b.turn || 0) / Number(b.splitCount || 40)) * 100);
+  const cell = (k, v, sub, title) =>
+    `<div class="s"${title ? ` title="${escapeHtml(title)}"` : ""}>
+       <div class="s-k">${k}</div><div class="s-v">${v}</div>
+       ${sub ? `<div class="s-s">${sub}</div>` : ""}</div>`;
 
   const open = expandedLogs.has(b.botId);
   const logs = (b.recentLogs || []).map(l =>
-    `<div class="logline"><span class="t">${l.time}</span><span class="lv-${l.level}">${l.message}</span></div>`).join("");
+    `<div class="logline"><span class="t">${l.time}</span><span class="lv-${l.level}">${escapeHtml(l.message)}</span></div>`).join("");
+
   return `<div class="bot">
     <div class="bot-head">
-      <div><span class="bot-title">${b.coinName} (${b.coin})</span> ${brokerBadge} ${badge} ${stratBadge}
-        <span class="muted small">${b.interval}</span></div>
+      <div class="bot-id">
+        <span class="bot-title">${escapeHtml(b.coinName)} <span class="muted">(${b.coin})</span></span>
+        ${state}
+        <span class="bot-meta">${escapeHtml(meta)}</span>
+      </div>
       <div class="inline">
         ${b.isRunning ? `<button class="btn btn-ghost btn-sm" data-stop="${b.botId}">정지</button>` : ""}
         <button class="btn btn-ghost btn-sm" data-del="${b.botId}">삭제</button>
       </div>
     </div>
     <div class="bot-stats">
-      <div><div class="stat-k">평가자산</div>
-        <div class="stat-v">${fmtCurr(b.equityKrw)}</div>
-        ${isUsd ? `<div class="muted" style="font-size:0.68rem;">약 ${won(b.equityKrwConverted)}원</div>` : ""}
-      </div>
-      <div title="배정자본 ${fmtCurr(b.initialKrw)} 대비 평가자산 증감. 분할매수 초반에는 '평단 대비' 보다 작게 나온다. 지금은 ${fmtCurr(b.investedKrw)}(${investedPct(b)})만 시장에 들어가 있다.">
-        <div class="stat-k">수익률 <span class="muted" style="font-weight:400;">· 배정 대비</span></div>
-        <div class="stat-v ${cls(b.totalReturnPct)}">${pct(b.totalReturnPct)}</div>
-        <div class="muted" style="font-size:0.68rem;">${investedPct(b)} 투입</div></div>
-      <div><div class="stat-k">현재가 ${b.priceAgeSec != null
-          ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : 'muted'}">${Math.round(b.priceAgeSec)}초 전</span>`
-          : ""}</div><div class="stat-v">${fmtCurr(b.currentPrice)}</div></div>
-      <div><div class="stat-k">보유 / 평단</div><div class="stat-v">${b.units > 0 ? fmtUnits(b.units) : "-"} ${b.units > 0 ? `<span class="small muted">(${fmtCurr(b.entryPrice)})</span>` : ""}</div></div>
-      <div title="산 물량만 놓고 본 손익. 익절·손절 판정이 쓰는 값이 이쪽이다.">
-        <div class="stat-k">평가손익 <span class="muted" style="font-weight:400;">· 평단 대비</span></div>
-        <div class="stat-v ${cls(b.unrealizedPnlKrw)}">${b.units > 0
-          ? `${fmtPnl(b.unrealizedPnlKrw)} <span style="font-size:0.7rem; font-weight:400;">${pct(b.unrealizedPnlPct)}</span>`
-          : "-"}</div>
-        ${b.units > 0 && isUsd ? `<div class="muted" style="font-size:0.68rem;">약 ${won(b.unrealizedPnlKrwConverted)}원</div>` : ""}
-      </div>
-      <div title="AI 가 정한 익절 목표와 매수 비중. 목표 수익률은 '평단 대비' 기준이다 — 배정 대비 수익률은 그보다 낮게 찍힌다."><div class="stat-k">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? '회차 <span class="muted" style="font-weight:400;">· 목표/비중</span>' : '진행 회차') : (b.params?.useGemini ? 'AI 신뢰도' : 'RSI')}</div><div class="stat-v">${b.strategyType === 'raoer_infinite' ? (b.params?.raoerUseAi ? `${b.turn||0}/${b.splitCount||40} <span class="small" style="color:var(--accent); font-size:0.75rem;">(+${b.lastAiAnalysis?.dynamicTargetProfitPct || b.params?.targetProfitPct}% / ${b.lastAiAnalysis?.sizingMultiplier || 1.0}x)</span>` : `${b.turn||0} / ${b.splitCount||40}`) : (b.params?.useGemini ? (b.lastAiAnalysis?.confidence ? b.lastAiAnalysis.confidence + "%" : "-") : (b.rsi ?? "-"))}</div></div>
-      <div><div class="stat-k">거래 (익절)</div><div class="stat-v">${b.totalTrades}회</div></div>
-      <div><div class="stat-k">승률</div><div class="stat-v">${b.totalTrades ? b.winRatePct + "%" : "-"}</div></div>
+      ${cell("평가자산", fmtCurr(b.equityKrw), isUsd ? `약 ${won(b.equityKrwConverted)}원` : "",
+             `배정자본 ${fmtCurr(b.initialKrw)} · 시장에 들어간 원금 ${fmtCurr(b.investedKrw)}`)}
+      ${cell(`수익률 <span class="s-note">배정 대비</span>`,
+             `<span class="${cls(b.totalReturnPct)}">${pct(b.totalReturnPct)}</span>`,
+             `${investedPct(b)} 투입`,
+             "배정자본 대비. 분할매수 초반에는 '평단 대비' 보다 작게 나온다.")}
+      ${cell(`평가손익 <span class="s-note">평단 대비</span>`,
+             b.units > 0
+               ? `<span class="${cls(b.unrealizedPnlKrw)}">${fmtPnl(b.unrealizedPnlKrw)} <span class="s-pct">${pct(b.unrealizedPnlPct)}</span></span>`
+               : "-",
+             b.units > 0 && isUsd ? `약 ${won(b.unrealizedPnlKrwConverted)}원` : "",
+             "산 물량만 놓고 본 손익. 익절·손절 판정이 쓰는 값이 이쪽이다.")}
+      ${cell("보유 · 평단", b.units > 0 ? fmtUnits(b.units) : "-",
+             b.units > 0 ? fmtCurr(b.entryPrice) : "")}
+      ${cell("현재가", fmtCurr(b.currentPrice),
+             b.priceAgeSec != null
+               ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : ''}">${Math.round(b.priceAgeSec)}초 전</span>`
+               : "")}
+      ${cell("회차", `${b.turn||0}<span class="s-of"> / ${b.splitCount||40}</span>`,
+             `<span class="s-bar"><i style="width:${Math.min(100, turnPct)}%"></i></span>`)}
+      ${cell("거래 · 승률", `${b.totalTrades||0}회`,
+             b.totalTrades ? `${b.winRatePct}%` : "")}
     </div>
-    <div class="bot-decision" title="${escapeHtml(b.lastDecision || "-")}">판단: ${escapeHtml(b.lastDecision || "-")}</div>
+    <div class="bot-decision" title="${escapeHtml(b.lastDecision || "-")}">
+      ${escapeHtml(b.lastDecision || "-")}${extras.length ? `<span class="bot-extra">${escapeHtml(extras.join(" · "))}</span>` : ""}
+    </div>
     <div class="log-toggle" data-logs="${b.botId}">${open ? "▾" : "▸"} 로그 ${(b.recentLogs || []).length}줄</div>
     <div class="logs${open ? "" : " collapsed"}" data-loglist="${b.botId}">${logs}</div>
   </div>`;

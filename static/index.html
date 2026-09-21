@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=4.9.3">
+<link rel="stylesheet" href="/static/css/style.css?v=5.0.0">
 </head>
 <body>
 
@@ -310,7 +310,8 @@
 
             <!-- 라오어 무한매수 옵션 -->
             <div id="raoerBotOptions" style="margin-top: 10px;">
-              <div class="alert alert-info small" style="margin-bottom: 10px; background: rgba(59,130,246,0.1); border: 1px solid rgba(59,130,246,0.3); color: #93c5fd; padding: 8px 12px; border-radius: 6px;">
+              <details class="note note-info" style="margin-bottom:10px">
+                <summary>1회 매수금 상한 · 라오어 V4.0 공식 설명</summary>
                 💡 <b>1회 매수금 상한</b>: 잔금비례가 후반에 커지는 것을 막기 위해 한 회차 매수금을
                 <b>기본 분할금 × AI 배수 상한</b>(40분할 400,000원 · 2.0배면 20,000원) 이하로 묶습니다.
                 실측상 AI가 계속 0.5배로 줄이면 마지막 회차가 기본 분할금의 3.6배까지 커졌습니다 —
@@ -318,7 +319,7 @@
                 상한 때문에 회차를 다 쓰고도 현금이 남을 수 있고, 그 현금은 다음 사이클이나
                 쿼터매도 롤백 이후에 쓰입니다.<br><br>
                 💡 <b>라오어 V4.0 (최신 공식)</b>: 1회 매수금을 <code>남은 현금 ÷ 남은 회차</code>로 동적 계산하여 현금 찌꺼기가 남지 않으며, 분할 소진 시 25% 쿼터 매도 후 회차 롤백(30회차) 및 바닥 10회차 추가 매수(리버스 모드)가 자동 순환됩니다.
-              </div>
+              </details>
               <div class="form-grid" style="margin-bottom: 8px;">
                 
                 <div>
@@ -352,8 +353,9 @@
                 </div>
               </div>
 
-              <div class="alert alert-warn small" id="raoerTrendNote" style="margin-top:8px;">
-                <b>추세 조절은 공짜 개선이 아닙니다 — 국면에 거는 방향 베팅입니다.</b><br>
+              <details class="note note-warn" id="raoerTrendNote" style="margin-top:8px">
+                <summary>추세 조절은 공짜 개선이 아닙니다 — 실측 근거</summary>
+                <b>국면에 거는 방향 베팅입니다.</b><br>
                 상승/하락 판정은 <b>종가와 30봉 평균선</b>으로 합니다(과최적화를 피하려고
                 문턱을 재서 고르지 않고 통상적 정의를 그대로 씁니다).<br>
                 검증 구간 288조합 실측 — <b>상승추세 2배 매수</b>: 수익률 +1.78%p,
@@ -365,7 +367,7 @@
                 <b>하락추세면 회차 쉼</b>은 수익률을 <b>-1.85%p 깎았고</b> 벤치마크를
                 이긴 조합이 0%였습니다(낙폭은 -0.77%p 줄었습니다). 낙폭만 줄이려는
                 경우가 아니면 권하지 않습니다.
-              </div>
+              </details>
 
               <!-- 매크로 국면 감지 적응형 변속 기어 토글 (미국 ETF 전용) -->
               <div id="macroGearField" style="margin-top: 10px; padding: 10px; background: rgba(16, 185, 129, 0.08); border: 1px solid rgba(16, 185, 129, 0.25); border-radius: 6px;">
@@ -771,6 +773,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.1.1"></script>
+<script src="/static/js/app.js?v=5.2.0"></script>
 </body>
 </html>

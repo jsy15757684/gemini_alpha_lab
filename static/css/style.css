@@ -137,25 +137,50 @@ select.input{cursor:pointer}
 /* 봇 카드 */
 .bot-list{display:flex; flex-direction:column; gap:.6rem;
   max-height:calc(100vh - 275px); min-height:240px; overflow-y:auto}
-.bot{border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; background:var(--surface-2)}
-.bot-head{display:flex; justify-content:space-between; align-items:center;
-  gap:.3rem .45rem; flex-wrap:wrap; line-height:1.5}
-.bot-title{font-weight:700; font-size:.88rem}
-.badge{font-size:.63rem; font-weight:700; letter-spacing:.04em; padding:.1rem .36rem; border-radius:4px;
-  white-space:nowrap}
-.badge-live{background:rgba(239,68,68,.18); color:#fca5a5}
-.badge-paper{background:rgba(139,147,165,.18); color:var(--muted)}
-.badge-stop{background:rgba(139,147,165,.12); color:var(--faint)}
-.bot-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(84px,1fr));
-  gap:.35rem .45rem; margin:.45rem 0 .4rem; line-height:1.25}
-.stat-k{font-size:.64rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
-.stat-v{font-family:var(--mono); font-size:.82rem; font-weight:600; font-variant-numeric:tabular-nums}
-.bot-decision{font-size:.74rem; color:var(--muted); padding:.3rem .5rem; background:var(--bg);
+.bot{border:1px solid var(--line); border-radius:10px; padding:.75rem .9rem; background:var(--surface-2)}
+
+/* 머리: 종목명이 먼저 읽혀야 한다. 색은 '실전' 하나만 쓴다. */
+.bot-head{display:flex; justify-content:space-between; align-items:center; gap:.6rem; flex-wrap:wrap}
+.bot-id{display:flex; align-items:baseline; gap:.5rem; flex-wrap:wrap; min-width:0}
+.bot-title{font-weight:700; font-size:.95rem; letter-spacing:-.01em}
+.bot-meta{font-size:.72rem; color:var(--faint)}
+.tag{font-size:.65rem; font-weight:700; letter-spacing:.04em; padding:.1rem .4rem;
+  border-radius:4px; white-space:nowrap}
+.tag-live{background:rgba(239,68,68,.16); color:#fca5a5; border:1px solid rgba(239,68,68,.35)}
+.tag-paper{background:rgba(139,147,165,.14); color:var(--muted)}
+.tag-stop{background:rgba(139,147,165,.1); color:var(--faint)}
+/* 예전 이름도 살려둔다 (다른 화면에서 쓴다) */
+.badge{font-size:.65rem; font-weight:700; letter-spacing:.04em; padding:.1rem .4rem;
+  border-radius:4px; white-space:nowrap}
+.badge-live{background:rgba(239,68,68,.16); color:#fca5a5}
+.badge-paper{background:rgba(139,147,165,.14); color:var(--muted)}
+.badge-stop{background:rgba(139,147,165,.1); color:var(--faint)}
+
+/* 숫자: 칸을 줄이고 값을 키워 한눈에 들어오게 한다. */
+.bot-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
+  gap:.1rem .9rem; margin:.6rem 0 .5rem}
+.bot-stats .s{min-width:0; padding:.1rem 0}
+.s-k{font-size:.68rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.s-note{color:var(--faint); font-weight:400}
+.s-v{font-family:var(--mono); font-size:1rem; font-weight:600; font-variant-numeric:tabular-nums;
+  line-height:1.35; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.s-s{font-size:.68rem; color:var(--faint); font-family:var(--mono); white-space:nowrap}
+.s-pct{font-size:.74rem; font-weight:400}
+.s-of{color:var(--faint); font-weight:400; font-size:.82rem}
+.s-bar{display:block; height:3px; margin-top:.3rem; border-radius:2px; background:rgba(255,255,255,.08)}
+.s-bar i{display:block; height:100%; border-radius:2px; background:var(--accent)}
+
+/* 상태 한 줄 */
+.stat-k{font-size:.68rem; color:var(--muted)}
+.stat-v{font-family:var(--mono); font-size:.9rem; font-weight:600; font-variant-numeric:tabular-nums}
+.bot-decision{font-size:.75rem; color:var(--muted); padding:.35rem .55rem; background:var(--bg);
   border-radius:6px; border:1px solid var(--line);
   white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.bot-extra{color:var(--faint); margin-left:.5rem}
+
 .logs{margin-top:.5rem; max-height:150px; overflow-y:auto; font-family:var(--mono); font-size:.72rem}
 .logs.collapsed{display:none}
-.log-toggle{margin-top:.4rem; font-size:.7rem; color:var(--muted); cursor:pointer;
+.log-toggle{margin-top:.4rem; font-size:.7rem; color:var(--faint); cursor:pointer;
   user-select:none; display:inline-block; padding:.1rem .3rem; border-radius:4px}
 .log-toggle:hover{color:var(--accent); background:rgba(255,255,255,.04)}
 .logline{display:flex; gap:.5rem; padding:.14rem 0; border-bottom:1px solid rgba(255,255,255,.03)}
@@ -223,3 +248,14 @@ tbody tr:last-child td{border-bottom:none}
    버튼만 카드 안에서 화면 아래에 붙여 둔다. */
 .deploy-actions{position:sticky; bottom:0; z-index:5; padding:.6rem 0 .1rem;
   background:linear-gradient(to bottom, transparent, var(--surface) 45%)}
+
+/* 접히는 설명. 근거는 남기되 기본 화면을 차지하지 않는다. */
+.note{border-radius:6px; padding:.45rem .6rem; font-size:.74rem; line-height:1.55}
+.note > summary{cursor:pointer; font-weight:600; font-size:.76rem; list-style:none;
+  display:flex; align-items:center; gap:.35rem}
+.note > summary::-webkit-details-marker{display:none}
+.note > summary::before{content:"▸"; font-size:.7rem; opacity:.7}
+.note[open] > summary::before{content:"▾"}
+.note[open] > summary{margin-bottom:.4rem}
+.note-info{background:rgba(59,130,246,.09); border:1px solid rgba(59,130,246,.28); color:#93c5fd}
+.note-warn{background:rgba(234,179,8,.09); border:1px solid rgba(234,179,8,.28); color:#fde68a}
