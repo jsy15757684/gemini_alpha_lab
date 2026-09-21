@@ -315,9 +315,15 @@ check("계좌번호를 11자리 그대로 보낸다 (쪼개지 않는다)",
 check("국가코드·종목코드가 문서 형식이다",
       inp.get("fc_sec_trd_nat_cd") == "200" and inp.get("iem_cd") == "TQQQ",
       f"{inp.get('fc_sec_trd_nat_cd')} · {inp.get('iem_cd')}")
-check("기본 주문이 시장가(03)다",
-      inp.get("ahi_nmn_pr_tp_cd") == "03" and "fc_orr_uit_pr" not in inp,
-      "시장가라 단가를 보내지 않는다")
+# 기본은 지정가다. 모의계좌는 시장가를 아예 받지 않고("14650 모의투자
+# 지정가만 가능한 상품입니다"), 실계좌에서도 3배 ETF 를 시장가로 던지면
+# 체결가를 통제할 수 없다. 현재가 +0.5% 상한이면 사실상 즉시 붙는다.
+_want_lim = round(75.50 * (1 + namuh.LIMIT_SLIP_PCT / 100.0), 2)
+check("기본 주문이 지정가(00)다 (시장가 아님)",
+      inp.get("ahi_nmn_pr_tp_cd") == "00", f"유형 {inp.get('ahi_nmn_pr_tp_cd')}")
+check("기본 지정가 상한은 현재가 + 여유폭이다",
+      inp.get("fc_orr_uit_pr") == _want_lim,
+      f"현재가 $75.50 → 상한 ${inp.get('fc_orr_uit_pr')} (+{namuh.LIMIT_SLIP_PCT}%)")
 check("매수에는 증거금통화종류코드를 보낸다", inp.get("wtm_cur_knd_cd") == "1", "1.해당통화")
 
 _ORDERS.clear()
@@ -326,8 +332,46 @@ namuh._price_cache["TQQQ"] = (time.time(), 75.50)
 a9.market_buy("TQQQ", 400.0, order_type=namuh.ORD_LOC)
 inp = (_ORDERS[-1][1] or {}).get("Input_0", {})
 check("LOC(12) 등 지정가 계열은 단가를 함께 보낸다",
-      inp.get("ahi_nmn_pr_tp_cd") == "12" and inp.get("fc_orr_uit_pr") == 75.50,
+      inp.get("ahi_nmn_pr_tp_cd") == "12" and inp.get("fc_orr_uit_pr") == _want_lim,
       f"유형 12 · 단가 ${inp.get('fc_orr_uit_pr')}")
+
+# 상한을 직접 주면 그 값이 그대로 나가야 한다 (반반 매수의 두 다리)
+_ORDERS.clear()
+a9b = _acct(); a9b._await_fill = lambda *a_, **k: 5.0
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+a9b.market_buy("TQQQ", units=2, order_type=namuh.ORD_LIMIT, limit_price=70.00)
+inp = (_ORDERS[-1][1] or {}).get("Input_0", {})
+check("상한을 직접 주면 여유폭을 더하지 않는다",
+      inp.get("fc_orr_uit_pr") == 70.00, f"단가 ${inp.get('fc_orr_uit_pr')}")
+
+# 즉시 체결을 기대한 지정가가 안 붙으면 거둬들여야 한다
+_ORDERS.clear()
+_CANCELS = []
+a9c = _acct()
+a9c._await_fill = lambda *a_, **k: 0.0
+a9c.cancel_order = lambda oid, tkr, qty=0.0: _CANCELS.append(oid) or {"cancelOrderId": "9"}
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+try:
+    a9c.market_buy("TQQQ", 400.0)
+    _msg = ""
+except NamuhError as e:
+    _msg = e.message
+check("즉시 지정가가 미체결이면 주문을 취소한다",
+      len(_CANCELS) == 1 and "취소했습니다" in _msg,
+      f"취소 {len(_CANCELS)}건 — 안 하면 거래소에 남아 봉마다 쌓인다")
+
+# LOC 는 마감에 붙는 것이라 취소하면 안 된다
+_CANCELS2 = []
+a9d = _acct()
+a9d._await_fill = lambda *a_, **k: 0.0
+a9d.cancel_order = lambda oid, tkr, qty=0.0: _CANCELS2.append(oid)
+namuh._price_cache["TQQQ"] = (time.time(), 75.50)
+try:
+    a9d.market_buy("TQQQ", 400.0, order_type=namuh.ORD_LOC)
+except NamuhError:
+    pass
+check("LOC 은 미체결이어도 취소하지 않는다", not _CANCELS2,
+      "마감 동시호가에 붙는 주문이다")
 
 _ORDERS.clear()
 a10 = _acct(); a10._await_fill = lambda *a_, **k: 10.0

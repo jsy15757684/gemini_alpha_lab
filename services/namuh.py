@@ -64,7 +64,16 @@ ORDER_TYPE_NAMES = {"00": "지정가", "03": "시장가", "12": "LOC(장마감 �
 # 지정가로 내면 미체결로 끝나 회차만 소비될 수 있다. 3배 레버리지 ETF 는
 # 호가 스프레드가 있으니 슬리피지는 감수하는 선택이다.
 # NAMUH_ORDER_TYPE 으로 바꿀 수 있다 (00/03/12).
-DEFAULT_ORDER_TYPE = (os.getenv("NAMUH_ORDER_TYPE") or ORD_MARKET).strip()
+# 기본을 지정가로 둔다.
+#
+# 모의투자 계좌는 시장가를 아예 받지 않는다 — 첫 실주문이 그대로 거부됐다
+# ("14650 모의투자 지정가만 가능한 상품입니다"). 실계좌에서도 3배 레버리지
+# ETF 를 시장가로 던지면 체결가를 통제할 수 없다. 현재가에서 아래 폭만큼
+# 여유를 준 지정가면 사실상 즉시 체결되면서 최악의 체결가가 묶인다.
+DEFAULT_ORDER_TYPE = (os.getenv("NAMUH_ORDER_TYPE") or ORD_LIMIT).strip()
+
+# 지정가에 줄 여유(%). 매수는 현재가보다 이만큼 높게, 매도는 낮게 건다.
+LIMIT_SLIP_PCT = float(os.getenv("NAMUH_LIMIT_SLIP_PCT") or "0.5")
 
 # 라오어 무한매수법 대표 지원 미국 주식 ETF 및 메이저 종목
 # 이 프로그램은 **미국 3배 레버리지 ETF 만** 다룬다.
@@ -497,6 +506,10 @@ class NamuhAccount:
         price = limit_price if limit_price > 0 else self.get_price(sym)
         if price <= 0:
             raise NamuhError(f"현재가를 조회할 수 없습니다: {sym}")
+        # 상한을 따로 주지 않은 지정가는 현재가 + 여유폭으로 건다. 이 값이
+        # 수량 계산의 기준도 되므로, 최악의 체결가로 사도 배정액을 넘지 않는다.
+        if limit_price <= 0 and order_type != ORD_MARKET:
+            price = round(price * (1 + LIMIT_SLIP_PCT / 100.0), 2)
 
         if units > 0:
             qty = int(units)
@@ -574,9 +587,10 @@ class NamuhAccount:
         # 접수됐다고 체결된 것이 아니다. 실제 보유 수량 변화로 확인한다.
         filled = self._await_fill(sym, qty_before, qty, "매수")
         if filled <= 0:
+            note = self._withdraw_unfilled(order_id, sym, order_type)
             raise NamuhError(
                 f"매수 주문({order_id})이 체결되지 않았습니다 — {ORDER_TYPE_NAMES.get(order_type, order_type)} "
-                f"${price:,.2f}. 장부를 바꾸지 않습니다.")
+                f"${price:,.2f}. 장부를 바꾸지 않습니다.{note}")
         return {
             "orderId": order_id,
             "ticker": sym,
@@ -627,6 +641,21 @@ class NamuhAccount:
         return {"cancelOrderId": new_id, "originalOrderId": str(order_id),
                 "ticker": sym, "rspCd": rsp_cd}
 
+    def _withdraw_unfilled(self, order_id: Any, sym: str, order_type: str) -> str:
+        """즉시 체결을 기대한 주문이 안 붙었으면 거둬들인다.
+
+        지정가는 안 붙어도 거래소에 그대로 남는다. 장부는 '안 샀다' 인데
+        주문은 살아 있으니, 봉마다 주문이 쌓이고 나중에 한꺼번에 체결된다.
+        LOC 는 원래 마감에 붙는 것이라 여기서 취소하지 않는다.
+        """
+        if order_type == ORD_LOC:
+            return ""
+        try:
+            self.cancel_order(order_id, sym)
+            return " 미체결 주문은 취소했습니다."
+        except Exception as e:
+            return f" 미체결 주문 취소도 실패했습니다({e}) — 나무증권 앱에서 확인하세요."
+
     def _await_fill(self, sym: str, qty_before: float, want: float,
                     what: str, tries: int = 6, wait: float = 1.0) -> float:
         """주문 뒤 보유 수량이 얼마나 변했는지 확인한다 (실체결 수량).
@@ -651,11 +680,14 @@ class NamuhAccount:
         return max(0.0, moved)
 
     def market_sell(self, ticker: str, units: float,
-                    order_type: str = "") -> Dict[str, Any]:
+                    order_type: str = "", limit_price: float = 0.0) -> Dict[str, Any]:
         """미국 주식 매도 (전량 또는 쿼터 매도)."""
         sym = ticker.upper().strip()
         order_type = (order_type or DEFAULT_ORDER_TYPE).strip()
-        price = self.get_price(sym)
+        price = limit_price if limit_price > 0 else self.get_price(sym)
+        if limit_price <= 0 and order_type != ORD_MARKET:
+            # 매도는 현재가보다 낮게 걸어야 즉시 붙는다.
+            price = round(price * (1 - LIMIT_SLIP_PCT / 100.0), 2)
 
         # 없는 주식을 팔지 않는다. 예전에는 max(1, int(units)) 라
         # 0.4주 보유에도 1주 매도 주문을 냈다.
@@ -720,10 +752,11 @@ class NamuhAccount:
 
         filled = self._await_fill(sym, qty_before, qty, "매도")
         if filled <= 0:
+            note = self._withdraw_unfilled(order_id, sym, order_type)
             raise NamuhError(
                 f"매도 주문({order_id})이 체결되지 않았습니다 — "
                 f"{ORDER_TYPE_NAMES.get(order_type, order_type)} ${price:,.2f}. "
-                f"장부를 바꾸지 않습니다.")
+                f"장부를 바꾸지 않습니다.{note}")
         return {
             "orderId": order_id,
             "ticker": sym,
