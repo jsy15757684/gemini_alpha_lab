@@ -693,7 +693,20 @@ check("미체결 주문은 재시작을 넘어 살아남는다",
 _LOC["qty"], _LOC["avg"] = 12.0, (4 * 50.0 + 8 * 48.0) / 12
 _orig_sd, _orig_lw = _ms_mod.session_date, _ms_mod.loc_window
 _ms_mod.session_date = lambda *a, **k: "2026-09-22"
-_ms_mod.loc_window = lambda *a, **k: {"past": True, "sessionDate": "2026-09-22"}
+_ms_mod.loc_window = lambda *a, **k: {"past": True, "pastClose": True, "sessionDate": "2026-09-22"}
+
+# 접수 창이 닫혔다고 해서 체결된 게 아니다. 마감 전에는 정산하면 안 된다.
+_same = TradingBot.restore(_lb.snapshot(), None, _LocBroker())
+_ms_mod.session_date = lambda *a, **k: "2026-09-21"          # 아직 같은 세션
+_ms_mod.loc_window = lambda *a, **k: {"past": True, "pastClose": False,
+                                      "sessionDate": "2026-09-21"}
+_same._settle_pending_loc()
+check("접수 마감만으로는 정산하지 않는다 (체결은 장 마감에 일어난다)",
+      len(_same.pending_orders) == 2 and _same.pos.turn == 1,
+      "미체결로 오판하면 마감에 들어온 물량을 장부가 놓친다")
+_ms_mod.session_date = lambda *a, **k: "2026-09-22"
+_ms_mod.loc_window = lambda *a, **k: {"past": True, "pastClose": True, "sessionDate": "2026-09-22"}
+
 _restored._settle_pending_loc()
 check("체결가를 잔고 변화로 정확히 역산한다",
       _restored.pos.units == 12.0 and abs(_restored.pos.entryPrice - 48.6667) < 0.01,

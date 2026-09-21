@@ -784,9 +784,11 @@ class TradingBot:
         from services import market_schedule as ms
         now_session = ms.session_date()
         win = ms.loc_window()
-        # 같은 세션이고 아직 접수 창이 안 지났으면 정산할 때가 아니다.
+        # 정산은 **장 마감 뒤**다. 접수 창이 닫힌 것(15:48)과 체결된 것
+        # (16:00 동시호가)은 다르다. 접수 마감 기준으로 정산하면 12분 일찍
+        # 잔고를 보고 '미체결' 로 지운 뒤, 마감에 들어온 물량을 놓친다.
         ripe = [o for o in self.pending_orders
-                if o.get("session") != now_session or win["past"]]
+                if o.get("session") != now_session or win.get("pastClose")]
         if not ripe:
             return
         if not (self.namuh_account and self.namuh_account.configured):

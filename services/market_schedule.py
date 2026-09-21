@@ -241,6 +241,8 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
 LOC_WINDOW_OPEN_MIN = 20   # 마감 N분 전에 창이 열린다 (15:40 ET)
 LOC_WINDOW_CLOSE_MIN = 12  # 마감 N분 전에 창이 닫힌다 (15:48 ET)
 LOC_CUTOFF_MIN = 10        # 거래소 접수 마감 (15:50 ET) — 취소도 여기까지
+# 체결은 마감 동시호가에서 일어난다. 잔고에 반영될 여유를 조금 둔다.
+LOC_SETTLE_GRACE_MIN = 5   # 장 마감 + N분이 지나야 정산한다
 
 
 def session_date(now_dt: Optional[datetime] = None) -> str:
@@ -263,9 +265,15 @@ def loc_window(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
     shuts_at = close_et - timedelta(minutes=LOC_WINDOW_CLOSE_MIN)
 
     tradable = st["status"] in ("OPEN", "PRE_MARKET", "AFTER_MARKET")
+    settles_at = close_et + timedelta(minutes=LOC_SETTLE_GRACE_MIN)
     return {
         "in": bool(tradable and opens_at <= now_et < shuts_at),
+        # 접수 창이 닫혔다 ≠ 체결됐다. LOC 는 마감 동시호가에서 붙는다.
+        # 이 둘을 섞으면 접수 12분 뒤에 '미체결' 로 오판하고, 정작 마감에
+        # 체결된 물량은 장부에 영영 안 들어온다.
         "past": now_et >= shuts_at,
+        "pastClose": now_et >= settles_at,
+        "settlesAtEt": settles_at.strftime("%H:%M"),
         "sessionDate": session_date(now_et),
         "opensAtEt": opens_at.strftime("%H:%M"),
         "shutsAtEt": shuts_at.strftime("%H:%M"),
