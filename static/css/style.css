@@ -97,6 +97,12 @@ select.input{cursor:pointer}
 
 .container{max-width:1180px; margin:0 auto; padding:1.2rem 1.1rem 3rem}
 .grid-2{display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr); gap:1rem}
+
+/* 봇 탭만 비율을 바꾼다. 가동 폼은 드롭다운 몇 개라 좁아도 되지만, 봇 카드는
+   넓어야 통계 8칸이 한 줄에 들어간다. 반반으로 두면 두 줄로 접혀 카드가
+   100px 씩 길어지고, 3대만 띄워도 화면을 넘긴다. */
+#panel-bots > .grid-2{grid-template-columns:minmax(320px,400px) minmax(0,1fr)}
+@media (max-width:1100px){ #panel-bots > .grid-2{grid-template-columns:minmax(0,1fr)} }
 @media (max-width:900px){.grid-2{grid-template-columns:1fr}}
 
 .card{background:var(--surface); border:1px solid var(--line); border-radius:12px; padding:1.1rem}
@@ -121,21 +127,29 @@ select.input{cursor:pointer}
 .empty{padding:1.4rem; text-align:center; color:var(--faint); font-size:.86rem}
 
 /* 봇 카드 */
-.bot-list{display:flex; flex-direction:column; gap:.7rem; max-height:640px; overflow-y:auto}
-.bot{border:1px solid var(--line); border-radius:10px; padding:.8rem; background:var(--surface-2)}
-.bot-head{display:flex; justify-content:space-between; align-items:center; gap:.5rem; flex-wrap:wrap}
-.bot-title{font-weight:700; font-size:.95rem}
-.badge{font-size:.66rem; font-weight:700; letter-spacing:.06em; padding:.12rem .42rem; border-radius:4px}
+.bot-list{display:flex; flex-direction:column; gap:.6rem;
+  max-height:calc(100vh - 215px); min-height:240px; overflow-y:auto}
+.bot{border:1px solid var(--line); border-radius:10px; padding:.7rem .8rem; background:var(--surface-2)}
+.bot-head{display:flex; justify-content:space-between; align-items:center;
+  gap:.3rem .45rem; flex-wrap:wrap; line-height:1.5}
+.bot-title{font-weight:700; font-size:.88rem}
+.badge{font-size:.63rem; font-weight:700; letter-spacing:.04em; padding:.1rem .36rem; border-radius:4px;
+  white-space:nowrap}
 .badge-live{background:rgba(239,68,68,.18); color:#fca5a5}
 .badge-paper{background:rgba(139,147,165,.18); color:var(--muted)}
 .badge-stop{background:rgba(139,147,165,.12); color:var(--faint)}
-.bot-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(88px,1fr));
-  gap:.5rem; margin:.7rem 0 .5rem}
-.stat-k{font-size:.68rem; color:var(--muted)}
-.stat-v{font-family:var(--mono); font-size:.9rem; font-weight:600; font-variant-numeric:tabular-nums}
-.bot-decision{font-size:.78rem; color:var(--muted); padding:.4rem .55rem; background:var(--bg);
-  border-radius:6px; border:1px solid var(--line)}
-.logs{margin-top:.55rem; max-height:150px; overflow-y:auto; font-family:var(--mono); font-size:.72rem}
+.bot-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(84px,1fr));
+  gap:.35rem .45rem; margin:.45rem 0 .4rem; line-height:1.25}
+.stat-k{font-size:.64rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.stat-v{font-family:var(--mono); font-size:.82rem; font-weight:600; font-variant-numeric:tabular-nums}
+.bot-decision{font-size:.74rem; color:var(--muted); padding:.3rem .5rem; background:var(--bg);
+  border-radius:6px; border:1px solid var(--line);
+  white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.logs{margin-top:.5rem; max-height:150px; overflow-y:auto; font-family:var(--mono); font-size:.72rem}
+.logs.collapsed{display:none}
+.log-toggle{margin-top:.4rem; font-size:.7rem; color:var(--muted); cursor:pointer;
+  user-select:none; display:inline-block; padding:.1rem .3rem; border-radius:4px}
+.log-toggle:hover{color:var(--accent); background:rgba(255,255,255,.04)}
 .logline{display:flex; gap:.5rem; padding:.14rem 0; border-bottom:1px solid rgba(255,255,255,.03)}
 .logline .t{color:var(--faint); flex:none}
 .lv-BUY{color:var(--up)} .lv-SELL{color:var(--down)} .lv-ORDER{color:var(--accent)}

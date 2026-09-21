@@ -423,6 +423,9 @@ function investedPct(b) {
   return `${Math.round(inv / init * 100)}%`;
 }
 
+// 로그를 펼쳐둔 봇. 목록이 주기적으로 다시 그려져도 펼침 상태를 잃지 않는다.
+const expandedLogs = new Set();
+
 function botCard(b) {
   const live = b.mode === "LIVE";
   const isNamuh = b.broker === "namuh";
@@ -471,6 +474,7 @@ function botCard(b) {
     stratBadge += ` <span class="badge" style="background:rgba(99,102,241,.18); color:#a5b4fc; border:1px solid rgba(99,102,241,.4);" title="라오어 원조 반반 LOC 매수 모드 (전반전 평단/평단+5% · 후반전 평단)">반반LOC</span>`;
   }
 
+  const open = expandedLogs.has(b.botId);
   const logs = (b.recentLogs || []).map(l =>
     `<div class="logline"><span class="t">${l.time}</span><span class="lv-${l.level}">${l.message}</span></div>`).join("");
   return `<div class="bot">
@@ -506,8 +510,9 @@ function botCard(b) {
       <div><div class="stat-k">거래 (익절)</div><div class="stat-v">${b.totalTrades}회</div></div>
       <div><div class="stat-k">승률</div><div class="stat-v">${b.totalTrades ? b.winRatePct + "%" : "-"}</div></div>
     </div>
-    <div class="bot-decision">판단: ${b.lastDecision || "-"}</div>
-    <div class="logs">${logs}</div>
+    <div class="bot-decision" title="${escapeHtml(b.lastDecision || "-")}">판단: ${escapeHtml(b.lastDecision || "-")}</div>
+    <div class="log-toggle" data-logs="${b.botId}">${open ? "▾" : "▸"} 로그 ${(b.recentLogs || []).length}줄</div>
+    <div class="logs${open ? "" : " collapsed"}" data-loglist="${b.botId}">${logs}</div>
   </div>`;
 }
 
@@ -562,6 +567,15 @@ async function loadBots() {
       ? bots.map(botCard).join("")
       : `<div class="empty">가동 중인 봇이 없습니다.</div>`;
     const byId = Object.fromEntries(bots.map(b => [b.botId, b]));
+    $("botList").querySelectorAll("[data-logs]").forEach(el =>
+      el.onclick = () => {
+        const id = el.dataset.logs;
+        const box = $("botList").querySelector(`[data-loglist="${id}"]`);
+        if (!box) return;
+        const nowOpen = box.classList.toggle("collapsed") === false;
+        if (nowOpen) expandedLogs.add(id); else expandedLogs.delete(id);
+        el.textContent = `${nowOpen ? "▾" : "▸"} 로그 ${box.children.length}줄`;
+      });
     $("botList").querySelectorAll("[data-stop]").forEach(el =>
       el.onclick = () => actOnBot("/api/bot/stop", el.dataset.stop,
         liquidationNotice(byId[el.dataset.stop] || {}, "정지"),
