@@ -187,14 +187,6 @@ function readParams(prefix) {
       p.raoerTrendMode = $("bp_raoerTrendMode")?.value || "off";
       p.useMacroGear = $("bp_useMacroGear") ? $("bp_useMacroGear").checked : true;
       p.locMode = $("bp_locMode")?.value || "half_half";
-    } else if (stratType === "usdt_premium") {
-      p.strategyType = "usdt_premium";
-      p.useGemini = false;
-      p.usdtBuyPremiumPct = parseFloat($("bp_usdtBuyPremiumPct")?.value || "-0.8");
-      p.usdtSellPremiumPct = parseFloat($("bp_usdtSellPremiumPct")?.value || "2.0");
-      // 이 전략의 기본 손절은 0(사용 안 함)이다. 공용 기본값(1.8)이 그대로
-      // 넘어가면 손절-재매수 루프에 빠진다.
-      p.stopLossPct = parseFloat($("bp_usdtStopLossPct")?.value || "0");
     } else {
       p.strategyType = "quant_ai";
       p.useGemini = false;
@@ -358,7 +350,6 @@ async function deployBot() {
   setAlert($("deployError"), null);
   const mode = $("botMode").value;
   const isStock = currentMarket === "stock";
-  const isUsdt = $("botStrategyType")?.value === "usdt_premium";
 
   // 만들기 **전에** 무엇이 만들어지는지 그대로 보여준다.
   //
@@ -371,7 +362,7 @@ async function deployBot() {
     : "모의투자 — 주문이 나가지 않습니다";
   const curr = isStock ? "$" : "원";
   const summary = ["이 설정으로 봇을 만듭니다.", ""];
-  summary.push(`종목      : ${isUsdt ? "USDT" : $("botCoin").value}`);
+  summary.push(`종목      : ${$("botCoin").value}`);
   summary.push(`매매 모드 : ${modeLabel}`);
   summary.push(`운용 자본 : ${curr === "$" ? "$" : ""}${Number($("botCapital").value || 0).toLocaleString()}${curr === "원" ? "원" : ""}`);
   if (params.strategyType === "raoer_infinite") {
@@ -395,11 +386,11 @@ async function deployBot() {
     await api("/api/bot/deploy", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        coin: isUsdt ? "USDT" : $("botCoin").value,
+        coin: $("botCoin").value,
         broker: isStock ? "namuh" : "bithumb",
         // 캔들을 안 쓰는 전략이라 화면에서 칸을 숨겼다. 서버는 유효한 값을
         // 요구하므로 고정값을 보낸다 (캔들 갱신 주기로만 쓰인다).
-        interval: isUsdt ? "1h" : $("botInterval").value, mode,
+        interval: $("botInterval").value, mode,
         capitalKrw: parseFloat($("botCapital").value), params,
       }),
     });
@@ -962,44 +953,9 @@ function toggleStrategyUI() {
   const raoerAiSub = $("raoerAiSubOptions");
   const raoerUseAiCheck = $("bp_raoerUseAi");
 
-  const usdtOpts = $("usdtBotOptions");
-  if (usdtOpts) usdtOpts.classList.toggle("hidden", type !== "usdt_premium");
-
-  // USDT 환차익은 대상이 USDT 로 고정된다. 다른 코인을 고른 채로
-  // 가동하면 엉뚱한 종목에 환차익 로직이 걸린다.
-  //
-  // USDT 는 자동매매 종목 목록(/api/coins)에 없다 — 차익거래 전용이라
-  // 빼 뒀다. 그래서 칸을 잠그기만 하면 라벨은 'USDT 고정' 인데 화면에는
-  // 비트코인이 그대로 남아, 무엇이 걸리는지 알 수 없었다.
-  // 이 전략을 고를 때만 USDT 를 넣어 실제로 보여주고, 빠져나가면 되돌린다.
-  const coinSel = $("botCoin");
-  const fixed = type === "usdt_premium";
-  if (coinSel) {
-    let usdtOpt = coinSel.querySelector('option[value="USDT"]');
-    if (fixed) {
-      if (!usdtOpt) {
-        usdtOpt = document.createElement("option");
-        usdtOpt.value = "USDT";
-        usdtOpt.textContent = "테더 (USDT)";
-        coinSel.appendChild(usdtOpt);
-      }
-      if (coinSel.value !== "USDT") {
-        coinSel.dataset.prevCoin = coinSel.value;
-        coinSel.value = "USDT";
-      }
-    } else if (usdtOpt) {
-      usdtOpt.remove();
-      coinSel.value = coinSel.dataset.prevCoin || coinSel.options[0]?.value || "";
-    }
-    coinSel.disabled = fixed;
-    const label = coinSel.closest("div")?.querySelector(".label");
-    if (label) label.textContent = fixed ? "대상 코인 (USDT 고정)" : "코인";
-  }
-
-  // 이 전략은 캔들을 판단에 쓰지 않는다 — 현재가와 공시환율만 본다.
-  // 고를 이유가 없는 칸을 남겨두면 '설정했는데 반영이 안 된다' 로 읽힌다.
-  const intervalField = $("botIntervalField");
-  if (intervalField) intervalField.classList.toggle("hidden", fixed);
+  // 캔들 간격 칸의 표시 여부는 체결 방식(원전 LOC 는 거래일 단위라 안 씀)이
+  // 정한다. renderLocModeHint 가 그 판단을 한 곳에서 한다.
+  renderLocModeHint();
 
   const isRaoer = (type === "raoer_v4" || type === "raoer_v1");
   if (raoerOpts) raoerOpts.classList.toggle("hidden", !isRaoer);
@@ -1594,213 +1550,12 @@ async function boot() {
   }
   if (currentMarket === "stock") setMarket("stock");
 
-  // ───────── 차익거래 (Arbitrage) 핸들러 ─────────
-  // 값을 못 받은 항목은 0 이 아니라 '—' 로 보여준다.
-  // 0 으로 그리면 '김프 0%' 처럼 실제 관측값으로 오해된다.
-  function dashWon(v) { return (v === null || v === undefined) ? "—" : won(v) + "원"; }
-  function dashPct(v) { return (v === null || v === undefined) ? "—" : pct(v); }
-  function dashUsd(v) { return (v === null || v === undefined) ? "—" : "$" + Number(v).toLocaleString(); }
-
-  async function loadArbitrageRadar() {
-    try {
-      const data = await api("/api/arbitrage/radar");
-      if (!data) return;
-
-      const errBox = $("arbDataError");
-      if (errBox) {
-        if (data.dataOk === false && (data.errors || []).length) {
-          errBox.innerHTML = "<b>일부 지표를 받지 못했습니다.</b> 받지 못한 값은 —  로 표시합니다.<br>"
-            + data.errors.map(e => `· ${e}`).join("<br>");
-          errBox.classList.remove("hidden");
-        } else {
-          errBox.classList.add("hidden");
-        }
-      }
-
-      $("arbOfficialFx").textContent = dashWon(data.officialFxRate);
-      // 이 환율이 언제 값인지 밝힌다. 주말·공휴일에는 직전 영업일 값이 그대로
-      // 남아, 24시간 도는 USDT 와 비교한 프리미엄이 착시가 된다.
-      const fxEl = $("arbFxAsOf");
-      if (fxEl) {
-        if (data.officialFxStale) {
-          const age = data.officialFxAgeDays;
-          fxEl.innerHTML = `<span class="down">⏸ 기준 ${escapeHtml(data.officialFxAsOf || "?")}`
-            + (age ? ` (${age}일 전)` : "") + ` · 외환시장 휴장</span>`;
-        } else {
-          fxEl.textContent = data.officialFxAsOf ? `기준 ${data.officialFxAsOf}` : "";
-        }
-      }
-      // 코인별 김치프리미엄도 같은 공시환율로 나눈 값이라 함께 영향을 받는다.
-      // 무전송 스프레드(빗썸↔바이낸스 가격 비)는 환율을 쓰지 않아 영향이 없다.
-      const kimEl = $("arbKimchiNote");
-      if (kimEl) {
-        kimEl.textContent = data.officialFxStale
-          ? "— 김치프리미엄 열은 멈춘 환율 기준입니다 (무전송 스프레드는 환율과 무관)" : "";
-      }
-      const premEl = $("arbUsdtPremNote");
-      if (premEl) {
-        premEl.textContent = data.officialFxStale
-          ? "환율이 멈춰 있어 실제 괴리가 아닙니다" : "";
-        premEl.className = data.officialFxStale ? "muted down" : "muted";
-        premEl.style.fontSize = "0.68rem";
-      }
-      $("arbUsdtPrice").textContent = dashWon(data.bithumbUsdtPrice);
-      $("arbUsdtPrem").textContent = dashPct(data.usdtPremiumPct);
-      $("arbUsdtPrem").className = "metric-v " + (data.usdtPremiumPct === null ? "" : cls(data.usdtPremiumPct));
-      $("arbRecommendation").textContent = data.usdtStatus;
-      $("arbRecommendation").className = "metric-v";
-
-      const tbody = $("arbRadarBody");
-      if (data.coins && data.coins.length > 0) {
-        tbody.innerHTML = data.coins.map(c => `
-          <tr>
-            <td><b>${c.coin}</b> <span class="muted small">${c.name}</span></td>
-            <td>${dashWon(c.bithumbPrice)}</td>
-            <td>${dashUsd(c.binanceUsdPrice)}</td>
-            <td class="${c.kimchiPremiumPct === null ? "" : cls(c.kimchiPremiumPct)}"><b>${dashPct(c.kimchiPremiumPct)}</b></td>
-            <td class="${c.spatialSpreadPct === null ? "" : cls(c.spatialSpreadPct)}">${dashPct(c.spatialSpreadPct)}</td>
-          </tr>
-        `).join("");
-      }
-    } catch (e) {
-      console.warn("지표 갱신 실패:", e);
-    }
-  }
-
-  async function loadArbitrageBots() {
-    try {
-      const res = await api("/api/arbitrage/bots");
-      const list = $("arbBotList");
-      if (!res.bots || res.bots.length === 0) {
-        list.innerHTML = '<div class="empty">가동 중인 시뮬레이터가 없습니다.</div>';
-        $("arbActiveBotCount").textContent = "0대 가동 중";
-        return;
-      }
-      $("arbActiveBotCount").textContent = `${res.bots.filter(b => b.isRunning).length}대 가동 중`;
-      list.innerHTML = res.bots.map(b => {
-        const stratNames = {
-          usdt_swap: "USDT 환차익 스왑",
-          spatial_dual: "무전송 양방향"
-        };
-        return `
-          <div class="bot-card ${b.isRunning ? '' : 'paused'}" style="margin-bottom: 10px;">
-            <div class="bot-card-head">
-              <div>
-                <span class="badge badge-paper" title="실제 주문은 나가지 않습니다">시뮬레이션</span>
-                <b style="font-size: 0.95rem; margin-left: 6px;">${stratNames[b.strategy] || b.strategy}</b>
-                <span class="muted small">(${b.coin})</span>
-              </div>
-              <div>
-                ${b.isRunning
-                    ? `<button class="btn btn-danger btn-xs" onclick="window.stopArbBot('${b.botId}')">정지</button>`
-                    : `<span class="muted small" style="margin-right:6px;">정지됨</span><button class="btn btn-ghost btn-xs" onclick="window.deleteArbBot('${b.botId}')">삭제</button>`}
-              </div>
-            </div>
-            <div class="bot-body" style="font-size: 0.85rem; margin-top: 8px;">
-              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                <span class="muted">가상 자본:</span> <b>${won(b.initialKrw)}원</b>
-                <span class="muted">평가액:</span>
-                <b class="${(b.totalReturnPct === null || b.totalReturnPct === undefined) ? '' : cls(b.totalReturnPct)}">${
-                  (b.equityKrw === null || b.equityKrw === undefined)
-                    ? '— (시세 대기)'
-                    : `${won(b.equityKrw)}원 (${pct(b.totalReturnPct)})`}</b>
-              </div>
-              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                <span class="muted">확정 손익:</span> <b class="${cls(b.realizedPnl)}">${won(b.realizedPnl)}원 (${pct(b.returnPct)})</b>
-                <span class="muted">확정 손익률:</span> <span class="${cls(b.returnPct)}">${pct(b.returnPct)}</span>
-              </div>
-              <div style="display: flex; justify-content: space-between; margin-bottom: 4px;">
-                <span class="muted">국내(가상):</span> <span>${won(b.cashKrw)}원 / ${b.coinUnitsDomestic} ${b.coin}</span>
-                <span class="muted">해외(가상):</span> <span>$${b.foreignCashUsdt} USDT / ${b.foreignUnits} ${b.coin}</span>
-              </div>
-              <div style="padding: 6px 8px; background: rgba(0,0,0,0.2); border-radius: 4px; margin-top: 6px; font-size: 0.8rem;">
-                <b>상태:</b> ${b.lastStatus}
-              </div>
-            </div>
-          </div>
-        `;
-      }).join("");
-    } catch (e) {
-      console.warn("차익거래 봇 목록 조회 실패:", e);
-    }
-  }
-
-  window.deleteArbBot = async function(botId) {
-    if (!confirm("이 시뮬레이터를 삭제하시겠습니까? 기록이 사라집니다.")) return;
-    try {
-      await api("/api/arbitrage/delete", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ botId })
-      });
-      await loadArbitrageBots();
-    } catch (e) {
-      alert(e.message);
-    }
-  };
-
-  window.stopArbBot = async function(botId) {
-    if (!confirm("시뮬레이터를 정지합니다.\n실제 주문은 원래 나가지 않으므로 거래소에는 영향이 없습니다.\n\n계속하시겠습니까?")) return;
-    try {
-      await api("/api/arbitrage/stop", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ botId })
-      });
-      await loadArbitrageBots();
-    } catch (e) {
-      alert(e.message);
-    }
-  };
-
-  // 전략 선택에 따른 옵션 표시 전환
-  if ($("arbStrategyType")) {
-    $("arbStrategyType").onchange = () => {
-      const s = $("arbStrategyType").value;
-      $("cfg_usdt_swap").classList.toggle("hidden", s !== "usdt_swap");
-      $("cfg_spatial_dual").classList.toggle("hidden", s !== "spatial_dual");
-      $("arbCoinGroup").classList.toggle("hidden", s === "usdt_swap");
-    };
-  }
-
-  if ($("refreshArbitrageBtn")) $("refreshArbitrageBtn").onclick = () => { loadArbitrageRadar(); loadArbitrageBots(); };
-
-  if ($("deployArbitrageBtn")) {
-    $("deployArbitrageBtn").onclick = async () => {
-      const strategy = $("arbStrategyType").value;
-      const coin = $("arbCoin").value;
-      const mode = "SIM";              // 실주문 경로가 없다. 서버도 LIVE 를 거부한다.
-      const capitalKrw = Number($("arbCapital").value);
-
-      const config = {
-        usdtBuyThreshold: Number($("cfg_usdtBuy")?.value || -0.8),
-        usdtSellThreshold: Number($("cfg_usdtSell")?.value || 2.0),
-        entryKimchiPct: Number($("cfg_kimchiEntry")?.value || 1.0),
-        exitKimchiPct: Number($("cfg_kimchiExit")?.value || 5.0),
-        triggerSpreadPct: Number($("cfg_spatialTrigger")?.value || 0.4),
-      };
-
-      try {
-        await api("/api/arbitrage/deploy", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ strategy, coin, mode, capitalKrw, config })
-        });
-        alert("시뮬레이션을 시작했습니다. 실제 주문은 나가지 않습니다.");
-        await loadArbitrageBots();
-      } catch (e) {
-        alert(e.message);
-      }
-    };
-  }
-
   $("tabs").querySelectorAll(".tab").forEach(tab => tab.onclick = () => {
     $("tabs").querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
     tab.classList.add("active");
     document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
     $(tab.dataset.panel).classList.remove("hidden");
     if (tab.dataset.panel === "panel-gemini") loadGeminiScan();
-    if (tab.dataset.panel === "panel-arbitrage") { loadArbitrageRadar(); loadArbitrageBots(); }
     if (tab.dataset.panel === "panel-trades") loadTradeHistory();
     if (tab.dataset.panel === "panel-chart") loadChart();
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadGeminiStatus(); loadEgressIp(); }
@@ -1809,11 +1564,9 @@ async function boot() {
   if ($("usMarketPill")) $("usMarketPill").onclick = () => loadUsMarketStatus();
   if ($("macroGearPill")) $("macroGearPill").onclick = () => loadMacroRegime();
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadMacroRegime(), loadGeminiStatus(), loadGeminiScan(), loadArbitrageRadar(), loadArbitrageBots()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadMacroRegime(), loadGeminiStatus(), loadGeminiScan()]);
   timers.push(
     setInterval(loadPrices, 10000),
-    setInterval(loadArbitrageRadar, 8000),
-    setInterval(loadArbitrageBots, 6000),
     setInterval(loadBots, 8000),
     setInterval(loadTradeHistory, 10000),
     setInterval(loadNamuhAccount, 30000),

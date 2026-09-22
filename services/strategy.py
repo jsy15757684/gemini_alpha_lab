@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional
 @dataclass
 class StrategyParams:
     # ── 전략 유형 ──
-    # "quant_ai" (RSI/MA/Gemini AI 퀀트) | "raoer_infinite" (라오어 무한매수법) | "usdt_premium"
+    # "quant_ai" (RSI/MA 퀀트) | "raoer_infinite" (라오어 무한매수법)
     strategyType: str = "quant_ai"
 
     # ── 라오어 무한매수법 파라미터 ──
@@ -60,16 +60,6 @@ class StrategyParams:
 
     # ── 라오어 밸류 리밸런싱 (VR) 파라미터 ──
 
-    # ── USDT 환차익 (usdt_premium) ──────────────────────────
-    # 빗썸 USDT 가격이 서울외환시장 공시환율보다 싸면(역프) 사고,
-    # 비싸지면(김프) 판다. 거래소가 하나뿐이라 양다리 실패가 없다.
-    #
-    # 주의: 이건 무위험 차익거래가 아니다. 손익이 두 갈래다 —
-    #   (1) 프리미엄 변화  (2) 원/달러 환율 변화
-    # 프리미엄이 목표에 닿아도 그동안 환율이 내리면 원화 기준으로 손실일
-    # 수 있다. 사실상 '싸게 산 달러를 들고 있는' 포지션이다.
-    usdtBuyPremiumPct: float = -0.8    # 이 값 이하로 내려가면 매수
-    usdtSellPremiumPct: float = 2.0    # 이 값 이상으로 올라가면 매도
 
     # ── 기존 퀀트 기술지표 파라미터 ──
     rsiPeriod: int = 14
@@ -157,16 +147,12 @@ class StrategyParams:
             self.raoerTrendMode = "off"
         if self.locMode not in ("half_half", "half_half_now", "single"):
             self.locMode = "half_half"
-        if self.strategyType not in ("quant_ai", "raoer_infinite", "usdt_premium"):
+        if self.strategyType not in ("quant_ai", "raoer_infinite"):
             self.strategyType = "quant_ai"
         self.splitCount = max(5, min(100, self.splitCount))
         self.targetProfitPct = max(0.5, min(100.0, self.targetProfitPct))
         self.quarterCutPct = max(5.0, min(50.0, self.quarterCutPct))
         # 매수선이 매도선보다 높으면 사자마자 파는 무한 루프가 된다.
-        self.usdtBuyPremiumPct = max(-10.0, min(10.0, self.usdtBuyPremiumPct))
-        self.usdtSellPremiumPct = max(-10.0, min(20.0, self.usdtSellPremiumPct))
-        if self.usdtSellPremiumPct <= self.usdtBuyPremiumPct:
-            self.usdtSellPremiumPct = self.usdtBuyPremiumPct + 0.5
 
         self.rsiPeriod = max(2, min(100, self.rsiPeriod))
         self.fastMa = max(2, min(200, self.fastMa))

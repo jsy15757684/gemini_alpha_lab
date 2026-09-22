@@ -57,10 +57,9 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service, arbitrage, spread_recorder, namuh
+from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh
 from services.gemini_service import gemini_keystore
 from services.keystore import keystore, namuh_keystore
-from services.arbitrage import arbitrage_manager
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, LiquidationFailed, bot_manager
 from services.envconf import env_int
@@ -119,12 +118,6 @@ def _startup_log():
     # 저장된 봇을 복원한다. LIVE 포지션은 거래소 실제 보유량과 대조한 뒤에만 재가동한다.
     global RESTORE_SUMMARY
     RESTORE_SUMMARY = bot_manager.restore(keystore.account, namuh_keystore.account)
-
-    # 차익거래 시뮬레이터도 복원한다. 실주문이 없으니 거래소 대조는 없다.
-    try:
-        arbitrage_manager.restore()
-    except Exception as e:
-        logger.error(f"차익거래 시뮬레이터 복원 실패: {e}")
 
     # 거래소 간 괴리를 계속 기록한다. 주문은 내지 않고 공개 호가만 읽는다.
     # 무전송 양방향을 구현할지 판단할 근거를 자금 0원으로 모으기 위한 것이다.
@@ -313,7 +306,7 @@ def deploy_bot(req: DeployRequest):
     # 제거한 전략(기술적 지표 · 퀀트 하이브리드 · 밸류리밸런싱 VR ·
     # Gemini AI 전용)은 설정 화면도 함께 없앴다. API 로 들어오면 사용자가
     # 본 적 없는 기본값으로 실매매가 나간다. 그 함정을 만들지 않는다.
-    _allowed = ("raoer_infinite", "usdt_premium")
+    _allowed = ("raoer_infinite",)
     _st = (req.params or {}).get("strategyType")
     if _st and _st not in _allowed:
         raise HTTPException(400,
@@ -332,14 +325,6 @@ def deploy_bot(req: DeployRequest):
         raise HTTPException(400,
             "퀀트 하이브리드 모드는 제거됐습니다. Gemini 는 'ai_only' 로만 가동합니다 "
             "(진입 규칙 설정 화면이 없어 사용자가 보지 못한 조건으로 매매하게 됩니다).")
-
-    # USDT 환차익은 '빗썸 USDT 가격 vs 원/달러 공시환율' 을 비교한다.
-    # 다른 코인에 걸면 코인 가격을 환율과 비교하게 되어 의미 없는 봇이 된다.
-    # 화면은 USDT 로 고정하지만 API 로 직접 호출하면 막히지 않았다.
-    if (req.params or {}).get("strategyType") == "usdt_premium" and coin != "USDT":
-        raise HTTPException(400,
-            f"USDT 환차익 전략은 대상이 USDT 여야 합니다 (요청: {coin}). "
-            f"이 전략은 빗썸 USDT 가격과 원/달러 공시환율의 차이를 이용합니다.")
 
     mode = req.mode.upper()
     if mode not in ("PAPER", "LIVE"):
@@ -676,75 +661,6 @@ def gemini_analyze(req: GeminiAnalyzeRequest):
 def gemini_scan(interval: str = "1h"):
     """5종 코인 전체 실시간 AI 스캔 및 추천 순위."""
     return gemini_service.scan_all_coins(interval=interval)
-
-
-# ─────────────── 차익거래 지표 모니터 · 전략 시뮬레이터 ───────────────
-
-class ArbitrageDeployRequest(BaseModel):
-    strategy: str = "usdt_swap"  # "usdt_swap" | "spatial_dual"
-    coin: str = "USDT"
-    # mode 는 받기만 하고 무시한다. 이 기능에 실주문 경로가 없기 때문이다.
-    # 과거 클라이언트가 "LIVE" 를 보내도 시뮬레이션으로만 동작한다.
-    mode: str = "SIM"
-    capitalKrw: float = 1_000_000.0
-    config: Dict[str, Any] = {}
-
-
-@app.get("/api/arbitrage/radar")
-def arbitrage_radar():
-    """테더 프리미엄·김프·무전송 괴리 실시간 지표. 조회 실패 항목은 null 로 오고 errors 에 사유가 담긴다."""
-    return arbitrage.get_arbitrage_radar()
-
-
-@app.get("/api/arbitrage/bots")
-def arbitrage_list_bots():
-    """가동 중인 차익거래 시뮬레이터 목록."""
-    return {"bots": arbitrage_manager.list_bots()}
-
-
-@app.post("/api/arbitrage/deploy")
-def arbitrage_deploy(req: ArbitrageDeployRequest):
-    """차익거래 시뮬레이터 생성 및 가동. 실주문은 나가지 않는다."""
-    if req.capitalKrw < 10_000:
-        raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
-    
-    valid_strats = ("usdt_swap", "spatial_dual")
-    if req.strategy not in valid_strats:
-        raise HTTPException(400, f"지원하지 않는 차익거래 전략: {req.strategy}")
-
-    if req.mode.upper() == "LIVE":
-        raise HTTPException(400,
-            "차익거래는 시뮬레이션만 지원합니다. 해외 거래소 주문 연동이 없어 "
-            "헤지 다리를 만들 수 없고, 국내 다리만 실주문으로 내면 무위험이 아니라 "
-            "헤지 없는 단방향 매매가 됩니다.")
-
-    target_coin = "USDT" if req.strategy == "usdt_swap" else req.coin
-    bot = arbitrage_manager.create_bot(
-        strategy=req.strategy,
-        coin=target_coin,
-        capital_krw=req.capitalKrw,
-        config=req.config,
-    )
-    return {"success": True, "bot": bot.status(), "simulated": True}
-
-
-@app.post("/api/arbitrage/stop")
-def arbitrage_stop(req: BotIdRequest):
-    """차익거래 시뮬레이터 정지."""
-    ok = arbitrage_manager.stop_bot(req.botId)
-    if not ok:
-        raise HTTPException(404, f"해당 시뮬레이터를 찾을 수 없습니다: {req.botId}")
-    return {"success": True}
-
-
-@app.post("/api/arbitrage/delete")
-def arbitrage_delete(req: BotIdRequest):
-    """차익거래 시뮬레이터 삭제. 이제 재시작에도 남으므로 지울 수단이 필요하다."""
-    ok = arbitrage_manager.delete_bot(req.botId)
-    if not ok:
-        raise HTTPException(404, f"해당 시뮬레이터를 찾을 수 없습니다: {req.botId}")
-    return {"success": True}
-
 
 
 # ───────────────────────── 정적 파일 ─────────────────────────
