@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=5.1.0">
+<link rel="stylesheet" href="/static/css/style.css?v=5.1.1">
 </head>
 <body>
 
@@ -126,8 +126,8 @@
           <div class="strategy-selector" style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
             <label class="label" style="font-weight: 600; margin-bottom: 8px;">🤖 전략 엔진 선택</label>
             <select class="input" id="botStrategyType" style="margin-bottom: 10px;">
-              <option value="raoer_v4" selected>🔄 라오어 무한매수법 V4.0 (잔금비례 + 리버스 순환 · 최신 공식)</option>
-              <option value="raoer_v1">🔄 라오어 무한매수법 V1.0 (고정 분할 · 원전)</option>
+              <option value="raoer_v4" selected>🔄 라오어 무한매수법 V4.0 · 잔금비례</option>
+              <option value="raoer_v1">🔄 라오어 무한매수법 V1.0 · 고정 분할</option>
             </select>
 
             <!-- 라오어 무한매수 옵션 -->
@@ -164,13 +164,13 @@
                     <option value="pause_down">하락추세면 회차 쉼</option>
                   </select>
                 </div>
-                <div>
+                <div class="span-2">
                   <label class="label">매수 체결 방식</label>
                   <div class="muted small" id="locModeHint" style="margin-bottom:.3rem"></div>
                   <select class="input" id="bp_locMode">
-                    <option value="half_half" selected>라오어 원전 반반 LOC (마감 20분 전 · 하루 한 번 · 종가 체결)</option>
-                    <option value="half_half_now">반반 지정가 즉시 체결 (봉마다 · 평단 상한)</option>
-                    <option value="single">단일 묶음 매수 (전액 한 건 · 시장가)</option>
+                    <option value="half_half" selected>라오어 원전 반반 LOC · 하루 한 번</option>
+                    <option value="half_half_now">반반 지정가 · 봉마다 즉시 체결</option>
+                    <option value="single">단일 묶음 · 시장가</option>
                   </select>
                 </div>
               </div>

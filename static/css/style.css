@@ -262,3 +262,11 @@ tbody tr:last-child td{border-bottom:none}
 .note[open] > summary{margin-bottom:.4rem}
 .note-info{background:rgba(59,130,246,.09); border:1px solid rgba(59,130,246,.28); color:#93c5fd}
 .note-warn{background:rgba(234,179,8,.09); border:1px solid rgba(234,179,8,.28); color:#fde68a}
+
+/* 드롭다운 글자가 칸보다 길면 잘린다. 잘린 줄은 무슨 설정인지 읽을 수
+   없으므로, 글자를 줄이는 것과 별개로 여유 폭과 말줄임을 함께 준다. */
+select.input{text-overflow:ellipsis; padding-right:1.8rem}
+
+/* 격자 한 줄을 통째로 쓰는 칸. 선택지 글자가 긴 드롭다운에 쓴다 — 반 칸
+   (229px)에 넣으면 '라오어 원전 반반 LOC · 하루 한 번' 이 잘린다. */
+.form-grid > .span-2{grid-column:1 / -1}
