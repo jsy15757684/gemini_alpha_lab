@@ -858,6 +858,19 @@ _st = _ms.get_us_market_status(_dt(2026, 11, 27, 14, 0, tzinfo=_ET))
 check("조기 마감일 14:00 ET 는 장이 닫힌 것으로 본다",
       not _st["isOpen"], f"{_st['status']} — 예전에는 OPEN 이라 주문을 냈다")
 
+# 접수 창은 개장과 함께 열린다. 마감 직전 8분만 열어두면 한 번의 통신
+# 오류가 그날 주문을 통째로 날린다 (실제로 HTTP 429 로 그렇게 됐다).
+_w_open = _ms.loc_window(_dt(2026, 9, 23, 9, 35, tzinfo=_ET))
+_w_mid = _ms.loc_window(_dt(2026, 9, 23, 12, 0, tzinfo=_ET))
+_w_late = _ms.loc_window(_dt(2026, 9, 23, 15, 47, tzinfo=_ET))
+_w_shut = _ms.loc_window(_dt(2026, 9, 23, 15, 49, tzinfo=_ET))
+check("LOC 접수 창이 개장 직후부터 열린다",
+      _w_open["in"] and _w_mid["in"] and _w_late["in"],
+      f"{_w_open['opensAtEt']}~{_w_open['shutsAtEt']} ET (6시간 이상)")
+check("거래소 접수 마감 전에 창을 닫는다",
+      not _w_shut["in"] and _w_shut["cutoffEt"] == "15:50",
+      "15:48 에 닫는다 — 거래소는 15:50 이후 접수도 취소도 안 받는다")
+
 _st2 = _ms.get_us_market_status(_dt(2026, 11, 27, 11, 0, tzinfo=_ET))
 check("조기 마감일 11:00 ET 는 정상 개장이다",
       _st2["isOpen"] and _st2["closeTimeEt"] == "13:00", _st2["reason"])

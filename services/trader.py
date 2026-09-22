@@ -409,7 +409,10 @@ class TradingBot:
                         buy_now = bool(_win["in"] and self.loc_session != _win["sessionDate"])
                         if not buy_now and self.pos.open:
                             self.last_decision = (
-                                f"원전 LOC 대기 — 접수 창 {_win['opensAtKst']} KST "
+                                f"원전 LOC — 오늘 접수 완료, 마감 체결 대기 "
+                                f"(T={self.pos.turn}/{self.params.splitCount})"
+                                if self.loc_session == _win["sessionDate"] else
+                                f"원전 LOC 대기 — 미국장 개장 후 접수합니다 "
                                 f"(T={self.pos.turn}/{self.params.splitCount})")
                     else:
                         buy_now = bool(cur_bar_time and cur_bar_time != self._last_bar_time)

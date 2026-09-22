@@ -232,13 +232,17 @@ def get_us_market_status(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
     }
 
 
-# LOC 접수 창. 마감 20분 전에 열고 12분 전에 닫는다.
+# LOC 접수 창. 개장과 함께 열리고, 거래소 접수 마감 2분 전에 닫는다.
 #
-# NYSE 는 LOC 를 마감 10분 전(정규장 15:50 ET)까지만 받는다. 그 뒤에는
-# 접수도 취소도 되지 않는다. 마감 직전에 내야 그날 움직임이 반영된
-# 평단으로 주문할 수 있으므로 늦게 열되, 접수 마감보다 2분 앞서 닫아
-# 통신 지연에 여유를 둔다. 조기 마감일(13:00)에도 같은 폭으로 움직인다.
-LOC_WINDOW_OPEN_MIN = 20   # 마감 N분 전에 창이 열린다 (15:40 ET)
+# 처음에는 '마감 20분 전' 에만 열었다. 그날 움직임이 반영된 평단으로
+# 주문하려는 의도였는데, 그 전제가 틀렸다 — 평단은 매수해야 변하고
+# 장중에는 움직이지 않는다. 예산(잔금비례)도 마찬가지다. 즉 늦게 내서
+# 얻는 것이 없는데, 8분짜리 단일 실패점만 생겼다. 실제로 첫날 잔고
+# 조회가 HTTP 429 로 한 번 튕기자 그날 주문을 통째로 놓쳤다.
+#
+# 이제 개장 직후부터 낼 수 있다. 실패해도 마감까지 몇 시간이고 다시
+# 시도한다. NYSE 는 LOC 를 마감 10분 전(정규장 15:50 ET)까지만 받고
+# 그 뒤에는 취소도 안 되므로, 2분 앞서 닫는다.
 LOC_WINDOW_CLOSE_MIN = 12  # 마감 N분 전에 창이 닫힌다 (15:48 ET)
 LOC_CUTOFF_MIN = 10        # 거래소 접수 마감 (15:50 ET) — 취소도 여기까지
 # 체결은 마감 동시호가에서 일어난다. 잔고에 반영될 여유를 조금 둔다.
@@ -261,10 +265,11 @@ def loc_window(now_dt: Optional[datetime] = None) -> Dict[str, Any]:
     st = get_us_market_status(now_et)
     close_h, close_m = (int(x) for x in st["closeTimeEt"].split(":"))
     close_et = now_et.replace(hour=close_h, minute=close_m, second=0, microsecond=0)
-    opens_at = close_et - timedelta(minutes=LOC_WINDOW_OPEN_MIN)
     shuts_at = close_et - timedelta(minutes=LOC_WINDOW_CLOSE_MIN)
+    # 창은 정규장이 열리면 바로 열린다.
+    opens_at = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
 
-    tradable = st["status"] in ("OPEN", "PRE_MARKET", "AFTER_MARKET")
+    tradable = st["status"] == "OPEN"
     settles_at = close_et + timedelta(minutes=LOC_SETTLE_GRACE_MIN)
     return {
         "in": bool(tradable and opens_at <= now_et < shuts_at),

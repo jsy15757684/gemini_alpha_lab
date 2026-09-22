@@ -261,7 +261,7 @@ function renderLocModeHint() {
   const native = mode === "half_half";
   if (el) {
     el.textContent = native
-      ? "하루 한 번, 미국장 마감 20분 전(한국시간 04:40경)에 주문하고 종가로 체결됩니다. 40분할 = 40거래일 — 캔들 간격은 쓰이지 않습니다."
+      ? "하루 한 번, 미국장이 열려 있는 동안 LOC 를 걸어두고 그날 종가로 체결됩니다. 40분할 = 40거래일 — 캔들 간격은 쓰이지 않습니다."
       : (mode === "half_half_now"
           ? "캔들이 갱신될 때마다 평단을 상한으로 건 지정가로 즉시 매수합니다."
           : "캔들이 갱신될 때마다 전액 한 건을 시장가로 매수합니다.");
@@ -366,7 +366,7 @@ async function deployBot() {
   summary.push(`매매 모드 : ${modeLabel}`);
   summary.push(`운용 자본 : ${curr === "$" ? "$" : ""}${Number($("botCapital").value || 0).toLocaleString()}${curr === "원" ? "원" : ""}`);
   if (params.strategyType === "raoer_infinite") {
-    const locLabel = { half_half: "라오어 원전 반반 LOC (하루 한 번 · 마감 직전)",
+    const locLabel = { half_half: "라오어 원전 반반 LOC (하루 한 번 · 종가 체결)",
                        half_half_now: "반반 지정가 즉시 체결 (봉마다)",
                        single: "단일 묶음 시장가" }[params.locMode] || params.locMode;
     if (isStock) summary.push(`체결 방식 : ${locLabel}`);
