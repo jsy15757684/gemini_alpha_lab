@@ -631,10 +631,16 @@ class TradingBot:
     def _place_loc_orders(self, price: float, chunk_budget: float,
                           session: str, reason: str) -> None:
         """마감 전 LOC 접수. 장부는 건드리지 않는다 (체결 전이다)."""
+        # 세션 소진 표시는 '판단이 끝났을 때' 만 찍는다.
+        #
+        # 예전에는 이 함수에 들어오자마자 찍었다. 그래서 잔고 조회가
+        # HTTP 429 로 한 번 튕기자 그날 주문을 영영 못 냈다 — 접수 창이
+        # 8분이나 남아 있었는데도. 통신 오류처럼 다시 해보면 되는 실패는
+        # 세션을 소진하지 않고, 다음 틱에 재시도한다.
         targets = self._loc_targets(price, chunk_budget)
-        self.loc_session = session          # 미체결이어도 그날은 시도한 것으로 본다
 
         if not targets:
+            self.loc_session = session      # 살 돈이 없다 — 이건 판단이 끝난 것
             self.last_decision = (
                 f"LOC 보류 — 가용 예산이 1주 값(${price:,.2f})에 못 미칩니다 "
                 f"· 회차 유지 {self.pos.turn}/{self.params.splitCount}")
@@ -659,7 +665,8 @@ class TradingBot:
             hold = (bal.get("holdings") or {}).get(self.coin) or {}
             avg_before = float(hold.get("avgPrice") or 0.0)
         except Exception as e:
-            self.log("ERROR", f"LOC 접수 전 잔고 조회 실패 — 이번 세션 주문을 보류합니다: {e}")
+            # 세션을 소진하지 않는다. 접수 창이 남아 있으면 다음 틱에 다시 한다.
+            self.log("ERROR", f"LOC 접수 전 잔고 조회 실패 — 접수 창 안에서 다시 시도합니다: {e}")
             return
 
         placed = []
@@ -682,8 +689,13 @@ class TradingBot:
 
         if placed:
             self.pending_orders.extend(placed)
+            self.loc_session = session      # 접수됐다 — 오늘은 여기까지
             legs = " + ".join(f"{p['leg']} {p['units']}주@${p['limit']:,.2f}" for p in placed)
             self.last_decision = f"LOC 접수 완료 ({legs}) · 마감 동시호가 체결 대기"
+        else:
+            # 한 다리도 못 냈다. 거래소가 거부한 것이므로 창이 남아 있으면
+            # 다시 해본다 (일시적 오류일 수 있다).
+            self.last_decision = "LOC 접수 실패 — 접수 창 안에서 다시 시도합니다"
         self._persist()
 
     def _cancel_pending_loc(self, why: str) -> None:

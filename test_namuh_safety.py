@@ -740,6 +740,50 @@ check("익절하면 미체결 매수 LOC 를 전부 취소한다",
       and _lb3.pos.units == 0.0,
       f"취소 {_LOC['cancelled']} — 안 하면 마감 체결로 포지션이 되살아난다")
 
+# ── 일시적 실패가 하루치 접수 기회를 태우지 않는다 ──
+#
+# LOC 는 하루 한 번, 8분짜리 창에서만 낸다. 그런데 '오늘은 시도했다' 표시를
+# 함수 진입 즉시 찍고 있었다. 실제로 접수 직전 잔고 조회가 HTTP 429
+# (IGW42903 호출 건수 초과)로 튕기자 창이 8분이나 남았는데도 그날 주문을
+# 영영 못 냈다.
+_FLAKY = {"n": 0}
+
+
+class _FlakyBalance:
+    configured = True
+
+    def get_balance(self, fresh=False):
+        _FLAKY["n"] += 1
+        if _FLAKY["n"] == 1:
+            raise NamuhError("나무증권 잔고 조회 실패 (HTTP 429)")
+        return {"qtyByTicker": {"TQQQ": 0.0}, "holdings": {}}
+
+    def market_buy(self, *a, **k):
+        return {"orderId": 970, "units": 0.0, "status": "ACCEPTED"}
+
+
+_p = StrategyParams(strategyType="raoer_infinite", raoerVersion="v4",
+                    splitCount=40, locMode="half_half", feePct=0.0)
+_lb4 = TradingBot(bot_id="RETRY", coin="TQQQ", interval="1h", mode="LIVE",
+                  capital_krw=4000.0, params=_p, broker="namuh")
+_lb4.namuh_account = _FlakyBalance()
+
+_lb4._place_loc_orders(price=75.0, chunk_budget=120.0, session="2026-09-23", reason="1회차")
+check("잔고 조회가 튕기면 세션을 소진하지 않는다",
+      _lb4.loc_session is None and not _lb4.pending_orders,
+      "접수 창이 남아 있으면 다시 시도해야 한다")
+
+_lb4._place_loc_orders(price=75.0, chunk_budget=120.0, session="2026-09-23", reason="1회차")
+check("재시도에서 접수되고 그때 세션을 소진한다",
+      _lb4.loc_session == "2026-09-23" and len(_lb4.pending_orders) == 1,
+      f"접수 {len(_lb4.pending_orders)}건 · 잔고 호출 {_FLAKY['n']}회")
+
+# 체결 확인은 캐시를 쓰면 안 된다 (변화를 봐야 한다)
+_src = open("services/namuh.py", encoding="utf-8").read()
+check("체결 확인용 보유수량 조회는 캐시를 건너뛴다",
+      "self.get_balance(fresh=True)" in _src,
+      "held_qty 가 캐시를 보면 체결을 영영 못 잡는다")
+
 # ── 청산하지 못한 봇은 지우지 않는다 ──
 #
 # 미국장이 닫힌 시각에 삭제했더니 매도가 거부됐는데 봇만 사라졌다. 계좌에는

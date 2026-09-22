@@ -1569,7 +1569,7 @@ async function boot() {
     setInterval(loadPrices, 10000),
     setInterval(loadBots, 8000),
     setInterval(loadTradeHistory, 10000),
-    setInterval(loadNamuhAccount, 30000),
+    setInterval(loadNamuhAccount, 120000),   // 잔고는 자주 안 바뀐다 · 호출 건수 절약
     setInterval(loadUsMarketStatus, 15000),
     setInterval(loadMacroRegime, 30000),
     setInterval(renderFreshness, 1000),

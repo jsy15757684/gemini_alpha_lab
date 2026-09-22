@@ -139,6 +139,10 @@ class NamuhError(Exception):
 
 # ───────────────────────── 시세 캐시 ─────────────────────────
 _price_cache: Dict[str, tuple] = {}
+# 잔고 캐시. 나무증권이 호출 건수를 세므로 짧게 재사용한다.
+_BALANCE_CACHE: Dict[str, tuple] = {}
+_BALANCE_TTL_SEC = float(os.getenv("NAMUH_BALANCE_TTL_SEC") or "8")
+_BALANCE_LOCK = threading.Lock()
 _price_lock = threading.Lock()
 _PRICE_TTL = 3.0  # 초
 
@@ -273,7 +277,7 @@ class NamuhAccount:
         except Exception as e:
             return {"success": False, "message": str(e)}
 
-    def get_balance(self) -> Dict[str, Any]:
+    def get_balance(self, fresh: bool = False) -> Dict[str, Any]:
         """해외주식 잔고 조회 (POST /gbstock/inquiry/v1/balance).
 
         공식 문서 기준이다. 예전에는 한국투자증권 규격(GET
@@ -284,6 +288,17 @@ class NamuhAccount:
             raise NamuhError("나무증권 계정 키가 설정되지 않았습니다.")
         if not self.account_no:
             raise NamuhError("나무증권 계좌번호가 설정되지 않았습니다 (NAMUH_ACCOUNT_NO).")
+
+        # 나무증권은 호출 건수를 센다. 화면 폴링·거래소 대조·LOC 접수·체결
+        # 확인이 겹치면 한도를 넘는다 — 실제로 LOC 접수 직전 잔고 조회가
+        # HTTP 429(IGW42903)로 튕겨 그날 주문을 못 냈다. 변화를 봐야 하는
+        # 호출(_await_fill)만 fresh=True 로 캐시를 건너뛴다.
+        ck = self._token_cache_key()
+        if not fresh:
+            with _BALANCE_LOCK:
+                hit = _BALANCE_CACHE.get(ck)
+            if hit and (time.time() - hit[0]) < _BALANCE_TTL_SEC:
+                return dict(hit[1])
 
         endpoint = f"{trade_base_url()}/gbstock/inquiry/v1/balance"
         body = {
@@ -336,7 +351,7 @@ class NamuhAccount:
                 "currency": str(it.get("cur_cd", "USD")).strip() or "USD",
             }
 
-        return {
+        result = {
             "success": True,
             "usdAvailable": usd_avail,
             "usdTotal": usd_total,
@@ -349,6 +364,9 @@ class NamuhAccount:
             "accountNo": self.masked_account(),
             "rspCd": rsp_cd,
         }
+        with _BALANCE_LOCK:
+            _BALANCE_CACHE[ck] = (time.time(), dict(result))
+        return result
 
     def quote(self, ticker: str) -> Dict[str, Any]:
         """해외주식 현재가 상세 (POST /gbstock/quote/v1/current).
@@ -479,7 +497,8 @@ class NamuhAccount:
 
     def held_qty(self, ticker: str) -> float:
         """계좌의 실제 보유 주수. 체결 확인에 쓴다."""
-        return float(self.get_balance().get("qtyByTicker", {}).get(ticker.upper().strip(), 0.0))
+        return float(self.get_balance(fresh=True)
+                     .get("qtyByTicker", {}).get(ticker.upper().strip(), 0.0))
 
     def _require_market_open(self, what: str) -> None:
         ses = market_session()
