@@ -740,6 +740,65 @@ check("익절하면 미체결 매수 LOC 를 전부 취소한다",
       and _lb3.pos.units == 0.0,
       f"취소 {_LOC['cancelled']} — 안 하면 마감 체결로 포지션이 되살아난다")
 
+# ── 청산하지 못한 봇은 지우지 않는다 ──
+#
+# 미국장이 닫힌 시각에 삭제했더니 매도가 거부됐는데 봇만 사라졌다. 계좌에는
+# TQQQ 1주가 남았는데 그걸 아는 봇이 없다 — 익절·손절 감시도, 거래소 대조도
+# 걸리지 않는 '고아 물량' 이다.
+from services.trader import BotManager, LiquidationFailed    # noqa: E402
+
+
+class _SellRefuses:
+    configured = True
+
+    def market_sell(self, *a, **k):
+        raise NamuhError("매도 거부 (테스트)")
+
+
+def _mgr_with_bot(market_open):
+    p = StrategyParams(strategyType="raoer_infinite", raoerVersion="v4",
+                       splitCount=40, feePct=0.0)
+    b = TradingBot(bot_id="DEL", coin="TQQQ", interval="1h", mode="LIVE",
+                   capital_krw=4000.0, params=p, broker="namuh")
+    b.namuh_account = _SellRefuses()
+    b.pos.units, b.pos.entryPrice = 1.0, 75.05
+    namuh.market_session = lambda *a_, **k_: {"open": market_open,
+                                              "reason": "애프터마켓 진행 중"}
+    m = BotManager()
+    m.bots = {"DEL": b}
+    return m, b
+
+
+_orig_session = namuh.market_session
+
+_m, _b = _mgr_with_bot(False)
+try:
+    _m.delete("DEL")
+    _refused = False
+except LiquidationFailed:
+    _refused = True
+check("장이 닫혀 있으면 포지션 있는 봇을 지우지 않는다",
+      _refused and "DEL" in _m.bots and _b.pos.units == 1.0,
+      "지웠다면 계좌에 주인 없는 1주가 남는다")
+
+_m2, _b2 = _mgr_with_bot(True)
+try:
+    _m2.delete("DEL")
+    _refused2 = False
+except LiquidationFailed:
+    _refused2 = True
+check("매도 주문이 거부되면 봇을 지우지 않고 남긴다",
+      _refused2 and "DEL" in _m2.bots and _b2.pos.units == 1.0,
+      "봇이 남아야 장부와 계좌가 계속 맞는다")
+
+_m3, _b3 = _mgr_with_bot(False)
+_b3.pos.units = 0.0
+check("팔 물량이 없으면 장이 닫혀 있어도 지워진다",
+      _m3.delete("DEL") and not _m3.bots,
+      "팔 게 없는데 막으면 봇을 영영 못 지운다")
+
+namuh.market_session = _orig_session
+
 # ── 미국 증시 스케줄: 조기 마감일과 신정 토요일 ──
 from services import market_schedule as _ms                  # noqa: E402
 from datetime import datetime as _dt, date as _date          # noqa: E402

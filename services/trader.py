@@ -16,7 +16,7 @@ import uuid
 import logging
 import threading
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from services import backtest, bithumb, jsonfile, botstore, tradelog
 from services import gemini_service, namuh, macro_regime
@@ -45,6 +45,16 @@ CANDLE_REFRESH_SECONDS = {
 
 
 class TooManyBots(Exception):
+    pass
+
+
+class LiquidationFailed(Exception):
+    """청산하지 못한 봇은 지우지 않는다.
+
+    지우면 계좌에 주인 없는 물량이 남는다 — 익절·손절 감시도 없고, 거래소
+    대조에도 안 잡힌다. 실제로 미국장이 닫힌 시각에 삭제했더니 매도가
+    거부됐는데 봇만 사라져 TQQQ 1주가 고아가 됐다.
+    """
     pass
 
 
@@ -212,7 +222,27 @@ class TradingBot:
         self._thread.start()
         self._persist()
 
-    def stop(self, liquidate: bool = True):
+    def can_liquidate(self) -> Tuple[bool, str]:
+        """지금 청산 주문을 낼 수 있는 상태인지. (가능여부, 이유)"""
+        if not self.pos.open or self.mode != "LIVE":
+            return True, ""
+        if self.broker == "namuh":
+            if not (self.namuh_account and self.namuh_account.configured):
+                return False, "나무증권 API 키가 등록되지 않았습니다."
+            ses = namuh.market_session()
+            if not ses.get("open"):
+                return False, (f"미국 정규장이 닫혀 있어 매도할 수 없습니다 — {ses.get('reason')}")
+            return True, ""
+        if not (self.account and self.account.configured):
+            return False, "빗썸 API 키가 등록되지 않았습니다."
+        return True, ""
+
+    def stop(self, liquidate: bool = True) -> bool:
+        """정지. 청산까지 깔끔히 끝났으면 True.
+
+        False 면 계좌에 물량이나 미체결 주문이 남아 있다는 뜻이다.
+        호출부(삭제)는 이 값을 보고 지울지 말지 정해야 한다.
+        """
         self.is_running = False
         if liquidate and self.pos.open:
             try:
@@ -233,6 +263,8 @@ class TradingBot:
                      f"마감에 체결될 수 있으니 나무증권 앱에서 확인하세요.")
         self.log("WARNING", "봇이 정지되었습니다.")
         self._persist()
+        # 팔려고 했는데 아직 들고 있거나, 거둬들이지 못한 주문이 남았는가.
+        return not (liquidate and self.pos.open) and not self.pending_orders
 
     # ── 메인 루프 ──
     def _loop(self):
@@ -1484,7 +1516,26 @@ class BotManager:
         bot = self.bots.get(bot_id)
         if not bot:
             return False
-        bot.stop(liquidate=True)
+
+        # 지우기 전에 팔 수 있는 상태인지 먼저 본다. 여기서 막으면 돌고 있는
+        # 봇을 건드리지 않고 그대로 둘 수 있다.
+        ok, why = bot.can_liquidate()
+        if not ok:
+            raise LiquidationFailed(
+                f"{bot.coin} 봇을 지우지 않았습니다 — {why} "
+                f"지금 지우면 보유 {bot.pos.units} {bot.coin} 가 계좌에 주인 없이 남습니다. "
+                f"장이 열린 뒤에 다시 시도하세요.")
+
+        cleared = bot.stop(liquidate=True)
+        if not cleared:
+            # 여기까지 왔는데 못 팔았다면 주문이 거부된 것이다. 봇은 정지됐지만
+            # 장부는 살아 있으므로, 지우지 않고 남겨 대조가 계속 맞게 한다.
+            raise LiquidationFailed(
+                f"{bot.coin} 봇을 지우지 않았습니다 — 청산 주문이 체결되지 않았습니다. "
+                f"봇은 정지 상태로 남겨 두었습니다(보유 {bot.pos.units} {bot.coin}"
+                + (f", 미체결 주문 {len(bot.pending_orders)}건" if bot.pending_orders else "")
+                + "). 로그에서 실패 사유를 확인하고 다시 시도하세요.")
+
         del self.bots[bot_id]
         self.persist()
         return True

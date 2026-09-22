@@ -62,7 +62,7 @@ from services.gemini_service import gemini_keystore
 from services.keystore import keystore, namuh_keystore
 from services.arbitrage import arbitrage_manager
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
-from services.trader import MAX_ACTIVE_BOTS, TooManyBots, bot_manager
+from services.trader import MAX_ACTIVE_BOTS, TooManyBots, LiquidationFailed, bot_manager
 from services.envconf import env_int
 
 app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0")
@@ -393,7 +393,12 @@ def stop_bot(req: BotIdRequest):
 
 @app.post("/api/bot/delete")
 def delete_bot(req: BotIdRequest):
-    if not bot_manager.delete(req.botId):
+    try:
+        deleted = bot_manager.delete(req.botId)
+    except LiquidationFailed as e:
+        # 팔지 못한 봇은 지우지 않는다. 지우면 계좌에 주인 없는 물량이 남는다.
+        raise HTTPException(409, str(e))
+    if not deleted:
         raise HTTPException(404, f"봇을 찾을 수 없습니다: {req.botId}")
     global RESTORE_SUMMARY
     RESTORE_SUMMARY["notes"] = [n for n in RESTORE_SUMMARY.get("notes", []) if req.botId not in n]
