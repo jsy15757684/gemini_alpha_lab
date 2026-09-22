@@ -103,13 +103,16 @@ select.input{cursor:pointer}
 /* 봇 탭만 비율을 바꾼다. 가동 폼은 드롭다운 몇 개라 좁아도 되지만, 봇 카드는
    넓어야 통계 8칸이 한 줄에 들어간다. 반반으로 두면 두 줄로 접혀 카드가
    100px 씩 길어지고, 3대만 띄워도 화면을 넘긴다. */
-#panel-bots > .grid-2{grid-template-columns:minmax(320px,400px) minmax(0,1fr)}
+/* 가동 폼을 넓힌다. 비율로 잡아 큰 화면에서는 더 넓게, 좁은 화면에서는
+   봇 카드 쪽을 지킨다. 36% 를 넘기면 카드의 통계 7칸이 두 줄로 접혀
+   카드가 193 → 254px 로 길어진다 — 거기가 한계선이다. */
+#panel-bots > .grid-2{grid-template-columns:minmax(380px,36%) minmax(0,1fr)}
 @media (max-width:1100px){ #panel-bots > .grid-2{grid-template-columns:minmax(0,1fr)} }
 
 /* 봇 가동 폼은 1,600px 이 넘어 화면을 통째로 넘겼다. 오른쪽 '가동 중인 봇'
    카드와 같은 높이로 묶고, 넘치는 부분은 카드 안에서만 스크롤하게 한다.
    두 카드가 나란히 화면 안에 들어온다. */
-#panel-bots > .grid-2 > .card:first-child{max-height:calc(100vh - 230px); overflow-y:auto}
+#panel-bots > .grid-2 > .card:first-child{max-height:calc(100vh - 248px); overflow-y:auto}
 @media (max-width:1100px){ #panel-bots > .grid-2 > .card:first-child{max-height:none; overflow:visible} }
 @media (max-width:900px){.grid-2{grid-template-columns:1fr}}
 
@@ -157,7 +160,7 @@ select.input{cursor:pointer}
 .badge-stop{background:rgba(139,147,165,.1); color:var(--faint)}
 
 /* 숫자: 칸을 줄이고 값을 키워 한눈에 들어오게 한다. */
-.bot-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(118px,1fr));
+.bot-stats{display:grid; grid-template-columns:repeat(auto-fit,minmax(100px,1fr));
   gap:.1rem .9rem; margin:.6rem 0 .5rem}
 .bot-stats .s{min-width:0; padding:.1rem 0}
 .s-k{font-size:.68rem; color:var(--muted); white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
