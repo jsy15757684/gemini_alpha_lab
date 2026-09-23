@@ -281,9 +281,22 @@ def deploy_bot(req: DeployRequest):
                 raise HTTPException(400, f"나무증권 실계좌 연결 실패: {test.get('message')}")
             # test_connection 은 잔고를 balance 안에 담아 돌려준다. 최상위에서
             # 찾으면 늘 0 이라, 자본이 얼마든 실전 가동이 막혔다.
-            usd_avail = float((test.get("balance") or {}).get("usdAvailable", 0))
-            if usd_avail < req.capitalKrw:
-                raise HTTPException(400, f"나무증권 주문가능 외화(${usd_avail:,.2f})가 운용 자본(${req.capitalKrw:,.2f})보다 적습니다.")
+            #
+            # 달러 예수금만 보면 원화만 넣어 둔 실계좌는 봇을 만들 수조차 없다.
+            # 원화 증거금을 쓸 수 있는 설정이면 원화도 공시환율로 환산해 센다.
+            from services.fx import get_official_fx
+            fx = (get_official_fx() or {}).get("rate")
+            bp = namuh.buying_power_usd(test.get("balance") or {}, fx)
+            if bp["total"] < req.capitalKrw:
+                parts = [f"달러 ${bp['usd']:,.2f}"]
+                if bp["krwCounted"]:
+                    parts.append(f"원화 {bp['krw']:,.0f}원(≈${bp['krwAsUsd']:,.2f})")
+                elif bp["krw"] > 0 and not namuh.use_mock():
+                    parts.append(f"원화 {bp['krw']:,.0f}원은 세지 않음"
+                                 + (" — 공시환율을 받지 못함" if not fx else " — NAMUH_MARGIN=usd"))
+                raise HTTPException(400,
+                    f"나무증권 매수 여력(${bp['total']:,.2f})이 운용 자본(${req.capitalKrw:,.2f})보다 "
+                    f"적습니다 · {' + '.join(parts)}")
 
         try:
             bot = bot_manager.deploy(coin, req.interval, mode, req.capitalKrw,
@@ -505,8 +518,12 @@ def namuh_account_status():
                  "pnlUsd": v.get("pnlUsd", 0.0)}
                 for t, v in (bal.get("holdings") or {}).items()
             ]
+            from services.fx import get_official_fx
+            bp = namuh.buying_power_usd(bal, (get_official_fx() or {}).get("rate"))
             st.update({
                 "balanceOk": True,
+                "buyingPower": bp,
+                "marginPref": namuh.MARGIN_PREF,
                 "usdAvailable": bal.get("usdAvailable", 0.0),
                 "usdTotal": bal.get("usdTotal", 0.0),
                 "krwDeposit": bal.get("krwDeposit", 0.0),

@@ -72,6 +72,59 @@ ORDER_TYPE_NAMES = {"00": "지정가", "03": "시장가", "12": "LOC(장마감 �
 # 여유를 준 지정가면 사실상 즉시 체결되면서 최악의 체결가가 묶인다.
 DEFAULT_ORDER_TYPE = (os.getenv("NAMUH_ORDER_TYPE") or ORD_LIMIT).strip()
 
+# ── 매수 증거금 통화 ────────────────────────────────────────
+#
+# wtm_cur_knd_cd: 1=해당통화(달러) · 2=원화.
+# 모의계좌는 달러 증거금만 받는다. 실계좌는 원화로도 살 수 있다(통합증거금).
+# 예전에는 모의/실전 구분 없이 늘 1(달러)이었다. 실계좌에 원화만 넣어 두면
+# 달러 증거금 부족으로 주문이 거부된다.
+#
+#   auto (기본) : 달러가 이번 주문을 감당하면 달러, 모자라면 원화
+#   usd         : 늘 달러 (환전해 둔 경우)
+#   krw         : 늘 원화
+MARGIN_PREF = (os.getenv("NAMUH_MARGIN") or "auto").strip().lower()
+if MARGIN_PREF not in ("auto", "usd", "krw"):
+    MARGIN_PREF = "auto"
+MARGIN_USD, MARGIN_KRW = "1", "2"
+
+
+def margin_code(need_usd: float, balance: Optional[Dict[str, Any]]) -> str:
+    """이번 매수에 쓸 증거금 통화 코드."""
+    if use_mock():
+        return MARGIN_USD                 # 모의계좌는 달러만
+    if MARGIN_PREF == "usd":
+        return MARGIN_USD
+    if MARGIN_PREF == "krw":
+        return MARGIN_KRW
+    usd = float((balance or {}).get("usdAvailable") or 0.0)
+    return MARGIN_USD if usd >= need_usd else MARGIN_KRW
+
+
+def buying_power_usd(balance: Dict[str, Any], fx_rate: Optional[float]) -> Dict[str, Any]:
+    """달러로 환산한 매수 여력. 배포 가드와 화면이 같은 계산을 쓴다.
+
+    모의계좌와 'usd' 설정은 달러 예수금만 센다. 원화를 쓸 수 있으면 원화
+    예수금을 공시환율로 나눠 더한다. 환율을 못 받으면 원화는 세지 않는다 —
+    지어낸 환율로 여력을 부풀리지 않는다.
+    """
+    usd = float(balance.get("usdAvailable") or 0.0)
+    krw = float(balance.get("krwDeposit") or 0.0)
+    krw_usable = (not use_mock()) and MARGIN_PREF in ("auto", "krw")
+    krw_as_usd = (krw / fx_rate) if (krw_usable and fx_rate and fx_rate > 0) else 0.0
+    if MARGIN_PREF == "krw" and not use_mock():
+        total = krw_as_usd
+    else:
+        total = usd + krw_as_usd
+    return {
+        "usd": round(usd, 2),
+        "krw": round(krw, 0),
+        "krwAsUsd": round(krw_as_usd, 2),
+        "total": round(total, 2),
+        "krwCounted": bool(krw_usable and fx_rate),
+        "fxRate": fx_rate,
+    }
+
+
 # 지정가에 줄 여유(%). 매수는 현재가보다 이만큼 높게, 매도는 낮게 건다.
 LIMIT_SLIP_PCT = float(os.getenv("NAMUH_LIMIT_SLIP_PCT") or "0.5")
 
@@ -139,6 +192,57 @@ class NamuhError(Exception):
 
 # ───────────────────────── 시세 캐시 ─────────────────────────
 _price_cache: Dict[str, tuple] = {}
+# ── NH 호출 통로 ─────────────────────────────────────────────
+#
+# 나무증권은 호출 건수를 센다. 화면 폴링·거래소 대조·LOC 접수·체결 확인이
+# 겹치면 한도를 넘는다 — 실제로 LOC 접수 직전 잔고 조회가 HTTP 429
+# (IGW42903 "API 호출 거래건수를 초과하였습니다")로 튕겨 그날 주문을 놓쳤다.
+#
+# 모든 NH 호출을 여기로 모아 두 가지를 한다.
+#   1) 간격 — 호출 시작 사이를 최소 _NH_MIN_INTERVAL 초 띄운다. 스레드가
+#      여럿이어도 한 줄로 선다.
+#   2) 재시도 — **조회만** 한도 초과 시 2·4·6초 쉬고 다시 한다.
+#      주문(매수·매도·취소)은 절대 재시도하지 않는다. 응답을 못 받았다고
+#      주문이 안 나간 게 아니다 — 다시 내면 같은 주문이 두 번 나갈 수 있다.
+_NH_MIN_INTERVAL = float(os.getenv("NAMUH_MIN_INTERVAL_SEC") or "1.1")
+_NH_RETRIES = 3
+_NH_BACKOFF_SEC = float(os.getenv("NAMUH_BACKOFF_SEC") or "2")   # 2·4·6초
+_NH_LOCK = threading.Lock()
+_nh_last_call = 0.0
+_RATE_LIMIT_CODES = {"IGW42903"}
+
+
+def _is_rate_limited(res) -> bool:
+    if res.status_code == 429:
+        return True
+    try:
+        return str((res.json() or {}).get("rsp_cd", "")) in _RATE_LIMIT_CODES
+    except Exception:
+        return False
+
+
+def _nh_post(url: str, *, read: bool, **kwargs):
+    """NH 로 가는 모든 POST. read=False(주문)는 한 번만 보낸다."""
+    global _nh_last_call
+    tries = (1 + _NH_RETRIES) if read else 1
+    res = None
+    for attempt in range(tries):
+        with _NH_LOCK:
+            wait = _NH_MIN_INTERVAL - (time.monotonic() - _nh_last_call)
+            if wait > 0:
+                time.sleep(wait)
+            _nh_last_call = time.monotonic()
+        res = requests.post(url, **kwargs)
+        if read and attempt < tries - 1 and _is_rate_limited(res):
+            back = _NH_BACKOFF_SEC * (attempt + 1)
+            logger.warning(f"나무증권 호출 한도 초과 — {back:.0f}초 뒤 다시 조회합니다 "
+                           f"({attempt + 1}/{_NH_RETRIES}) · {url.rsplit('/', 1)[-1]}")
+            time.sleep(back)
+            continue
+        return res
+    return res
+
+
 # 잔고 캐시. 나무증권이 호출 건수를 세므로 짧게 재사용한다.
 _BALANCE_CACHE: Dict[str, tuple] = {}
 _BALANCE_TTL_SEC = float(os.getenv("NAMUH_BALANCE_TTL_SEC") or "8")
@@ -232,7 +336,7 @@ class NamuhAccount:
                 "scope": "oob",
             }
             try:
-                res = requests.post(url, data=data, timeout=10)
+                res = _nh_post(url, read=True, data=data, timeout=10)
                 body = res.json()
             except Exception as e:
                 raise NamuhError(f"나무증권 토큰 발급 통신 오류: {e}")
@@ -311,8 +415,8 @@ class NamuhAccount:
             }
         }
         try:
-            res = requests.post(endpoint, headers=self._headers(),
-                                json=body, timeout=10)
+            res = _nh_post(endpoint, read=True, headers=self._headers(),
+                           json=body, timeout=10)
         except Exception as e:
             raise NamuhError(f"나무증권 잔고 조회 통신 오류: {e}")
 
@@ -378,8 +482,8 @@ class NamuhAccount:
         if not self.configured:
             raise NamuhError("나무증권 계정 키가 설정되지 않았습니다.")
         try:
-            res = requests.post(f"{BASE_URL}/gbstock/quote/v1/current",
-                                headers=self._headers(),
+            res = _nh_post(f"{BASE_URL}/gbstock/quote/v1/current", read=True,
+                           headers=self._headers(),
                                 json={"Input_0": {"iem_cd": sym}}, timeout=8)
             b = res.json()
         except Exception as e:
@@ -555,7 +659,9 @@ class NamuhAccount:
 
         # 실주문 전에 장이 열려 있는지 본다.
         self._require_market_open("매수")
-        qty_before = self.held_qty(sym)
+        # 잔고를 한 번만 받아 두 곳에 쓴다: 체결 확인의 기준 수량, 증거금 통화 선택.
+        bal_before = self.get_balance(fresh=True)
+        qty_before = float(bal_before.get("qtyByTicker", {}).get(sym, 0.0))
 
         # 공식 문서: POST /gbstock/order/v1/buy
         # 예전에는 한국투자증권 규격(/uapi/overseas-stock/v1/trading/order,
@@ -566,15 +672,16 @@ class NamuhAccount:
             "iem_cd": sym,                      # 예: AAPL (순수 티커)
             "orr_qty": int(qty),
             "ahi_nmn_pr_tp_cd": order_type,
-            "wtm_cur_knd_cd": "1",              # 1.해당통화(USD)
+            "wtm_cur_knd_cd": margin_code(qty * price, bal_before),
         }
         # 단가는 지정가 계열에서만 필수다 (00/11/12/61/62/63). 소수점 2자리.
         if order_type != ORD_MARKET:
             inp["fc_orr_uit_pr"] = round(price, 2)
 
         try:
-            res = requests.post(f"{trade_base_url()}/gbstock/order/v1/buy",
-                                headers=self._headers(), json={"Input_0": inp}, timeout=10)
+            # 주문은 재시도하지 않는다 (read=False)
+            res = _nh_post(f"{trade_base_url()}/gbstock/order/v1/buy", read=False,
+                           headers=self._headers(), json={"Input_0": inp}, timeout=10)
             res_data = res.json()
         except NamuhError:
             raise
@@ -644,8 +751,8 @@ class NamuhAccount:
             inp["can_qty"] = int(qty)
 
         try:
-            res = requests.post(f"{trade_base_url()}/gbstock/order/v1/cancel",
-                                headers=self._headers(), json={"Input_0": inp}, timeout=10)
+            res = _nh_post(f"{trade_base_url()}/gbstock/order/v1/cancel", read=False,
+                           headers=self._headers(), json={"Input_0": inp}, timeout=10)
             data = res.json()
         except Exception as e:
             raise NamuhError(f"나무증권 주문 취소 통신 오류: {e}")
@@ -754,8 +861,8 @@ class NamuhAccount:
             inp["fc_orr_uit_pr"] = round(price, 2)
 
         try:
-            res = requests.post(f"{trade_base_url()}/gbstock/order/v1/sell",
-                                headers=self._headers(), json={"Input_0": inp}, timeout=10)
+            res = _nh_post(f"{trade_base_url()}/gbstock/order/v1/sell", read=False,
+                           headers=self._headers(), json={"Input_0": inp}, timeout=10)
             res_data = res.json()
         except NamuhError:
             raise

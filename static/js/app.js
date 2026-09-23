@@ -297,9 +297,19 @@ function renderCapitalHint() {
     const total = Number(a.usdTotal || 0);
     const fmt = (v) => v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
     const mockTag = a.mock ? " · 🧪 모의계좌" : "";
-    el.innerHTML = `투자가능 달러 <b style="color:var(--accent)">$${fmt(avail)}</b>`
-      + (total && Math.abs(total - avail) >= 0.01 ? ` · 총 외화자산 $${fmt(total)}` : "")
-      + mockTag;
+    // 원화 증거금을 쓸 수 있으면 원화도 달러로 환산해 여력에 넣는다.
+    // 서버의 배포 가드와 같은 계산(buying_power_usd)을 그대로 보여준다.
+    const bp = a.buyingPower || {};
+    if (bp.krwCounted && Number(bp.krw || 0) > 0) {
+      el.innerHTML = `투자가능 <b style="color:var(--accent)">$${fmt(Number(bp.total || 0))}</b>`
+        + ` · 달러 $${fmt(Number(bp.usd || 0))} + 원화 ${won(bp.krw)}원`
+        + ` <span class="muted">(환율 ${Number(bp.fxRate || 0).toLocaleString()}원)</span>`
+        + mockTag;
+    } else {
+      el.innerHTML = `투자가능 달러 <b style="color:var(--accent)">$${fmt(avail)}</b>`
+        + (total && Math.abs(total - avail) >= 0.01 ? ` · 총 외화자산 $${fmt(total)}` : "")
+        + mockTag;
+    }
   } else {
     el.innerHTML = `투자가능 원화 <b style="color:var(--accent)">${won(a.krwAvailable)}원</b>`
       + ` · 총 보유 ${won(a.krwTotal)}원`;

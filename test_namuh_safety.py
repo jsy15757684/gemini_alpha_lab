@@ -20,6 +20,8 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import requests                                    # noqa: E402
 from services import namuh                         # noqa: E402
+namuh._NH_MIN_INTERVAL = 0.0   # 호출 간격은 아래 전용 검증에서 따로 본다
+namuh._NH_BACKOFF_SEC = 0.0
 from services.namuh import NamuhAccount, NamuhError  # noqa: E402
 
 PASS, FAIL = [], []
@@ -739,6 +741,111 @@ check("익절하면 미체결 매수 LOC 를 전부 취소한다",
       sorted(_LOC["cancelled"]) == sorted(_ids) and not _lb3.pending_orders
       and _lb3.pos.units == 0.0,
       f"취소 {_LOC['cancelled']} — 안 하면 마감 체결로 포지션이 되살아난다")
+
+# ── NH 호출 통로: 조회만 재시도, 주문은 한 번만 ──
+#
+# 실제로 LOC 접수 직전 잔고 조회가 HTTP 429(IGW42903)로 튕겨 그날 주문을
+# 놓쳤다. 조회는 잠깐 쉬었다 다시 하면 풀린다. 주문은 다르다 — 응답을 못
+# 받았다고 안 나간 게 아니라서, 다시 내면 같은 주문이 두 번 나갈 수 있다.
+class _RL:
+    def __init__(self, code, rsp=""):
+        self.status_code, self._rsp = code, rsp
+        self.text = rsp
+
+    def json(self):
+        return {"rsp_cd": self._rsp}
+
+
+_CALLS = []
+
+
+def _flaky_post(seq):
+    it = iter(seq)
+
+    def f(url, **k):
+        _CALLS.append(url)
+        return next(it)
+    return f
+
+
+_real_post2 = requests.post
+
+_CALLS.clear()
+requests.post = _flaky_post([_RL(429, "IGW42903"), _RL(429, "IGW42903"), _RL(200, "00166")])
+_r = namuh._nh_post("https://x/gbstock/inquiry/v1/balance", read=True, timeout=1)
+check("조회는 호출 한도에 걸리면 쉬었다가 다시 한다",
+      _r.status_code == 200 and len(_CALLS) == 3,
+      f"429 → 429 → 200 · 호출 {len(_CALLS)}회")
+
+_CALLS.clear()
+requests.post = _flaky_post([_RL(429, "IGW42903"), _RL(200, "00171")])
+_r2 = namuh._nh_post("https://x/gbstock/order/v1/buy", read=False, timeout=1)
+check("주문은 한도에 걸려도 다시 보내지 않는다 (중복 주문 방지)",
+      _r2.status_code == 429 and len(_CALLS) == 1,
+      f"호출 {len(_CALLS)}회 — 두 번 보내면 같은 주문이 두 번 체결될 수 있다")
+
+_CALLS.clear()
+requests.post = _flaky_post([_RL(200, "00166")] * 3)
+_saved_int = namuh._NH_MIN_INTERVAL
+namuh._NH_MIN_INTERVAL = 0.15
+_t0 = time.monotonic()
+for _ in range(3):
+    namuh._nh_post("https://x/q", read=True, timeout=1)
+_el = time.monotonic() - _t0
+namuh._NH_MIN_INTERVAL = _saved_int
+check("NH 호출 사이를 최소 간격만큼 띄운다",
+      _el >= 0.29, f"3회 호출 {_el:.2f}초 (간격 0.15초 × 2)")
+
+requests.post = _real_post2
+_src_nh = open("services/namuh.py", encoding="utf-8").read()
+check("NH 로 가는 호출이 모두 통로를 거친다",
+      _src_nh.count("requests.post(") == 1,
+      "_nh_post 안의 1곳만 남는다 — 새 호출이 통로를 우회하지 못하게")
+
+# ── 매수 증거금 통화: 모의는 달러, 실전은 원화도 ──
+#
+# 예전에는 늘 1(달러)이었다. 실계좌에 원화만 넣어 두면 달러 증거금 부족으로
+# 주문이 거부되고, 그보다 앞서 배포 가드가 달러 예수금만 보고 봇 생성을
+# 막았다.
+_saved_mock, _saved_pref = os.environ.get("NAMUH_MOCK"), namuh.MARGIN_PREF
+
+os.environ["NAMUH_MOCK"] = "1"
+namuh.MARGIN_PREF = "auto"
+check("모의계좌는 늘 달러 증거금이다",
+      namuh.margin_code(500.0, {"usdAvailable": 0.0}) == namuh.MARGIN_USD,
+      "모의 서버는 원화 증거금을 받지 않는다")
+
+os.environ["NAMUH_MOCK"] = "0"
+check("실계좌 auto: 달러가 충분하면 달러",
+      namuh.margin_code(500.0, {"usdAvailable": 1000.0}) == namuh.MARGIN_USD, "")
+check("실계좌 auto: 달러가 모자라면 원화",
+      namuh.margin_code(500.0, {"usdAvailable": 100.0}) == namuh.MARGIN_KRW,
+      "원화만 넣어 둔 실계좌도 살 수 있다")
+namuh.MARGIN_PREF = "usd"
+check("NAMUH_MARGIN=usd 면 늘 달러",
+      namuh.margin_code(500.0, {"usdAvailable": 0.0}) == namuh.MARGIN_USD, "")
+
+# 매수 여력: 원화는 공시환율로 환산해 센다. 환율을 못 받으면 세지 않는다.
+_bal = {"usdAvailable": 100.0, "krwDeposit": 1_380_000.0}
+namuh.MARGIN_PREF = "auto"
+_bp = namuh.buying_power_usd(_bal, 1380.0)
+check("실계좌 매수 여력에 원화를 환산해 더한다",
+      _bp["total"] == 1100.0 and _bp["krwCounted"],
+      f"$100 + 1,380,000원÷1380 = ${_bp['total']:,.2f}")
+_bp2 = namuh.buying_power_usd(_bal, None)
+check("환율을 못 받으면 원화를 세지 않는다 (여력을 지어내지 않는다)",
+      _bp2["total"] == 100.0 and not _bp2["krwCounted"],
+      f"${_bp2['total']:,.2f}")
+os.environ["NAMUH_MOCK"] = "1"
+_bp3 = namuh.buying_power_usd(_bal, 1380.0)
+check("모의계좌 매수 여력은 달러만 센다",
+      _bp3["total"] == 100.0, f"${_bp3['total']:,.2f}")
+
+if _saved_mock is None:
+    os.environ.pop("NAMUH_MOCK", None)
+else:
+    os.environ["NAMUH_MOCK"] = _saved_mock
+namuh.MARGIN_PREF = _saved_pref
 
 # ── 일시적 실패가 하루치 접수 기회를 태우지 않는다 ──
 #
