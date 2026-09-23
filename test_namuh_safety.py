@@ -847,6 +847,87 @@ else:
     os.environ["NAMUH_MOCK"] = _saved_mock
 namuh.MARGIN_PREF = _saved_pref
 
+def _nh_acct():
+    """NamuhAccount 공장. 위쪽 루프가 _acct 라는 이름을 덮어써서 따로 둔다."""
+    a = NamuhAccount("APPKEY", "SECRET", "12345678901")
+    a._token = "FAKE"
+    a._token_expires_at = time.time() + 9999
+    return a
+
+
+# ── 잔고의 티커는 tck_iem_cd 를 먼저 본다 ──
+#
+# 계좌에 따라 iem_cd 에 티커가 아닌 식별코드가 들어올 수 있다. 그러면 티커로
+# 찾는 거래소 대조가 통째로 어긋난다. 모의계좌는 iem_cd 에 티커가 온다.
+def _bal_payload(rows):
+    return {"rsp_cd": "00166", "Output_0": {"fc_dca": "1000", "fc_aet_amt": "1000"},
+            "Output_1": rows}
+
+
+_real_post3 = requests.post
+requests.post = lambda *a_, **k: _Resp(200, _bal_payload([
+    {"tck_iem_cd": "TQQQ", "iem_cd": "US74347X8314", "cns_bse_bnc_qty": "3",
+     "sll_pbl_qty1": "3", "fc_phs_uit_pr": "75.05"}]))
+_hb = _nh_acct().get_balance(fresh=True)
+check("tck_iem_cd 가 있으면 그것을 티커로 쓴다",
+      _hb["qtyByTicker"] == {"TQQQ": 3.0},
+      f"iem_cd 가 식별코드(US74347X8314)여도 TQQQ 로 잡는다 · {_hb['qtyByTicker']}")
+
+requests.post = lambda *a_, **k: _Resp(200, _bal_payload([
+    {"iem_cd": "TQQQ", "cns_bse_bnc_qty": "1", "sll_pbl_qty1": "1", "fc_phs_uit_pr": "75.05"}]))
+_hb2 = _nh_acct().get_balance(fresh=True)
+check("tck_iem_cd 가 없으면 iem_cd 를 쓴다 (모의계좌 형식)",
+      _hb2["qtyByTicker"] == {"TQQQ": 1.0}, f"{_hb2['qtyByTicker']}")
+requests.post = _real_post3
+
+# ── 계좌 종류가 모드와 맞는가 (/n2/acctinfo) ──
+#
+# 응답 모양은 모의계좌에서 실측했다. 모의 03 · 실전(CMA 포함) 01.
+def _acct_rows(*pairs):
+    return {"rsp_cd": "00000", "rsp_msg": "조회가 완료되었습니다.",
+            "Output_0": [{"acct_no": n, "acct_type": t} for n, t in pairs]}
+
+
+_saved_mock2 = os.environ.get("NAMUH_MOCK")
+_a5 = _nh_acct()
+_mine = _a5.account_no
+_other = "20101794704"
+
+os.environ["NAMUH_MOCK"] = "1"
+requests.post = lambda *a_, **k: _Resp(200, _acct_rows((_mine, "03"), (_other, "01")))
+_c1 = _a5.check_account_type()
+check("모의 모드 + 모의계좌(03) 는 통과한다",
+      _c1["verified"] and _c1["ok"] and _c1["type"] == "03", _c1["message"])
+
+os.environ["NAMUH_MOCK"] = "0"
+_c2 = _a5.check_account_type()
+check("실전 모드에 모의계좌 번호를 넣으면 막는다",
+      _c2["verified"] and not _c2["ok"] and "모의투자 계좌" in _c2["message"],
+      _c2["message"][:60])
+
+requests.post = lambda *a_, **k: _Resp(200, _acct_rows((_other, "01")))
+_c3 = _a5.check_account_type()
+check("이 키의 계좌 목록에 없는 번호(오타)는 막는다",
+      _c3["verified"] and not _c3["ok"] and "목록에 없습니다" in _c3["message"],
+      _c3["message"][:60])
+
+requests.post = lambda *a_, **k: _Resp(500, {"rsp_cd": "IGW9999"})
+_c4 = _a5.check_account_type()
+check("확인 자체가 실패하면 막지 않는다 (틀렸다고 단정하지 않는다)",
+      not _c4["verified"] and _c4["ok"], _c4["message"][:60])
+
+requests.post = lambda *a_, **k: _Resp(200, _acct_rows((_mine, "03")))
+_masked = _a5.check_account_type().get("accounts", [])
+check("계좌 목록은 가려서 돌려준다",
+      all("*" in x for x in _masked) and not any(_mine in x for x in _masked),
+      f"{_masked}")
+
+requests.post = _real_post3
+if _saved_mock2 is None:
+    os.environ.pop("NAMUH_MOCK", None)
+else:
+    os.environ["NAMUH_MOCK"] = _saved_mock2
+
 # ── 일시적 실패가 하루치 접수 기회를 태우지 않는다 ──
 #
 # LOC 는 하루 한 번, 8분짜리 창에서만 낸다. 그런데 '오늘은 시도했다' 표시를

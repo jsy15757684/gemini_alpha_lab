@@ -364,6 +364,61 @@ class NamuhAccount:
             "Authorization": f"Bearer {self.get_token()}",
         }
 
+    # 계좌 종류 코드 (/n2/acctinfo 의 acct_type). 모의계좌에서 실측했다:
+    # 모의 계좌는 03, 실전 계좌(CMA 포함)는 01 로 나온다. 02 도 실전이다.
+    ACCT_TYPE_MOCK = {"03"}
+    ACCT_TYPE_LIVE = {"01", "02"}
+
+    def check_account_type(self) -> Dict[str, Any]:
+        """설정된 계좌가 지금 모드(모의/실전)에 맞는 종류인지 확인한다.
+
+        잡는 것 : 모의계좌 번호를 실전 모드에 넣었거나 그 반대. 계좌번호 오타
+                  (이 키에 딸린 계좌 목록에 없음).
+        못 잡는 것: 실전 계좌인데 해외주식 거래가 개설되지 않은 경우. CMA 도
+                  실전(01)으로 나온다 — 그건 잔고·주문 단계에서 드러난다.
+
+        확인 자체가 실패하면(통신 오류·빈 목록) verified=False 로 돌려준다.
+        그때는 막지 않는다. 확인하지 못한 것을 틀렸다고 단정하지 않는다.
+        """
+        want = self.ACCT_TYPE_MOCK if use_mock() else self.ACCT_TYPE_LIVE
+        mode = "모의투자" if use_mock() else "실전"
+        base = {"verified": False, "ok": True, "mode": mode,
+                "expected": sorted(want), "type": None, "message": ""}
+        try:
+            res = _nh_post(f"{trade_base_url()}/n2/acctinfo", read=True,
+                           headers=self._headers(), json={"Input_0": {}}, timeout=10)
+            data = res.json()
+        except Exception as e:
+            return {**base, "message": f"계좌 종류를 확인하지 못했습니다(통신 오류): {e}"}
+
+        rows = data.get("Output_0") if isinstance(data, dict) else None
+        if res.status_code != 200 or not isinstance(rows, list) or not rows:
+            return {**base, "message": f"계좌 종류를 확인하지 못했습니다 "
+                                       f"(rsp_cd={data.get('rsp_cd') if isinstance(data, dict) else '-'})"}
+
+        mine = [r for r in rows if str(r.get("acct_no", "")).strip() == self.account_no]
+        others = sorted({f"{self._mask(r.get('acct_no'))}({str(r.get('acct_type', '')).strip()})"
+                         for r in rows})
+        if not mine:
+            return {**base, "verified": True, "ok": False, "accounts": others,
+                    "message": f"설정된 계좌 {self.masked_account()} 가 이 API 키의 계좌 목록에 "
+                               f"없습니다. 계좌번호를 확인하세요 (목록: {', '.join(others)})"}
+
+        kind = str(mine[0].get("acct_type", "")).strip()
+        if kind not in want:
+            is_mock_acct = kind in self.ACCT_TYPE_MOCK
+            return {**base, "verified": True, "ok": False, "type": kind, "accounts": others,
+                    "message": f"{mode} 모드인데 설정된 계좌 {self.masked_account()} 는 "
+                               f"{'모의투자' if is_mock_acct else '실전'} 계좌(종류 {kind})입니다. "
+                               f"NAMUH_MOCK 과 계좌번호를 맞추세요."}
+        return {**base, "verified": True, "ok": True, "type": kind, "accounts": others,
+                "message": f"{mode} 계좌 확인 (종류 {kind})"}
+
+    @staticmethod
+    def _mask(v: Any) -> str:
+        v = str(v or "").strip()
+        return v[:3] + "*" * max(0, len(v) - 7) + v[-4:] if len(v) > 7 else v
+
     def test_connection(self) -> Dict[str, Any]:
         """API Key 유효성 및 계좌 연결 테스트."""
         if not self.configured:
@@ -371,10 +426,18 @@ class NamuhAccount:
         try:
             token = self.get_token(force_refresh=True)
             bal = self.get_balance()
+            acct = self.check_account_type()
+            # 계좌가 모드와 확실히 어긋나면 연결 실패로 본다. 모의 계좌로 실전
+            # 주문을 내거나 그 반대면 주문이 전부 거부된다.
+            if acct["verified"] and not acct["ok"]:
+                return {"success": False, "message": acct["message"],
+                        "balance": bal, "accountCheck": acct}
+            note = "" if acct["verified"] else f" · ⚠️ {acct['message']}"
             return {
                 "success": True,
-                "message": f"나무증권 연결 성공 (USD 예수금: ${bal.get('usdAvailable', 0):,.2f})",
+                "message": f"나무증권 연결 성공 (USD 예수금: ${bal.get('usdAvailable', 0):,.2f}){note}",
                 "balance": bal,
+                "accountCheck": acct,
             }
         except NamuhError as e:
             return {"success": False, "message": e.message}
@@ -440,7 +503,10 @@ class NamuhAccount:
 
         holdings: Dict[str, Dict[str, Any]] = {}
         for it in (b.get("Output_1") or []):
-            tkr = str(it.get("iem_cd", "")).strip().upper()
+            # 티커는 tck_iem_cd 를 먼저 본다. 계좌에 따라 iem_cd 에 티커가 아닌
+            # 종목 식별코드가 들어올 수 있고, 그러면 티커로 찾는 거래소 대조가
+            # 통째로 어긋난다. 모의계좌는 iem_cd 에 티커가 들어온다.
+            tkr = str(it.get("tck_iem_cd") or it.get("iem_cd") or "").strip().upper()
             qty = float(it.get("cns_bse_bnc_qty") or 0.0)   # 체결기준잔고수량
             if not tkr or qty <= 0:
                 continue

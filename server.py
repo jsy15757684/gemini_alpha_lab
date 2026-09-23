@@ -110,6 +110,18 @@ def _startup_log():
         if not _mock:
             logger.warning("나무증권이 실계좌로 설정돼 있습니다 — 주문이 실제로 나갑니다. "
                            "모의로 돌리려면 NAMUH_MOCK=1 을 넣으세요.")
+        # 계좌 종류가 모드와 맞는지 기동 때 한 번 본다. 모의 계좌 번호로 실전을
+        # 돌리면(또는 반대) 주문이 전부 거부되는데, 첫 주문 때까지 모른다.
+        try:
+            _ac = namuh_keystore.account.check_account_type()
+            if _ac["verified"] and not _ac["ok"]:
+                logger.error(f"나무증권 계좌 불일치 — {_ac['message']}")
+            elif _ac["verified"]:
+                logger.info(f"나무증권 {_ac['message']}")
+            else:
+                logger.warning(f"나무증권 {_ac['message']}")
+        except Exception as e:
+            logger.warning(f"나무증권 계좌 종류 확인 실패: {e}")
     else:
         logger.info("나무증권 키: 미등록")
     gs = gemini_keystore.status()
