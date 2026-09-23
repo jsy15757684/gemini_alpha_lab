@@ -48,6 +48,11 @@ class TooManyBots(Exception):
     pass
 
 
+# LOC 접수 전 잔고 조회가 실패했을 때 다시 시도하기까지 기다리는 시간(초).
+# 매 틱(10초) 두드리면 호출 한도를 더 빨리 태운다.
+LOC_RETRY_SEC = env_float("APP_LOC_RETRY_SEC", 60.0)
+
+
 class LiquidationFailed(Exception):
     """청산하지 못한 봇은 지우지 않는다.
 
@@ -118,6 +123,8 @@ class TradingBot:
         self.pending_orders: List[Dict[str, Any]] = []
         # 그날 이미 주문을 냈는지 (미국 동부 날짜). 하루 한 번을 보장한다.
         self.loc_session: Optional[str] = None
+        # 잔고 조회 실패 뒤 이 시각 전에는 LOC 접수를 다시 시도하지 않는다.
+        self._loc_retry_after = 0.0
 
     def _fetch_price(self) -> float:
         if self.broker == "namuh":
@@ -406,7 +413,8 @@ class TradingBot:
                     if loc_native:
                         from services import market_schedule as _ms
                         _win = _ms.loc_window()
-                        buy_now = bool(_win["in"] and self.loc_session != _win["sessionDate"])
+                        buy_now = bool(_win["in"] and self.loc_session != _win["sessionDate"]
+                                       and time.time() >= self._loc_retry_after)
                         if not buy_now and self.pos.open:
                             self.last_decision = (
                                 f"원전 LOC — 오늘 접수 완료, 마감 체결 대기 "
@@ -668,11 +676,14 @@ class TradingBot:
             hold = (bal.get("holdings") or {}).get(self.coin) or {}
             avg_before = float(hold.get("avgPrice") or 0.0)
         except Exception as e:
-            # 세션을 소진하지 않는다. 접수 창이 남아 있으면 다음 틱에 다시 한다.
-            self.log("ERROR", f"LOC 접수 전 잔고 조회 실패 — 접수 창 안에서 다시 시도합니다: {e}")
+            # 아직 아무 주문도 보내지 않았으므로 다시 해도 안전하다. 세션을
+            # 소진하지 않되, 매 틱(10초) 두드리지 않도록 간격을 둔다.
+            self._loc_retry_after = time.time() + LOC_RETRY_SEC
+            self.log("ERROR", f"LOC 접수 전 잔고 조회 실패 — {LOC_RETRY_SEC:.0f}초 뒤 다시 시도합니다: {e}")
             return
 
         placed = []
+        rejected = []
         for t in targets:
             try:
                 res = self.namuh_account.market_buy(
@@ -688,17 +699,32 @@ class TradingBot:
                 self.log("ORDER", f"LOC 접수 {t['leg']} ${t['limit']:,.2f} × {t['units']}주 "
                                   f"(주문번호 {res.get('orderId')})")
             except namuh.NamuhError as e:
+                rejected.append(e.message)
                 self.log("ERROR", f"LOC 접수 실패 ({t['leg']}): {e.message}")
 
+        # 주문 단계까지 갔으면 성공이든 거부든 **오늘은 여기까지다.**
+        #
+        # 예전에는 한 다리도 못 내면 창 안에서 다시 시도했다. 그랬더니 모의
+        # 계좌가 LOC 자체를 받지 않는 영구 거부(14050 "모의투자 매매유형을
+        # 확인하세요")를 6시간 동안 1,647번 두드렸다 — 잔고 조회까지 합쳐
+        # 약 3,300번의 호출이다.
+        #
+        # 게다가 통신 오류로 실패한 경우는 주문이 실제로 나갔는데 응답만 못
+        # 받았을 수 있다. 그때 다시 내면 같은 LOC 가 두 번 걸린다. 그래서
+        # 주문을 한 번이라도 보냈으면 재시도하지 않는다.
+        self.loc_session = session
         if placed:
             self.pending_orders.extend(placed)
-            self.loc_session = session      # 접수됐다 — 오늘은 여기까지
             legs = " + ".join(f"{p['leg']} {p['units']}주@${p['limit']:,.2f}" for p in placed)
             self.last_decision = f"LOC 접수 완료 ({legs}) · 마감 동시호가 체결 대기"
         else:
-            # 한 다리도 못 냈다. 거래소가 거부한 것이므로 창이 남아 있으면
-            # 다시 해본다 (일시적 오류일 수 있다).
-            self.last_decision = "LOC 접수 실패 — 접수 창 안에서 다시 시도합니다"
+            why = rejected[0] if rejected else "알 수 없는 이유"
+            hint = ""
+            if namuh.use_mock() and ("14050" in why or "매매유형" in why):
+                hint = (" — 모의계좌는 LOC(장마감 지정가)를 받지 않습니다. 원전 LOC 는 "
+                        "실계좌에서만 동작합니다. 모의 검증은 '반반 지정가' 모드로 하세요.")
+            self.last_decision = f"LOC 접수 거부 · 오늘은 다시 시도하지 않습니다{hint}"
+            self.log("WARNING", f"LOC 접수가 거부돼 오늘 세션을 종료합니다: {why}{hint}")
         self._persist()
 
     def _cancel_pending_loc(self, why: str) -> None:

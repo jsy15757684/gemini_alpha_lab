@@ -1034,6 +1034,78 @@ check("체결 확인용 보유수량 조회는 캐시를 건너뛴다",
       "self.get_balance(fresh=True)" in _src,
       "held_qty 가 캐시를 보면 체결을 영영 못 잡는다")
 
+# ── 거부된 LOC 를 되풀이하지 않는다 ──
+#
+# 모의계좌가 LOC 자체를 받지 않아(14050 "모의투자 매매유형을 확인하세요")
+# 봇이 6시간 동안 1,647번 다시 냈다 — 잔고 조회까지 약 3,300번의 호출.
+# 주문을 한 번이라도 보냈으면 그날은 끝이다. 거부는 대개 영구적이고,
+# 통신 오류는 실제로 나갔을 수 있어 다시 내면 같은 LOC 가 두 번 걸린다.
+class _LocRejects:
+    configured = True
+
+    def __init__(self, err):
+        self.err, self.orders = err, 0
+
+    def get_balance(self, fresh=False):
+        return {"qtyByTicker": {"TQQQ": 0.0}, "holdings": {}}
+
+    def market_buy(self, *a, **k):
+        self.orders += 1
+        raise NamuhError(self.err)
+
+
+def _loc_bot2(acct):
+    p = StrategyParams(strategyType="raoer_infinite", raoerVersion="v4",
+                       splitCount=40, locMode="half_half", feePct=0.0)
+    b = TradingBot(bot_id="STORM", coin="TQQQ", interval="1h", mode="LIVE",
+                   capital_krw=4000.0, params=p, broker="namuh")
+    b.namuh_account = acct
+    return b
+
+
+_saved_mock4 = os.environ.get("NAMUH_MOCK")
+os.environ["NAMUH_MOCK"] = "1"
+
+_rej = _LocRejects("나무증권 매수 주문 실패 (14050): 모의투자 매매유형을 확인하세요.")
+_sb = _loc_bot2(_rej)
+# 실행 루프가 하는 판정을 그대로 되풀이한다 (어젯밤 6시간 = 약 1,600틱)
+for _ in range(1600):
+    if _sb.loc_session != "2026-09-23" and time.time() >= _sb._loc_retry_after:
+        _sb._place_loc_orders(price=75.0, chunk_budget=120.0,
+                              session="2026-09-23", reason="1회차")
+check("거부된 LOC 를 되풀이해 내지 않는다",
+      _rej.orders == 1 and _sb.loc_session == "2026-09-23",
+      f"1,600틱 동안 주문 {_rej.orders}회 — 예전에는 1,647회")
+check("모의계좌 LOC 거부는 이유와 대안을 알려준다",
+      "실계좌에서만" in _sb.last_decision and "반반 지정가" in _sb.last_decision,
+      _sb.last_decision[:60])
+
+_net = _LocRejects("나무증권 매수 주문 통신 오류: Read timed out")
+_nb = _loc_bot2(_net)
+_nb._place_loc_orders(price=75.0, chunk_budget=120.0, session="2026-09-23", reason="1회차")
+check("주문 통신 오류도 다시 내지 않는다 (중복 LOC 방지)",
+      _nb.loc_session == "2026-09-23" and _net.orders == 1,
+      "응답을 못 받았어도 주문이 나갔을 수 있다")
+
+
+class _BalFails(_LocRejects):
+    def get_balance(self, fresh=False):
+        raise NamuhError("나무증권 잔고 조회 실패 (HTTP 429)")
+
+
+_bf = _BalFails("-")
+_bb = _loc_bot2(_bf)
+_bb._place_loc_orders(price=75.0, chunk_budget=120.0, session="2026-09-23", reason="1회차")
+check("잔고 조회 실패는 세션을 남기되 바로 다시 두드리지 않는다",
+      _bb.loc_session is None and _bf.orders == 0
+      and _bb._loc_retry_after > time.time() + 30,
+      f"주문 0회 · {_bb._loc_retry_after - time.time():.0f}초 뒤 재시도")
+
+if _saved_mock4 is None:
+    os.environ.pop("NAMUH_MOCK", None)
+else:
+    os.environ["NAMUH_MOCK"] = _saved_mock4
+
 # ── 청산하지 못한 봇은 지우지 않는다 ──
 #
 # 미국장이 닫힌 시각에 삭제했더니 매도가 거부됐는데 봇만 사라졌다. 계좌에는
