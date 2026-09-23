@@ -928,6 +928,68 @@ if _saved_mock2 is None:
 else:
     os.environ["NAMUH_MOCK"] = _saved_mock2
 
+# ── 연결 테스트가 토큰을 함부로 재발급하지 않는다 ──
+#
+# 공식 문서는 '만료 전 재발급 금지' 다. 예전 test_connection 은 매번
+# force_refresh=True 로 불러, 실전 봇을 만들 때마다·키를 저장할 때마다
+# 새 토큰을 받았다. 이제 유효한 토큰이 있으면 그걸 쓰고, 서버가 그 토큰을
+# 거부했을 때만 한 번 새로 받는다.
+_TOK = {"issued": 0, "bal": []}
+
+
+def _route_tc(balance_codes):
+    it = iter(balance_codes)
+
+    def f(url, **k):
+        if url.endswith("/oauth2/token"):
+            _TOK["issued"] += 1
+            return _Resp(200, {"access_token": f"NEW{_TOK['issued']}", "expires_in": 86400})
+        if url.endswith("/n2/acctinfo"):
+            return _Resp(200, {"rsp_cd": "00000", "Output_0": [
+                {"acct_no": "12345678901", "acct_type": "03"}]})
+        code = next(it)
+        _TOK["bal"].append(code)
+        if code == 200:
+            return _Resp(200, _bal_payload([]))
+        if code in (401, 403):
+            return _Resp(code, {"rsp_cd": "IGW40011", "rsp_msg": "유효하지 않은 토큰"},
+                         text="unauthorized")
+        # 토큰과 무관한 서버 장애 (본문에도 토큰 얘기가 없다)
+        return _Resp(code, {"rsp_cd": "IGW50000", "rsp_msg": "일시적인 서버 오류"},
+                     text="server error")
+    return f
+
+
+_saved_mock3 = os.environ.get("NAMUH_MOCK")
+os.environ["NAMUH_MOCK"] = "1"
+
+_TOK.update(issued=0, bal=[])
+requests.post = _route_tc([200])
+_t1 = _nh_acct().test_connection()                # 유효한 토큰을 이미 들고 있다
+check("유효한 토큰이 있으면 연결 테스트가 재발급하지 않는다",
+      _t1["success"] and _TOK["issued"] == 0,
+      f"토큰 발급 {_TOK['issued']}회 — 만료 전 재발급 금지")
+
+_TOK.update(issued=0, bal=[])
+requests.post = _route_tc([401, 200])
+_t2 = _nh_acct().test_connection()                # 들고 있던 토큰이 서버에서 거부됨
+check("토큰이 거부되면 한 번만 새로 받아 다시 확인한다",
+      _t2["success"] and _TOK["issued"] == 1 and _TOK["bal"] == [401, 200],
+      f"잔고 {_TOK['bal']} · 발급 {_TOK['issued']}회")
+
+_TOK.update(issued=0, bal=[])
+requests.post = _route_tc([500])
+_t3 = _nh_acct().test_connection()                # 토큰과 무관한 장애
+check("토큰 문제가 아닌 실패에는 재발급하지 않는다",
+      not _t3["success"] and _TOK["issued"] == 0,
+      f"HTTP 500 · 발급 {_TOK['issued']}회")
+
+requests.post = _real_post3
+if _saved_mock3 is None:
+    os.environ.pop("NAMUH_MOCK", None)
+else:
+    os.environ["NAMUH_MOCK"] = _saved_mock3
+
 # ── 일시적 실패가 하루치 접수 기회를 태우지 않는다 ──
 #
 # LOC 는 하루 한 번, 8분짜리 창에서만 낸다. 그런데 '오늘은 시도했다' 표시를

@@ -212,6 +212,15 @@ _nh_last_call = 0.0
 _RATE_LIMIT_CODES = {"IGW42903"}
 
 
+def _is_auth_error(e: "NamuhError") -> bool:
+    """토큰이 거부된 실패인가. 이때만 토큰을 새로 받는다."""
+    # HTTP 401/403 이 가장 확실하다. 그 밖에는 NH 가 한국어로 돌려주는 토큰·인증
+    # 문구만 본다. 영문 'token'·'unauthorized' 처럼 넓게 잡으면 아무 서버 오류
+    # 본문에나 걸려, 토큰 문제가 아닌데도 재발급하게 된다.
+    msg = str(getattr(e, "message", "") or e)
+    return any(k in msg for k in ("HTTP 401", "HTTP 403", "토큰", "인증"))
+
+
 def _is_rate_limited(res) -> bool:
     if res.status_code == 429:
         return True
@@ -424,8 +433,23 @@ class NamuhAccount:
         if not self.configured:
             return {"success": False, "message": "APPKEY와 Secret Key를 모두 입력하세요."}
         try:
-            token = self.get_token(force_refresh=True)
-            bal = self.get_balance()
+            # 만료 전 재발급 금지(공식 문서). 예전에는 여기서 force_refresh=True 로
+            # 불러, 실전 봇을 만들 때마다·키를 저장할 때마다 새 토큰을 받았다.
+            # 규칙 위반이고 호출 건수도 쓴다. 이제 메모리·디스크에 유효한 토큰이
+            # 있으면 그걸 쓴다. 디스크 토큰은 앱키 해시에 묶여 있어 키를 바꾸면
+            # 옛 토큰을 쓰지 않는다.
+            self.get_token()
+            try:
+                # 연결 확인이므로 캐시가 아닌 실제 응답으로 본다.
+                bal = self.get_balance(fresh=True)
+            except NamuhError as e:
+                # 저장된 토큰이 서버에서 거부됐을 때만(키 폐기·교체) 한 번 새로
+                # 받는다. 그 외 실패는 토큰 문제가 아니므로 재발급하지 않는다.
+                if not _is_auth_error(e):
+                    raise
+                logger.warning(f"저장된 나무증권 토큰이 거부돼 한 번 새로 발급합니다: {e.message}")
+                self.get_token(force_refresh=True)
+                bal = self.get_balance(fresh=True)
             acct = self.check_account_type()
             # 계좌가 모드와 확실히 어긋나면 연결 실패로 본다. 모의 계좌로 실전
             # 주문을 내거나 그 반대면 주문이 전부 거부된다.
