@@ -791,7 +791,7 @@ function renderMumaBot(r) {
   const orders = [
     ...(p.sell ? [{ side: "매도", ...p.sell }] : []),
     ...p.buys.map(b => ({ side: "매수", ...b })),
-  ].map(o => `<tr><td class="${o.side === "매도" ? "down" : "up"}">${o.side}</td><td style="font-family:inherit">${escapeHtml(o.leg)}</td>
+  ].map(o => `<tr${o.units === 0 ? ' class="muted" style="opacity:.55"' : ""}><td class="${o.side === "매도" ? "down" : "up"}">${o.side}</td><td style="font-family:inherit">${escapeHtml(o.leg)}</td>
     <td>${escapeHtml(o.type)}</td><td>${usd(o.price)}</td><td>${qty(o.units)}</td><td>${usd(o.amount)}</td></tr>`).join("");
   const ladder = p.ladder.map(l => `<tr><td>+${l.level}주</td><td>×${l.mult.toFixed(2)}</td><td>${usd(l.price)}</td><td>${l.units}</td></tr>`).join("");
   const recs = r.records.map(t => `<tr>
@@ -811,6 +811,9 @@ function renderMumaBot(r) {
             <thead><tr><th>구분</th><th>주문</th><th>종류</th><th>가격</th><th>개수</th><th>금액</th></tr></thead>
             <tbody>${orders}</tbody></table></div>`
             : `<div class="empty">${r.price > 0 ? `1회분할금 ${usd(p.unitBudget)} 으로는 현재가 ${usd(r.price)} 짜리 1주도 살 수 없습니다.` : "현재가를 아직 받지 못했습니다."}</div>`}
+          ${p.zeroLegs ? `<div class="muma-note" style="color:var(--warn)">⚠ ${p.zeroLegs.allZero ? "두 LOC 다리가 모두 0주라 이 표대로면 오늘은 사지 않습니다" : `${escapeHtml(p.zeroLegs.legs.join(" · "))} 가 0주입니다`}.
+            0.5회분할금 ${usd(p.halfBudget)} 이 주가의 절반보다 작아 반올림하면 0 이 됩니다.
+            1주씩 사려면 1회분할금 ${usd(p.zeroLegs.minUnitBudget)} 이상 (SEED ${usd(p.zeroLegs.minSeed, 0)} 이상 · ${r.splitCount}분할) 이 필요합니다.</div>` : ""}
           ${p.hasPosition ? "" : `<div class="muma-note">보유가 없어 엑셀 주문표는 비어 있습니다. 첫날은 1회분할금으로 삽니다.</div>`}</div>
         <div><div class="muted small">추가 매수 사다리 (각 단 1주 LOC)</div>
           ${ladder ? `<div class="tbl-wrap" style="margin-top:.4rem"><table>

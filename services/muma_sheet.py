@@ -76,7 +76,8 @@ def order_plan(seed: float, units: float, avg: float, price: float,
     unit_budget = xround(seed / split_count, 2) if seed else 0.0       # B3
     half_budget = xround(unit_budget / 2, 2) if unit_budget else 0.0   # B4
     plan = {"unitBudget": unit_budget, "halfBudget": half_budget,
-            "sell": None, "buys": [], "ladder": [], "hasPosition": units > 0}
+            "sell": None, "buys": [], "ladder": [], "hasPosition": units > 0,
+            "zeroLegs": None}
     if not price or price <= 0:
         return plan
     if units <= 0 or avg <= 0:
@@ -102,6 +103,13 @@ def order_plan(seed: float, units: float, avg: float, price: float,
          "units": avg_qty, "amount": round(avg_qty * avg4, 2)},
     ]
     plan["ladder"] = _ladder(price, unit_budget, big_qty + avg_qty)
+    # 0.5회분할금이 주가의 절반도 안 되면 ROUND 가 0 을 내 그 다리는 사지 않는다.
+    # 1주가 되려면 0.5회분 ≥ 가격/2, 즉 1회분할금 ≥ 그 다리 가격이어야 한다.
+    zero = [x for x in plan["buys"] if x["units"] == 0]
+    if zero:
+        need = math.ceil(max(x["price"] for x in zero) * 100) / 100
+        plan["zeroLegs"] = {"legs": [x["leg"] for x in zero], "allZero": len(zero) == len(plan["buys"]),
+                            "minUnitBudget": need, "minSeed": math.ceil(need * split_count)}
     return plan
 
 

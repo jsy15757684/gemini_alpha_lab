@@ -68,6 +68,17 @@ check("봇의 분할 수·목표 수익률을 쓴다 (20분할 · 15%)",
       p["unitBudget"] == 449.84 and p["sell"]["price"] == 121.61,
       f"1회 {p['unitBudget']} · 매도 {p['sell']['price']}")
 
+p = m.order_plan(4000, 1, 151.112, 151.11)       # 운영 SOXL: 1회 $100 · 주가 $151
+z = p["zeroLegs"]
+check("0.5회분할금이 주가 절반보다 작으면 두 다리 모두 0주로 표시",
+      z and z["allZero"] and [b["units"] for b in p["buys"]] == [0, 0], f"{z}")
+check("1주가 되는 최소 1회분할금 = 비싼 다리 가격 · SEED = ×분할수",
+      z["minUnitBudget"] == 173.78 and z["minSeed"] == 6952, f"${z['minUnitBudget']} · ${z['minSeed']}")
+q = m.order_plan(z["minSeed"], 1, 151.112, 151.11)
+check("그 SEED 면 실제로 두 다리가 1주씩 된다",
+      [b["units"] for b in q["buys"]] == [1, 1] and q["zeroLegs"] is None, f"{[b['units'] for b in q['buys']]}")
+check("0주 다리가 없으면 안내하지 않는다", m.order_plan(SEED, 20, 105.748, 102.59)["zeroLegs"] is None, "")
+
 p = m.order_plan(SEED, 0, 0, 102.59)
 check("보유가 없으면 엑셀처럼 매도·사다리 없이 첫 매수만",
       p["sell"] is None and not p["ladder"] and len(p["buys"]) == 1 and p["buys"][0]["units"] == 2,
