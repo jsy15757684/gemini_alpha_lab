@@ -57,7 +57,7 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh
+from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog
 from services.gemini_service import gemini_keystore
 from services.keystore import keystore, namuh_keystore
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
@@ -392,6 +392,23 @@ def list_bots():
 def bot_trades():
     """모든 봇의 실시간 매매 일지 및 누적 손익 정산 데이터."""
     return bot_manager.all_trade_history()
+
+
+@app.get("/api/muma/table")
+def muma_table():
+    """무매법.xlsx 의 현황 · 당일 주문 · 매수 기록 · 월별 실현 표를 봇 장부로 만든다."""
+    bots = [b for b in bot_manager.all_status() if b.get("currency") == "USD"]
+    trades_by_bot = {bid: list(bot.trade_history) for bid, bot in bot_manager.bots.items()}
+    holdings, account_error = None, None
+    if bots and namuh_keystore.account.configured:
+        try:
+            # 8초 캐시를 쓴다. 이 표 때문에 호출 한도를 더 쓰지 않는다.
+            holdings = namuh_keystore.account.get_balance().get("holdings") or {}
+        except namuh.NamuhError as e:
+            account_error = e.message
+    out = muma_sheet.build(bots, trades_by_bot, holdings, tradelog.all_rows())
+    out["accountError"] = account_error
+    return out
 
 
 @app.post("/api/bot/stop")

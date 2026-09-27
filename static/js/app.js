@@ -748,6 +748,112 @@ function renderBacktest(r) {
   $("btResult").classList.remove("hidden");
 }
 
+// ───────── 무매법 표 (무매법.xlsx) ─────────
+
+const usd = (n, d = 2) => (n == null || isNaN(n)) ? "-"
+  : `${n < 0 ? "-" : ""}$${Math.abs(Number(n)).toLocaleString("en-US", { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+const qty = (n) => (n == null || isNaN(n)) ? "-" : Number(n).toLocaleString("en-US", { maximumFractionDigits: 4 });
+const mumaOpen = new Set();   // 새로고침해도 펼친 종목은 펼친 채로 둔다
+
+function mumaVerifyCell(r) {
+  const v = r.verify;
+  if (!v) return `<td class="muted">-</td>`;
+  if (!v.qtyOk) return `<td class="down" title="계좌 ${qty(v.accountQty)}주 · 봇 장부 ${qty(r.units)}주">❌ 계좌 ${qty(v.accountQty)}주</td>`;
+  if (!v.avgDiff) return `<td class="up">✅ 일치</td>`;
+  return `<td class="up" title="계좌 평단 ${usd(v.accountAvg, 4)}">✅ 평단차 ${v.avgDiff > 0 ? "+" : ""}${v.avgDiff.toFixed(4)}</td>`;
+}
+
+function renderMumaStatus(data) {
+  const rows = data.rows.map(r => `<tr>
+    <td>${r.no}</td><td><b>${escapeHtml(r.ticker)}</b></td>
+    <td class="muted" style="font-family:inherit; max-width:170px; overflow:hidden; text-overflow:ellipsis" title="${escapeHtml(r.name || "")}">${escapeHtml(r.name || "")}</td>
+    <td>${usd(r.seed)}</td><td>${usd(r.unitBudget)}</td>
+    <td>${r.turn}/${r.splitCount}</td>
+    <td>${usd(r.invested)}</td><td>${usd(r.value)}</td><td>${qty(r.units)}</td>
+    <td>${usd(r.price)}</td><td>${r.units > 0 ? usd(r.avg, 4) : "-"}</td>
+    <td class="${cls(r.pnlPct)}">${r.units > 0 ? pct(r.pnlPct) : "-"}</td>
+    <td class="${cls(r.pnl)}">${r.units > 0 ? usd(r.pnl) : "-"}</td>
+    <td class="flag">${r.splitFlag ? "Y" : ""}</td><td class="flag">${escapeHtml(r.quarterFlag)}</td>
+    ${mumaVerifyCell(r)}</tr>`).join("");
+  const s = data.summary;
+  $("mumaStatus").innerHTML = data.rows.length ? `<div class="tbl-wrap"><table>
+    <thead><tr><th>순번</th><th>종목티커</th><th>종목이름</th><th>총SEED</th><th>1회분할금</th><th>횟수</th>
+      <th>총투자금</th><th>현평가액</th><th>총개수</th><th>현재가</th><th>평단가</th><th>손익률</th><th>손익금</th>
+      <th title="손익률 -20% 이하">스플릿법</th><th title="30회 이상">분할매도</th><th title="증권사 잔고와 개수·평단 대조">잔고검증</th></tr></thead>
+    <tbody>${rows}<tr class="muma-sum"><td colspan="3">SUM</td><td>${usd(s.seed)}</td><td>${usd(s.unitBudget)}</td><td></td>
+      <td>${usd(s.invested)}</td><td>${usd(s.value)}</td><td>${qty(s.units)}</td><td></td><td></td>
+      <td class="${cls(s.pnlPct)}">${pct(s.pnlPct)}</td><td class="${cls(s.pnl)}">${usd(s.pnl)}</td><td colspan="3"></td></tr></tbody>
+    </table></div>` : `<div class="empty">나무증권(미국주식) 봇이 없습니다. 자동매매 봇 탭에서 가동하면 여기에 표가 생깁니다.</div>`;
+}
+
+function renderMumaBot(r) {
+  const p = r.plan;
+  const orders = [
+    ...(p.sell ? [{ side: "매도", ...p.sell }] : []),
+    ...p.buys.map(b => ({ side: "매수", ...b })),
+  ].map(o => `<tr><td class="${o.side === "매도" ? "down" : "up"}">${o.side}</td><td style="font-family:inherit">${escapeHtml(o.leg)}</td>
+    <td>${escapeHtml(o.type)}</td><td>${usd(o.price)}</td><td>${qty(o.units)}</td><td>${usd(o.amount)}</td></tr>`).join("");
+  const ladder = p.ladder.map(l => `<tr><td>+${l.level}주</td><td>×${l.mult.toFixed(2)}</td><td>${usd(l.price)}</td><td>${l.units}</td></tr>`).join("");
+  const recs = r.records.map(t => `<tr>
+    <td>${escapeHtml((t.time || "").slice(0, 10))}</td><td>${usd(t.price)}</td>
+    <td class="${t.units < 0 ? "down" : ""}">${qty(t.units)}</td><td>${usd(t.amount)}</td><td>${usd(t.cumAmount)}</td>
+    <td>${t.count}</td><td>${qty(t.shares)}</td><td>${usd(t.avg, 4)}</td><td class="${cls(t.pnlPct)}">${pct(t.pnlPct)}</td></tr>`).join("");
+  const open = mumaOpen.has(r.botId) ? " open" : "";
+  return `<details class="muma-bot" data-bot="${escapeHtml(r.botId)}"${open}>
+    <summary><b>${escapeHtml(r.ticker)}</b>
+      <span class="muted small">1회분할금 ${usd(p.unitBudget)} · 0.5회 ${usd(p.halfBudget)}</span>
+      <span class="muted small">${r.turn}/${r.splitCount}회 · ${qty(r.units)}주 · 평단 ${r.units > 0 ? usd(r.avg, 4) : "-"}</span>
+      ${r.isRunning ? "" : `<span class="badge">정지</span>`}</summary>
+    <div class="muma-body">
+      <div class="muma-grid">
+        <div><div class="muted small">당일 주문</div>
+          ${orders ? `<div class="tbl-wrap" style="margin-top:.4rem"><table>
+            <thead><tr><th>구분</th><th>주문</th><th>종류</th><th>가격</th><th>개수</th><th>금액</th></tr></thead>
+            <tbody>${orders}</tbody></table></div>`
+            : `<div class="empty">${r.price > 0 ? `1회분할금 ${usd(p.unitBudget)} 으로는 현재가 ${usd(r.price)} 짜리 1주도 살 수 없습니다.` : "현재가를 아직 받지 못했습니다."}</div>`}
+          ${p.hasPosition ? "" : `<div class="muma-note">보유가 없어 엑셀 주문표는 비어 있습니다. 첫날은 1회분할금으로 삽니다.</div>`}</div>
+        <div><div class="muted small">추가 매수 사다리 (각 단 1주 LOC)</div>
+          ${ladder ? `<div class="tbl-wrap" style="margin-top:.4rem"><table>
+            <thead><tr><th>단</th><th>현가대비</th><th>가격</th><th>개수</th></tr></thead>
+            <tbody>${ladder}</tbody></table></div>` : `<div class="empty">${p.hasPosition ? "현재가의 0.30배까지 더 살 단이 없습니다." : "보유가 생기면 계산합니다."}</div>`}
+          <div class="muma-note">종가가 k단 아래로 마감하면 1~k단이 모두 체결돼 그날 1회분할금을 거의 다 씁니다.</div></div>
+      </div>
+      <div class="muted small" style="margin-top:.8rem">매수 기록 (이번 사이클)</div>
+      ${recs ? `<div class="tbl-wrap" style="margin-top:.4rem"><table>
+        <thead><tr><th>날짜</th><th>체결가</th><th>수량</th><th>총가격</th><th>누적가격</th><th>횟수</th><th>총 주수</th><th>평단</th><th>손익률</th></tr></thead>
+        <tbody>${recs}</tbody></table></div>` : `<div class="empty">이번 사이클의 체결이 아직 없습니다.</div>`}
+    </div></details>`;
+}
+
+function renderMumaRealized(rz) {
+  if (!rz.rows.length) return $("mumaRealized").innerHTML = `<div class="empty">아직 실현된 매도가 없습니다.</div>`;
+  const head = rz.months.map(m => `<th>${escapeHtml(m.replace("-", "."))}</th>`).join("");
+  const body = rz.rows.map(r => `<tr><td><b>${escapeHtml(r.ticker)}</b></td>${rz.months.map(m => {
+    const v = r.byMonth[m];
+    return `<td class="${cls(v)}">${v == null ? "" : usd(v)}</td>`;
+  }).join("")}<td class="${cls(r.total)}"><b>${usd(r.total)}</b></td></tr>`).join("");
+  $("mumaRealized").innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>TICKER</th>${head}<th>합계</th></tr></thead>
+    <tbody>${body}</tbody></table></div>`;
+}
+
+async function loadMuma() {
+  try {
+    const data = await api("/api/muma/table");
+    renderMumaStatus(data);
+    $("mumaBots").innerHTML = data.rows.map(renderMumaBot).join("") || `<div class="empty">-</div>`;
+    $("mumaBots").querySelectorAll("details.muma-bot").forEach(d => d.addEventListener("toggle", () => {
+      d.open ? mumaOpen.add(d.dataset.bot) : mumaOpen.delete(d.dataset.bot);
+    }));
+    renderMumaRealized(data.realized);
+    const warn = data.accountError ? `증권사 잔고를 받지 못해 잔고검증을 비웠습니다: ${escapeHtml(data.accountError)}`
+      : (data.rows.some(r => r.verify && !r.verify.qtyOk)
+        ? "봇 장부와 계좌 수량이 다른 종목이 있습니다. 계좌에 봇 몫이 아닌 물량이 섞여 있으면 그럴 수 있습니다." : "");
+    setAlert($("mumaAlert"), warn, "warn");
+  } catch (e) {
+    $("mumaStatus").innerHTML = `<div class="alert alert-error">무매법 표를 불러오지 못했습니다: ${escapeHtml(e.message)}</div>`;
+  }
+}
+
 // ───────── 차트 ─────────
 
 async function loadChart() {
@@ -1567,10 +1673,12 @@ async function boot() {
     $(tab.dataset.panel).classList.remove("hidden");
     if (tab.dataset.panel === "panel-gemini") loadGeminiScan();
     if (tab.dataset.panel === "panel-trades") loadTradeHistory();
+    if (tab.dataset.panel === "panel-muma") loadMuma();
     if (tab.dataset.panel === "panel-chart") loadChart();
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadGeminiStatus(); loadEgressIp(); }
   });
 
+  if ($("refreshMumaBtn")) $("refreshMumaBtn").onclick = () => loadMuma();
   if ($("usMarketPill")) $("usMarketPill").onclick = () => loadUsMarketStatus();
   if ($("macroGearPill")) $("macroGearPill").onclick = () => loadMacroRegime();
 
@@ -1583,6 +1691,7 @@ async function boot() {
     setInterval(loadUsMarketStatus, 15000),
     setInterval(loadMacroRegime, 30000),
     setInterval(renderFreshness, 1000),
+    setInterval(() => { if (!$("panel-muma").classList.contains("hidden")) loadMuma(); }, 30000),
   );
 
   document.addEventListener("visibilitychange", () => {

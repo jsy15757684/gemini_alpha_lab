@@ -270,3 +270,18 @@ select.input{text-overflow:ellipsis; padding-right:1.8rem}
 /* 격자 한 줄을 통째로 쓰는 칸. 선택지 글자가 긴 드롭다운에 쓴다 — 반 칸
    (229px)에 넣으면 '라오어 원전 반반 LOC · 하루 한 번' 이 잘린다. */
 .form-grid > .span-2{grid-column:1 / -1}
+
+/* 무매법 표 */
+.muma-h{margin:1.3rem 0 0; font-size:.86rem; font-weight:700; color:var(--muted)}
+.muma-bot{margin-top:.8rem; border:1px solid var(--line); border-radius:10px; background:var(--surface)}
+.muma-bot > summary{cursor:pointer; padding:.65rem .8rem; font-size:.86rem; display:flex;
+  flex-wrap:wrap; gap:.4rem .8rem; align-items:center; list-style:none}
+.muma-bot > summary::-webkit-details-marker{display:none}
+.muma-bot > summary::before{content:"▸"; color:var(--faint)}
+.muma-bot[open] > summary::before{content:"▾"}
+.muma-body{padding:0 .8rem .8rem}
+.muma-grid{display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:.8rem}
+.muma-grid .tbl-wrap table{min-width:0}
+.muma-note{font-size:.74rem; color:var(--faint); margin-top:.4rem; line-height:1.5}
+td.flag{color:var(--warn); font-weight:700}
+tr.muma-sum td{font-weight:700; background:var(--surface-2)}

@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=5.1.1">
+<link rel="stylesheet" href="/static/css/style.css?v=5.2.0">
 </head>
 <body>
 
@@ -51,6 +51,7 @@
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
     <button class="tab" data-panel="panel-bots">자동매매 봇</button>
+    <button class="tab" data-panel="panel-muma">📋 무매법 표</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
     <button class="tab" data-panel="panel-chart">시세·지표</button>
@@ -418,6 +419,30 @@
       </div>
     </section>
 
+    <!-- 무매법 표 (무매법.xlsx 를 봇 장부로) -->
+    <section id="panel-muma" class="panel hidden">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">📋 무매법 표</h2>
+            <p class="muted small">무매법.xlsx 의 현황 · 당일 주문 · 매수 기록 · 월별 실현 표를 나무증권 봇 장부로 채웁니다.
+              주문표는 <b>엑셀 수식(V1: 평단×1.1 지정가 매도 · 1.15배 LOC · 평단 LOC · 추가 사다리)</b> 그대로이며,
+              봇이 실제로 내는 주문(V4)과는 다를 수 있습니다.</p>
+          </div>
+          <div class="inline">
+            <button class="btn btn-ghost btn-sm" id="refreshMumaBtn" style="white-space:nowrap">🔄 새로고침</button>
+          </div>
+        </div>
+        <div class="alert alert-warn hidden" id="mumaAlert" style="margin-top: 12px;"></div>
+        <h3 class="muma-h">현황</h3>
+        <div id="mumaStatus"><div class="empty">불러오는 중…</div></div>
+        <h3 class="muma-h">종목별 당일 주문 · 매수 기록</h3>
+        <div id="mumaBots"></div>
+        <h3 class="muma-h">월별 실현 손익 (USD)</h3>
+        <div id="mumaRealized"></div>
+      </div>
+    </section>
+
     <!-- 백테스트 -->
     <section id="panel-backtest" class="panel hidden">
       <div class="card">
@@ -595,6 +620,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.3.3"></script>
+<script src="/static/js/app.js?v=5.4.0"></script>
 </body>
 </html>
