@@ -73,9 +73,13 @@ FEE_PCT = 0.015         # 나무증권 온라인 수수료 (대략값)
 
 
 def is_krx(code: str) -> bool:
-    """국내 종목코드(숫자 6자리)인가. 미국 티커 · 코인은 영문이라 겹치지 않는다."""
-    c = str(code or "").strip()
-    return len(c) == 6 and c.isdigit()
+    """국내 단축 종목코드인가 — 6자리, 숫자로 시작하는 영숫자.
+
+    새 코드에는 영문이 섞인다(예: 0009K0 에임드바이오 · 종목 마스터 실측).
+    미국 티커 · 코인은 영문으로 시작해 겹치지 않는다.
+    """
+    c = str(code or "").strip().upper()
+    return len(c) == 6 and c[0].isdigit() and c.isalnum()
 
 
 def tick_size(price: float, etf: bool) -> int:
@@ -104,6 +108,32 @@ def shift_ticks(price: float, etf: bool, ticks: int) -> int:
     for _ in range(abs(ticks)):
         p += step * tick_size(p if step > 0 else p - 1, etf)
     return p
+
+
+def prev_or_volume(acc: namuh.NamuhAccount, code: str, today: str, range_min: int = 5) -> Optional[Dict[str, Any]]:
+    """전 거래일 09:00 ~ 09:00+range_min 거래량 — RVOL 의 분모.
+
+    나무증권 기간별 시세의 분봉(gubun 5 · xtick=range_min)에서 그날 첫 봉을 읽는다.
+    봉 시각은 끝 시각이라 09:05 봉이 09:00~09:05(시가 동시호가 포함)다.
+    2026-09-23 카카오: 나무증권 5분봉 60,622주 · 야후 1분봉 합 60,575주 — KRX 기준으로 맞았다.
+    (하루 전체는 나무증권이 NXT 시간외까지 담아 더 크다. 그래서 첫 봉만 쓴다.)
+    """
+    from datetime import date as _d, timedelta as _td
+    y, mo, d = (int(x) for x in today.split("-"))
+    edate = (_d(y, mo, d) - _td(days=1)).strftime("%Y%m%d")
+    res, b = _post(acc, namuh.BASE_URL, "/krstock/quote/v1/period", {
+        "iem_cd": code, "market_cd": "KRX", "gubun": "5", "xtick": str(range_min),
+        "array_cnt": "160", "edate": edate, "maxavg": "5", "today_cls_code": "0"}, read=True)
+    want = f"{9 + (range_min // 60):02d}{range_min % 60:02d}00"
+    today_s = today.replace("-", "")
+    rows = [r for r in (b.get("Output_1") or []) if str(r.get("bsop_date") or "") < today_s]
+    if not rows:
+        return None
+    last_day = max(str(r.get("bsop_date")) for r in rows)
+    for r in rows:
+        if str(r.get("bsop_date")) == last_day and str(r.get("bsop_time") or "") == want:
+            return {"date": f"{last_day[:4]}-{last_day[4:6]}-{last_day[6:]}", "volume": _i(r.get("vol"))}
+    return None
 
 
 def _i(v: Any) -> int:
@@ -148,7 +178,14 @@ def quote(acc: namuh.NamuhAccount, code: str) -> Dict[str, Any]:
     # 가중평균가 필드가 비면 누적 거래대금(백만원)/누적 거래량으로 낸다.
     vwap = _f(o.get("wghn_avrg_prc")) or (_f(o.get("acml_tr_pbmn")) * 1_000_000 / vol if vol else 0.0)
     grp = str(o.get("scrt_grp_isnm") or "").strip()
+    # 동시호가 예상체결 (Output_2). 장 전 08:30~09:00 에 ORB 자동 선정이 쓴다.
+    # '데이터가 있을 때만' 오는 블록이라 없으면 0 으로 둔다.
+    o2 = b.get("Output_2") or {}
     return {
+        "expPrice": _i(o2.get("antc_cnpr")),
+        "expChangePct": _f(o2.get("antc_prdy_ctrt")),
+        "expVolume": _i(o2.get("antc_vol")),
+        "prevVolume": _i(o.get("prdy_vol")),
         "code": code,
         "name": str(o.get("iem_nm") or code).strip().lstrip("*#").strip(),
         "price": price,

@@ -58,7 +58,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog
-from services import roles, worker_client, krx, orb
+from services import roles, worker_client, krx, orb, orb_selector, krx_master
 from services.worker_client import WorkerDown
 from services.gemini_service import gemini_keystore
 from services.keystore import keystore, namuh_keystore
@@ -305,11 +305,18 @@ def _is_namuh_deploy(req: "DeployRequest") -> bool:
 def _deploy_orb(req: "DeployRequest"):
     """국내주식 ORB 스캐너. 감시 목록 전체를 실시간으로 보고 신호가 뜬 종목을 산다."""
     p = dict(req.params or {})
-    watch = [str(c).strip() for c in (p.get("watchlist") or list(krx.KRX_STOCKS))]
+    mode_w = str(p.get("watchMode") or "auto")
+    if mode_w not in ("auto", "manual"):
+        raise HTTPException(400, "감시 방식은 auto(자동 선정) 또는 manual(직접 입력)입니다.")
+    try:
+        orb_selector.SelectParams.from_dict(p.get("select"))
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, f"자동 선정 설정이 올바르지 않습니다: {e}")
+    watch = [str(c).strip().upper() for c in (p.get("watchlist") or list(krx.KRX_STOCKS))]
     watch = list(dict.fromkeys(c for c in watch if c))
     bad = [c for c in watch if not krx.is_krx(c)]
     if bad:
-        raise HTTPException(400, f"국내 종목코드는 숫자 6자리입니다: {', '.join(bad[:5])}")
+        raise HTTPException(400, f"국내 종목코드는 6자리입니다: {', '.join(bad[:5])}")
     if not watch:
         raise HTTPException(400, "감시할 종목이 없습니다.")
     if len(watch) > krx.MAX_WATCH:
@@ -327,7 +334,8 @@ def _deploy_orb(req: "DeployRequest"):
     if req.capitalKrw < 300_000:
         raise HTTPException(400, "ORB 스캐너 운용 자본은 300,000원 이상이어야 합니다.")
     try:
-        orb.OrbParams.from_dict({k: v for k, v in p.items() if k not in ("watchlist", "maxPositions", "names", "strategyType")})
+        orb.OrbParams.from_dict({k: v for k, v in p.items()
+                                 if k not in ("watchlist", "maxPositions", "names", "strategyType", "watchMode", "select")})
     except (ValueError, TypeError) as e:
         raise HTTPException(400, f"ORB 설정이 올바르지 않습니다: {e}")
     if any(getattr(b.params, "strategyType", "") == "orb" for b in bot_manager.bots.values()):
@@ -338,7 +346,7 @@ def _deploy_orb(req: "DeployRequest"):
         raise HTTPException(400, "국내 ORB 는 모의투자도 나무증권 실시간 시세가 필요합니다. API 키를 먼저 등록하세요.")
     # 기본 목록 밖의 종목은 있는 종목인지 한 번 본다 (이름도 얻는다).
     names = {}
-    for c in [c for c in watch if c not in krx.KRX_STOCKS][:10]:
+    for c in ([c for c in watch if c not in krx.KRX_STOCKS][:10] if mode_w == "manual" else []):
         try:
             names[c] = krx.quote(acc, c)["name"]
         except namuh.NamuhError as e:
@@ -350,7 +358,15 @@ def _deploy_orb(req: "DeployRequest"):
             raise HTTPException(400, f"나무증권 국내 잔고를 받지 못했습니다: {e.message}")
         if cash < req.capitalKrw:
             raise HTTPException(400, f"국내 주문가능 금액({cash:,.0f}원)이 운용 자본({req.capitalKrw:,.0f}원)보다 적습니다.")
-    params = {**p, "strategyType": "orb", "watchlist": watch, "maxPositions": maxpos, "names": names}
+    if mode_w == "auto":
+        # 후보군(종목 마스터)을 지금 받아 본다. 내일 아침에야 실패를 알면 늦다.
+        try:
+            n_cands = len(krx_master.candidates(krx_master.load()))
+        except Exception as e:
+            raise HTTPException(503, f"종목 마스터를 받지 못해 자동 선정을 쓸 수 없습니다: {e}")
+        logger.info(f"ORB 자동 선정 후보 {n_cands}종목")
+    params = {**p, "strategyType": "orb", "watchMode": mode_w, "watchlist": watch, "maxPositions": maxpos,
+              "names": names}
     try:
         bot = bot_manager.deploy("ORB", "ORB", mode, req.capitalKrw, params,
                                  account=None, namuh_account=acc, broker="namuh")
@@ -698,7 +714,8 @@ def namuh_kr_stocks():
     """국내주식 ORB 로 고를 수 있는 종목과 기본 설정."""
     return {"stocks": [{"code": k, "name": v["name"], "etf": v["etf"], "index": v["index"]}
                        for k, v in krx.KRX_STOCKS.items()],
-            "maxWatch": krx.MAX_WATCH, "defaults": orb.OrbParams().to_dict()}
+            "maxWatch": krx.MAX_WATCH, "defaults": orb.OrbParams().to_dict(),
+            "selectDefaults": orb_selector.SelectParams().to_dict()}
 
 
 @app.get("/api/namuh/stocks")

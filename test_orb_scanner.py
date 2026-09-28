@@ -125,13 +125,13 @@ def tick_snap(code, now, price, high, low, vol, vwap=None):
                      "hogaTime": now.strftime("%H:%M:%S"), "market": "kospi"}
 
 
-P = {"rvolMin": 0, "marketFilter": False}
+P = {"rvolMin": 0, "marketFilter": False, "watchMode": "manual"}
 CODES = ["005930", "000660", "035720", "105560"]
 bot = osc.OrbScanner("ORB-t", "PAPER", 900_000, {**P, "watchlist": CODES, "maxPositions": 3}, None)
 bot.day_date = "2026-09-29"
 check("종목당 자본 = 운용자본 ÷ 최대 보유", bot.slot_budget() == 300_000, f"{bot.slot_budget():,.0f}")
 check("실시간 구독에 감시 목록이 들어간다", set(CODES) <= set(bot._codes_to_stream()), "")
-bot2 = osc.OrbScanner("x", "PAPER", 900_000, {"watchlist": CODES}, None)
+bot2 = osc.OrbScanner("x", "PAPER", 900_000, {"watchlist": CODES, "watchMode": "manual"}, None)
 check("지수 필터를 켜면 지수 ETF 2종도 구독한다", {"069500", "229200"} <= set(bot2._codes_to_stream()), "")
 
 
@@ -212,7 +212,7 @@ check("1주가 종목당 자본(30만원)보다 비싸면 건너뛴다 (SK하이
       not bot.positions and bot.days["000660"].done and "살 수 없어" in bot.days["000660"].note, bot.days["000660"].note[:30])
 BASE.update(BASE_SAVE); bot = bot_save
 
-rv = osc.OrbScanner("ORB-r", "PAPER", 900_000, {"marketFilter": False, "watchlist": ["035720"]}, None)
+rv = osc.OrbScanner("ORB-r", "PAPER", 900_000, {"marketFilter": False, "watchlist": ["035720"], "watchMode": "manual"}, None)
 rv.or_vol_history = {"035720": {"2026-09-28": 5_000, "2026-09-25": 100}}
 check("RVOL 기준은 종목별 · 오늘 이전 가장 최근 거래일", rv._prev_or_vol("035720", "2026-09-29") == 5_000
       and rv._prev_or_vol("005930", "2026-09-29") is None, "")
@@ -295,6 +295,115 @@ try:
 finally:
     krx.balance, krx.order, krx.await_fill = orig
     krx.quote = orig_quote
+
+print("── 자동 선정: 종목 마스터 (m_new_stock.mst 레이아웃) ──")
+from services import krx_master, orb_selector   # noqa: E402
+
+
+def mst_rec(code, name, market="1", k200="0", q150="N", prev=10000, cap=1000, under="N", stop="N",
+            alert="0", short="0", sltr="N"):
+    r = bytearray(b" " * 237)
+    def put(off, n, val):
+        v = str(val).encode("cp949")[:n]
+        r[off:off + len(v)] = v
+    put(0, 6, code); put(6, 1, market); put(7, 41, name); put(152, 7, f"{prev:07d}")
+    put(160, 1, under); put(161, 1, stop); put(168, 1, k200); put(172, 1, q150)
+    put(174, 12, f"{cap:012d}"); put(187, 1, short); put(188, 1, alert); put(189, 1, sltr)
+    r[236] = 0x0A
+    return bytes(r)
+
+
+raw = b"".join([
+    mst_rec("005930", "*삼성전자", k200="B", prev=272000, cap=16000000),
+    mst_rec("035720", "*카카오", k200="5", prev=34000, cap=150000),
+    mst_rec("0009K0", "#에임드바이오", market="4", q150="Y", prev=21400, cap=13778),
+    mst_rec("036540", "#SFA반도체", market="4", q150="Y", alert="1"),          # 투자주의 — 남긴다
+    mst_rec("031980", "#피에스케이홀딩스", market="4", q150="Y", alert="2"),   # 투자경고 — 뺀다
+    mst_rec("111111", "*정지종목", k200="1", stop="Y"),
+    mst_rec("222222", "일반종목"),                                              # 지수 편입 아님
+])
+rows = krx_master.parse(raw)
+check("마스터 레코드 237바이트 · 이름 앞 표시(*·#)를 뗀다", rows[0]["name"] == "삼성전자" and rows[2]["name"] == "에임드바이오", "")
+check("코스피200 · 코스닥150 · 시장 · 전일종가 · 시총", rows[0]["kospi200"] and rows[2]["kosdaq150"]
+      and rows[2]["market"] == "kosdaq" and rows[1]["prevClose"] == 34000 and rows[0]["capEok"] == 16000000, "")
+cands = krx_master.candidates(rows)
+check("후보: 투자주의는 남기고 경고 · 정지 · 비편입은 뺀다",
+      [c["code"] for c in cands] == ["005930", "035720", "0009K0", "036540"], f"{[c['code'] for c in cands]}")
+try:
+    krx_master.parse(raw[:-5]); bad_len = False
+except ValueError:
+    bad_len = True
+check("크기가 레코드 배수가 아니면 형식이 바뀐 것으로 보고 멈춘다", bad_len, "")
+check("영문이 섞인 새 코드도 국내 종목으로 본다 (0009K0)", krx.is_krx("0009K0") and not krx.is_krx("TQQQ"), "")
+
+print("── 자동 선정: 거르기 · 순위 ──")
+SP = orb_selector.SelectParams()
+J = lambda **k: orb_selector.judge({"expPrice": 34_500, "expChangePct": 2.0, "expVolume": 300_000,
+                                   "prevVolume": 600_000, **k}, 1_000_000, SP)
+check("통과: 갭 +2% · 예상 거래대금 103억 · 장 전 RVOL 0.5배", J()["ok"] and J()["score"] == 0.5, f"{J()}")
+check("예상체결이 없으면 뺀다", "예상체결 없음" in J(expVolume=0)["why"], "")
+check("갭 +0.5% 는 하한(+1%) 밑", "갭" in J(expChangePct=0.5)["why"], "")
+check("갭 +20% 는 상한(+15%) 위 (과열)", "갭" in J(expChangePct=20)["why"], "")
+check("갭이 아래로(-3%)면 뺀다 (매수만 한다)", not J(expChangePct=-3)["ok"], "")
+check("예상 거래대금 2억은 하한(3억) 밑", "거래대금" in J(expVolume=5_000)["why"], J(expVolume=5_000)["why"])
+check("1주가 종목당 자본보다 비싸면 뺀다", "종목당" in J(expPrice=1_779_000)["why"], "")
+
+fakeq = {"005930": {"expPrice": 280_000, "expChangePct": 2.9, "expVolume": 400_000, "prevVolume": 12_000_000},
+         "035720": {"expPrice": 35_000, "expChangePct": 3.0, "expVolume": 900_000, "prevVolume": 1_000_000},
+         "0009K0": {"expPrice": 22_500, "expChangePct": 5.1, "expVolume": 200_000, "prevVolume": 100_000},
+         "036540": {"expPrice": 0, "expChangePct": 0, "expVolume": 0, "prevVolume": 50_000}}
+calls_q = []
+def fq(acc, code):
+    calls_q.append(code)
+    return fakeq[code]
+import time as _t
+res = orb_selector.select(None, cands, 1_000_000, SP, _t.time() + 60, lambda: False, quote=fq)
+check("순위 = 예상체결량 ÷ 전일 거래량 (평소보다 몰린 종목이 위)",
+      [c["code"] for c in res["chosen"]] == ["0009K0", "035720", "005930"], f"{[(c['code'], c['score']) for c in res['chosen']]}")
+check("시가총액 큰 종목부터 훑는다 (시간이 모자라면 작은 종목을 남긴다)", calls_q[:2] == ["005930", "035720"], f"{calls_q}")
+check("집계: 후보 · 조회 · 예상체결 받은 수 · 통과", (res["candidates"], res["scanned"], res["withExpected"], res["passed"]) == (4, 4, 3, 3), "")
+res2 = orb_selector.select(None, cands, 1_000_000, orb_selector.SelectParams(topN=2), _t.time() + 60, lambda: False, quote=fq)
+check("상위 topN 만", len(res2["chosen"]) == 2, "")
+res3 = orb_selector.select(None, cands, 1_000_000, SP, _t.time() - 1, lambda: False, quote=fq)
+check("마감 시각이 지나면 거기서 끝낸다 (08:55 실시간 연결을 지킨다)", res3["scanned"] == 0 and res3["truncated"], "")
+res4 = orb_selector.select(None, cands, 30_000, SP, _t.time() + 60, lambda: False, quote=fq)
+check("전일 종가로 살 수 없는 종목은 호출하지 않는다", res4["affordable"] == 2, f"{res4['affordable']}")
+bad = 0
+for b_ in ({"topN": 40}, {"gapMinPct": 5, "gapMaxPct": 1}, {"minExpTurnoverEok": -1}):
+    try:
+        orb_selector.SelectParams.from_dict(b_)
+    except ValueError:
+        bad += 1
+check("말이 안 되는 선정 설정은 거부한다", bad == 3, f"{bad}/3")
+
+print("── 자동 선정 → 스캐너 ──")
+orig_load, orig_prev, orig_q2 = krx_master.load, krx.prev_or_volume, krx.quote
+krx_master.load = lambda: rows
+krx.quote = fq
+prev_calls = []
+def fprev(acc, code, today, rng):
+    prev_calls.append(code)
+    return {"date": "2026-09-23", "volume": 5_000}
+krx.prev_or_volume = fprev
+try:
+    au = osc.OrbScanner("ORB-A", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930"]}, None)
+    check("기본은 자동 선정 · 선정 전 목록은 비어 있다", au.watch_mode == "auto" and au.watch == [], "")
+    au._prepare_day("2026-09-29", at("08:48:00"))
+    check("선정한 종목을 오늘 감시한다", au.watch == ["0009K0", "035720", "005930"], f"{au.watch}")
+    check("코스닥 종목은 코스닥 지수로 거른다", au.index_of.get("0009K0") == "kosdaq" and au._name("0009K0") == "에임드바이오", "")
+    check("선정한 종목마다 전 거래일 09:05 거래량을 받는다 → 첫날부터 RVOL",
+          sorted(prev_calls) == sorted(au.watch) and au._prev_or_vol("0009K0", "2026-09-29") == 5_000, "")
+    au.prepared_date = "2026-09-29"
+    ra = osc.OrbScanner.restore(json.loads(json.dumps(au.snapshot())), None)
+    check("선정 뒤 재시작해도 오늘 목록을 그대로 쓴다 (6분 선정을 다시 하지 않음)",
+          ra.watch == au.watch and ra.prepared_date == "2026-09-29" and ra.selection["passed"] == 3, "")
+    for k in fakeq:
+        fakeq[k] = {**fakeq[k], "expPrice": 0, "expVolume": 0}
+    fb = osc.OrbScanner("ORB-F", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930", "035720"]}, None)
+    fb._prepare_day("2026-09-29", at("08:48:00"))
+    check("예상체결을 한 종목도 못 받으면 직접 입력 목록으로 본다", fb.watch == ["005930", "035720"], f"{fb.watch}")
+finally:
+    krx_master.load, krx.prev_or_volume, krx.quote = orig_load, orig_prev, orig_q2
 
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")

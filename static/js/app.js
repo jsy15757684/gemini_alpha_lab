@@ -445,8 +445,14 @@ function readOrbParams() {
 // 감시 목록 textarea — 줄마다 앞의 6자리 코드만 읽는다
 function readOrbWatch() {
   const codes = ($("orbWatch")?.value || "").split(/[\n,]+/)
-    .map(l => (l.trim().match(/^(\d{6})/) || [])[1]).filter(Boolean);
+    .map(l => (l.trim().toUpperCase().match(/^([0-9][0-9A-Z]{5})(?![0-9A-Z])/) || [])[1]).filter(Boolean);
   return [...new Set(codes)];
+}
+
+function renderOrbWatchMode() {
+  const auto = $("orbWatchMode")?.value === "auto";
+  $("orbAutoBox")?.classList.toggle("hidden", !auto);
+  $("orbManualNote")?.classList.toggle("hidden", !auto);
 }
 
 function renderOrbWatchCount() {
@@ -472,16 +478,25 @@ function orbWatchTable(b) {
                 : `<span>${escapeHtml((w.reason || "대기").slice(0, 40))}</span>`);
     return `<tr><td>${escapeHtml(w.name)}<span class="muted"> ${w.code}</span></td>
       <td>${w.price ? won(w.price) : "-"}</td><td>${w.orHigh ? won(w.orHigh) : "-"}</td><td>${w.orLow ? won(w.orLow) : "-"}</td>
-      <td>${w.vwap ? won(w.vwap) : "-"}</td><td>${w.rvol != null ? Math.round(w.rvol * 100) + "%" : (w.prevOrVol ? "-" : "수집 중")}</td>
+      <td>${w.vwap ? won(w.vwap) : "-"}</td><td>${w.rvol != null ? Math.round(w.rvol * 100) + "%" : (w.prevOrVol ? "-" : "기준 없음")}</td>
+      <td>${w.gap != null ? `${w.gap >= 0 ? "+" : ""}${w.gap.toFixed(1)}% · ${w.score.toFixed(2)}배` : "-"}</td>
       <td class="reason" style="min-width:160px" title="${escapeHtml(w.reason || "")}">${state}</td></tr>`;
   }).join("");
   const st = b.orbScan?.stream || {};
+  const sel = b.orbScan?.selection;
+  const selLine = b.orbScan?.watchMode === "auto"
+    ? (sel ? `<div class="muma-note">🔎 ${escapeHtml(b.orbScan.preparedDate || "")} ${escapeHtml(sel.at || "")} 자동 선정 —
+        후보 ${sel.candidates} · 살 수 있는 ${sel.affordable} · 조회 ${sel.scanned}${sel.truncated ? " (시간이 모자라 일부)" : ""} ·
+        예상체결 받음 ${sel.withExpected} · 통과 ${sel.passed} → 감시 ${(sel.chosen || []).length}종목</div>`
+           : `<div class="muma-note">🔎 다음 거래일 08:48 에 감시 종목을 고릅니다.</div>`)
+    : "";
   return `<details class="muma-bot" ${b.orbScan?.watch?.some(w => w.held) ? "open" : ""}>
     <summary><b>종목별 감시</b> <span class="muted small">실시간 ${st.connected ? "연결됨" : "끊김 · 장 밖에는 닫아 둡니다"}
       · 종목당 ${won(b.orbScan?.slotBudget)}원 · 최대 ${b.orbScan?.maxPositions}종목</span></summary>
     <div class="muma-body"><div class="tbl-wrap"><table>
-      <thead><tr><th>종목</th><th>현재가</th><th>OR 고</th><th>OR 저</th><th>VWAP</th><th>RVOL</th><th>상태</th></tr></thead>
-      <tbody>${rows}</tbody></table></div></div></details>`;
+      <thead><tr><th>종목</th><th>현재가</th><th>OR 고</th><th>OR 저</th><th>VWAP</th><th>RVOL</th>
+        <th title="동시호가 예상 갭 · 예상체결량÷전일 거래량">선정 근거</th><th>상태</th></tr></thead>
+      <tbody>${rows || `<tr><td colspan="8" class="muted">아직 감시 종목이 없습니다</td></tr>`}</tbody></table></div>${selLine}</div></details>`;
 }
 
 function renderOrbExitMode() {
@@ -499,13 +514,22 @@ async function deployOrbBot() {
   const watch = readOrbWatch();
   const maxPos = parseInt($("orbMaxPos").value || "3", 10);
   const capital = Number($("orbCapital").value || 0);
-  if (!watch.length) return setAlert($("orbDeployError"), "감시할 종목코드(6자리)를 한 줄에 하나씩 넣으세요.");
+  const watchMode = $("orbWatchMode").value;
+  const sel = {
+    gapMinPct: parseFloat($("sel_gapMinPct").value), gapMaxPct: parseFloat($("sel_gapMaxPct").value),
+    minExpTurnoverEok: parseFloat($("sel_minExpTurnoverEok").value), topN: parseInt($("sel_topN").value, 10),
+  };
+  if (!watch.length) return setAlert($("orbDeployError"),
+    watchMode === "auto" ? "자동 선정이 실패한 날 쓸 대체 목록이 비어 있습니다. [기본 목록으로]를 누르세요."
+                         : "감시할 종목코드(6자리)를 한 줄에 하나씩 넣으세요.");
   if (watch.length > (window.ORB_MAX_WATCH || 28))
     return setAlert($("orbDeployError"), `감시 종목은 ${window.ORB_MAX_WATCH || 28}개까지입니다 (지금 ${watch.length}개).`);
   const hm = (m) => `${String(9 + Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
   const summary = [
     "이 설정으로 국내 ORB 스캐너를 만듭니다.", "",
-    `감시 종목 : ${watch.length}종목 (실시간)`,
+    watchMode === "auto"
+      ? `감시 종목 : 매일 08:48 자동 선정 — 갭 ${sel.gapMinPct}~${sel.gapMaxPct}% · 예상 거래대금 ≥ ${sel.minExpTurnoverEok}억 · 상위 ${sel.topN}`
+      : `감시 종목 : 직접 입력 ${watch.length}종목 (실시간)`,
     `동시 보유 : 최대 ${maxPos}종목 · 종목당 ${Math.floor(capital / maxPos).toLocaleString()}원`,
     `매매 모드 : ${mode === "LIVE" ? "실전 — 나무증권 국내 실주문 (원화)" : "모의투자 — 주문이 나가지 않습니다"}`,
     `운용 자본 : ${capital.toLocaleString()}원`,
@@ -525,7 +549,7 @@ async function deployOrbBot() {
     await api("/api/bot/deploy", {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ coin: "ORB", broker: "namuh", interval: "ORB", mode, capitalKrw: capital,
-                             params: { ...p, watchlist: watch, maxPositions: maxPos } }),
+                             params: { ...p, watchMode, select: sel, watchlist: watch, maxPositions: maxPos } }),
     });
     await loadBots();
     document.querySelector('.tab[data-panel="panel-orb"]')?.click();
@@ -1827,6 +1851,7 @@ async function boot() {
   }
   fillOrbWatchDefault();
   if ($("orbWatch")) $("orbWatch").oninput = renderOrbWatchCount;
+  if ($("orbWatchMode")) { $("orbWatchMode").onchange = renderOrbWatchMode; renderOrbWatchMode(); }
   if ($("orbWatchReset")) $("orbWatchReset").onclick = (e) => { e.preventDefault(); fillOrbWatchDefault(); };
 
   $("tabs").querySelectorAll(".tab").forEach(tab => tab.onclick = () => {

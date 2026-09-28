@@ -429,7 +429,30 @@
           <p class="muted small" style="margin:.2rem 0 .8rem">감시 목록 전 종목을 <b>실시간 체결 스트림</b>으로 동시에 보다가,
             신호가 먼저 뜬 종목부터 최대 N종목을 삽니다. 매 거래일 09:00 장 초반에만 매매합니다.</p>
           <div>
-            <label class="label">감시 종목 <span class="muted" id="orbWatchCount"></span></label>
+            <label class="label">감시 방식</label>
+            <select class="input" id="orbWatchMode">
+              <option value="auto" selected>매일 자동 선정 — 코스피200·코스닥150 동시호가 예상체결 (추천)</option>
+              <option value="manual">직접 입력한 목록</option>
+            </select>
+          </div>
+          <div id="orbAutoBox" style="margin-top:.8rem">
+            <div class="form-grid">
+              <div><label class="label">예상 갭 하한 (%)</label>
+                <input class="input" type="number" id="sel_gapMinPct" value="1.0" min="-30" max="30" step="0.5"></div>
+              <div><label class="label">예상 갭 상한 (%)</label>
+                <input class="input" type="number" id="sel_gapMaxPct" value="15.0" min="-30" max="30" step="0.5"></div>
+              <div><label class="label">예상 거래대금 하한 (억 원)</label>
+                <input class="input" type="number" id="sel_minExpTurnoverEok" value="3" min="0" step="1"></div>
+              <div><label class="label">감시 종목 수 (최대 28)</label>
+                <input class="input" type="number" id="sel_topN" value="28" min="1" max="28" step="1"></div>
+            </div>
+            <div class="muted small" style="margin-top:.35rem">08:48부터 후보 약 346종목(위험 종목 제외)을 하나씩 훑어,
+              갭이 범위 안이고 예상 거래대금이 충분한 종목을 <b>예상체결량 ÷ 전일 거래량</b>(장 전 RVOL) 순으로 고릅니다.
+              1주 값이 종목당 자본보다 비싼 종목은 처음부터 뺍니다. 예상체결을 받지 못한 날은 아래 직접 입력 목록으로 봅니다.</div>
+          </div>
+          <div id="orbManualBox" style="margin-top:.8rem">
+            <label class="label">감시 종목 <span class="muted" id="orbWatchCount"></span>
+              <span class="muted small" id="orbManualNote">— 자동 선정이 실패한 날 쓰는 대체 목록</span></label>
             <textarea class="input" id="orbWatch" rows="6" spellcheck="false"
               style="font-family:var(--mono); font-size:.8rem; resize:vertical"></textarea>
             <div class="muted small" style="margin-top:.35rem">한 줄에 한 종목 — 앞의 <b>6자리 코드</b>만 읽고 뒤 이름은 무시합니다.
@@ -504,8 +527,8 @@
               · 주문은 <b>시장성 지정가</b>(매수 = 매도호가 +2호가, 매도 = 매수호가 −2호가)입니다. 모의계좌가 지정가만 받습니다.<br>
               · 매도 체결가는 잔고로 알 수 없어 <b>최우선 매수호가로 추정</b>해 장부에 적습니다. 매수 평단은 잔고로 정확히 역산합니다.<br>
               · 호가가 멈춰 있는 날(휴장·수능일 지연 개장)은 OR 을 못 재므로 그날은 쉽니다.<br>
-              · <b>RVOL 을 켜면 봇을 띄운 첫 거래일은 사지 않습니다.</b> 전일 같은 시각 거래량은 봇이 매일 09:05 에 나무증권 시세로 직접 적어 두는데,
-                공개 분봉은 20분 늦고 누적 거래량이 10~20% 적게 나와 섞어 쓸 수 없었습니다(2026-09-28 대조). 첫날은 기록만 합니다.<br>
+              · RVOL 의 분모(전 거래일 09:00~09:05 거래량)는 장 전에 <b>나무증권 5분봉</b>으로 종목마다 받습니다.
+                목록이 매일 바뀌어도 첫날부터 RVOL 을 봅니다 (2026-09-23 카카오 60,622주 — 공개 1분봉 60,575주와 일치).<br>
               · 지수 필터는 지수 대신 지수 추종 ETF 의 시가를 봅니다 (나무증권 지수 시세 경로를 찾지 못했습니다).<br>
               · 트레일링은 고정 익절을 쓰지 않고, 손절 · OR 저가 · 최종 청산 시각(기본 15:15, 종가 동시호가 전)은 그대로 지킵니다.<br>
               · 이 전략은 <b>아직 백테스트하지 않았습니다</b> (분봉 과거 데이터가 없습니다). 모의투자로 먼저 쌓아 보세요.
@@ -729,6 +752,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.9.0"></script>
+<script src="/static/js/app.js?v=5.10.0"></script>
 </body>
 </html>
