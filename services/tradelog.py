@@ -14,12 +14,32 @@ import logging
 import threading
 from typing import Any, Dict, List, Optional
 
+from services import roles
 from services.jsonfile import Guard, StoreReadError, read_records, write_records
 
 logger = logging.getLogger(__name__)
 
-LOG_FILE = os.path.join(
-    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data", "trades.json")
+_DATA_DIR = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "data")
+
+# 프로세스를 나누면 나무증권 워커는 자기 일지를 따로 쓴다. 두 프로세스가 한
+# 파일에 쓰면 서로의 체결을 덮어쓴다(각자 메모리에 들고 있다가 통째로 쓴다).
+# 처음 뜰 때 trades.json 의 나무증권 행을 복사해 시작한다. 원본은 지우지 않고,
+# 화면은 crypto 쪽 일지에서 나무증권 행을 빼고 워커 것을 합쳐 보여 준다.
+LOG_FILE = os.path.join(_DATA_DIR, "trades_namuh.json" if roles.ROLE == "namuh" else "trades.json")
+LEGACY_FILE = os.path.join(_DATA_DIR, "trades.json")
+
+
+def _other_file() -> Optional[str]:
+    """이 역할이 합쳐 읽어야 할 반대편 일지. crypto 는 합치지 않는다(화면이 워커 것을 붙인다)."""
+    if roles.ROLE == "namuh":
+        return LEGACY_FILE if LOG_FILE != LEGACY_FILE else None
+    if roles.ROLE == "all":
+        return os.path.join(os.path.dirname(LOG_FILE), "trades_namuh.json")
+    return None
+
+
+def is_namuh_row(r: Dict[str, Any]) -> bool:
+    return r.get("broker") == "namuh" or (not r.get("broker") and r.get("currency") == "USD")
 
 # 무한히 쌓이지 않게 상한을 둔다.
 #
@@ -93,6 +113,19 @@ def load() -> None:
             return
         try:
             rows = read_records(LOG_FILE, "trades", "체결 일지")
+            other = _other_file()
+            if other and os.path.exists(other):
+                # 나눴다가 되돌렸거나(all) 되돌렸다가 다시 나눈(namuh) 경우,
+                # 그 사이 반대편 파일에만 쌓인 체결을 합친다. id 로 중복을 뺀다.
+                extra = read_records(other, "trades", "체결 일지") or []
+                if roles.ROLE == "namuh":
+                    extra = [r for r in extra if is_namuh_row(r)]
+                known = {r.get("id") for r in (rows or []) if r.get("id")}
+                add = [r for r in extra if r.get("id") and r.get("id") not in known]
+                if add:
+                    rows = sorted((rows or []) + add, key=lambda x: x.get("time", ""), reverse=True)
+                    write_records(LOG_FILE, "trades", rows)
+                    logger.info(f"{os.path.basename(other)} 에서 체결 {len(add)}건을 합쳤습니다.")
         except StoreReadError as e:
             _loaded = True          # 반복해서 실패 로그를 쏟지 않는다
             guard.block(str(e))

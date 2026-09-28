@@ -521,8 +521,12 @@ let restoreNoticeShown = false;
 
 async function loadBots() {
   try {
-    const { bots, activeCount, maxActive, restoreSummary } = await api("/api/bot/list");
+    const { bots, activeCount, maxActive, restoreSummary, workerError } = await api("/api/bot/list");
     $("botCount").textContent = `(${activeCount}/${maxActive} 가동)`;
+    // 나무증권 워커에 닿지 못하면 그 봇들이 목록에서 빠진다. '없다' 로 보이면
+    // 안 되므로 목록 위에 사실을 띄운다. 워커가 돌아오면 저절로 사라진다.
+    setAlert($("workerNotice"), workerError
+      ? `<b>⚠️ 나무증권 봇을 불러오지 못했습니다.</b> ${escapeHtml(workerError)}` : "", "danger");
 
     // 재시작 후 대조에 걸려 보류된 봇이 있으면 알림 표시, 없으면 숨김
     const el = $("globalNotice");

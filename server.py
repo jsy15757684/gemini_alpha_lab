@@ -15,7 +15,7 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -58,6 +58,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog
+from services import roles, worker_client
+from services.worker_client import WorkerDown
 from services.gemini_service import gemini_keystore
 from services.keystore import keystore, namuh_keystore
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
@@ -77,9 +79,29 @@ RESTORE_SUMMARY: Dict[str, Any] = {"restored": 0, "resumed": 0, "held": 0, "note
 PUBLIC_API_PATHS = {"/api/health", "/api/auth/status", "/api/auth/login", "/api/auth/logout"}
 
 
+# crypto 프로세스가 통째로 워커에 넘기는 경로. 나무증권 호출은 워커 하나만 한다.
+WORKER_PREFIXES = ("/api/namuh/", "/api/muma/")
+
+
+def _forward_raw(method: str, path: str, query: str, body: bytes, ctype: Optional[str]) -> Response:
+    try:
+        status, _, raw = worker_client.call(method, path + (f"?{query}" if query else ""),
+                                            body=body or None, content_type=ctype, timeout=60)
+    except WorkerDown as e:
+        return JSONResponse(status_code=503, content={"detail": str(e), "code": "WORKER_DOWN"})
+    return Response(content=raw, status_code=status, media_type="application/json")
+
+
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
     path = request.url.path
+    if roles.ROLE == "namuh":
+        # 워커는 crypto 프로세스만 부른다. 화면·로그인·정적 파일을 내주지 않는다.
+        if path == "/api/health":
+            return await call_next(request)
+        if not roles.valid_internal(request.headers.get(roles.INTERNAL_HEADER)):
+            return JSONResponse(status_code=403, content={"detail": "내부 요청이 아닙니다."})
+        return await call_next(request)
     if not path.startswith("/api/") or path in PUBLIC_API_PATHS or request.method == "OPTIONS":
         return await call_next(request)
     if not auth.is_configured():
@@ -89,19 +111,29 @@ async def auth_gate(request: Request, call_next):
     if not auth.validate_session(request.cookies.get(auth.COOKIE_NAME)):
         return JSONResponse(status_code=401,
                             content={"detail": "로그인이 필요합니다.", "code": "AUTH_REQUIRED"})
+    if roles.ROLE == "crypto" and path.startswith(WORKER_PREFIXES):
+        from starlette.concurrency import run_in_threadpool
+        body = await request.body()
+        return await run_in_threadpool(_forward_raw, request.method, path, request.url.query,
+                                       body, request.headers.get("content-type"))
     return await call_next(request)
 
 
 @app.on_event("startup")
 def _startup_log():
+    logger.info(f"프로세스 역할: {roles.ROLE}"
+                + (f" · 나무증권 워커 {roles.WORKER_URL}" if roles.ROLE == "crypto" else ""))
+    if roles.split():
+        roles.internal_token()          # 먼저 뜬 쪽이 만든다
     logger.info(auth.password_debug_line())
     if auth.is_configured() and auth.password_strength_warning():
         logger.warning(auth.password_strength_warning())
     ks = keystore.status()
     logger.info(f"빗썸 키: {'등록됨(' + ks['source'] + ')' if ks['connected'] else '미등록'}")
     ns = namuh_keystore.status()
-    ns = namuh_keystore.status()
-    if ns.get("connected"):
+    if roles.ROLE == "crypto":
+        logger.info("나무증권: 워커 프로세스가 맡습니다 (이 프로세스는 나무증권을 호출하지 않습니다)")
+    elif ns.get("connected"):
         from services import namuh as _nm
         _mock = _nm.use_mock()
         logger.info(
@@ -134,7 +166,8 @@ def _startup_log():
     # 거래소 간 괴리를 계속 기록한다. 주문은 내지 않고 공개 호가만 읽는다.
     # 무전송 양방향을 구현할지 판단할 근거를 자금 0원으로 모으기 위한 것이다.
     # APP_SPREAD_RECORDER=0 으로 끌 수 있다.
-    if (os.getenv("APP_SPREAD_RECORDER") or "1").strip().lower() not in ("0", "false", "no", "off"):
+    if roles.owns("bithumb") and \
+            (os.getenv("APP_SPREAD_RECORDER") or "1").strip().lower() not in ("0", "false", "no", "off"):
         try:
             spread_recorder.start()
         except Exception as e:
@@ -264,8 +297,28 @@ class BotIdRequest(BaseModel):
     botId: str
 
 
+def _is_namuh_deploy(req: "DeployRequest") -> bool:
+    return (req.broker or "").lower() == "namuh" or req.coin.upper().strip() in namuh.NAMUH_STOCKS
+
+
+def _worker_or_raise(method: str, path: str, payload: Any = None, timeout: float = 90.0) -> Any:
+    """워커 응답을 그대로 돌려주고, 실패는 같은 상태코드로 올린다."""
+    try:
+        status, body, raw = worker_client.call(method, path, json=payload, timeout=timeout)
+    except WorkerDown as e:
+        raise HTTPException(503, str(e))
+    if status >= 300:
+        detail = body.get("detail") if isinstance(body, dict) else raw[:200].decode("utf-8", "replace")
+        raise HTTPException(status, detail)
+    return body
+
+
 @app.post("/api/bot/deploy")
 def deploy_bot(req: DeployRequest):
+    if roles.ROLE == "crypto" and _is_namuh_deploy(req):
+        return _worker_or_raise("POST", "/api/bot/deploy", req.dict())
+    if roles.ROLE == "namuh" and not _is_namuh_deploy(req):
+        raise HTTPException(400, "나무증권 워커는 빗썸 봇을 띄우지 않습니다.")
     broker = (req.broker or "bithumb").lower()
     raw_coin = req.coin.upper().strip()
 
@@ -381,17 +434,56 @@ def deploy_bot(req: DeployRequest):
     return bot.status()
 
 
+def _merge_restore(a: Dict[str, Any], b: Dict[str, Any]) -> Dict[str, Any]:
+    return {"restored": a.get("restored", 0) + b.get("restored", 0),
+            "resumed": a.get("resumed", 0) + b.get("resumed", 0),
+            "held": a.get("held", 0) + b.get("held", 0),
+            "notes": list(a.get("notes", [])) + list(b.get("notes", [])),
+            **({"fatal": True} if a.get("fatal") or b.get("fatal") else {})}
+
+
 @app.get("/api/bot/list")
 def list_bots():
-    return {"bots": bot_manager.all_status(),
-            "activeCount": bot_manager.active_count(), "maxActive": MAX_ACTIVE_BOTS,
-            "restoreSummary": RESTORE_SUMMARY}
+    out = {"bots": bot_manager.all_status(),
+           "activeCount": bot_manager.active_count(), "maxActive": MAX_ACTIVE_BOTS,
+           "restoreSummary": RESTORE_SUMMARY, "role": roles.ROLE}
+    if roles.ROLE == "crypto":
+        # 워커가 꺼져 있어도 크립토 봇은 보여야 한다. 대신 사실을 알린다 —
+        # 나무증권 봇이 '없는' 것처럼 보이면 안 된다.
+        try:
+            w = worker_client.get_json("/api/bot/list", timeout=10)
+            out["bots"] += w.get("bots", [])
+            out["activeCount"] += w.get("activeCount", 0)
+            out["restoreSummary"] = _merge_restore(RESTORE_SUMMARY, w.get("restoreSummary") or {})
+        except WorkerDown as e:
+            out["workerError"] = f"{e} — 나무증권 봇 목록을 가져오지 못했습니다. 봇은 워커에서 계속 돌 수 있습니다."
+    return out
+
+
+@app.get("/api/internal/trade_rows")
+def internal_trade_rows():
+    """워커의 체결 일지 원본. crypto 프로세스가 합쳐서 화면에 보여 준다."""
+    return {"rows": tradelog.all_rows(), "warning": tradelog.warning()}
 
 
 @app.get("/api/bot/trades")
 def bot_trades():
     """모든 봇의 실시간 매매 일지 및 누적 손익 정산 데이터."""
-    return bot_manager.all_trade_history()
+    if roles.ROLE != "crypto":
+        return bot_manager.all_trade_history()
+    # crypto 쪽 일지에 남아 있는 나무증권 행(나누기 전 기록)은 빼고, 워커가
+    # 옮겨 간 뒤 쌓은 일지를 합친다. 같은 체결이 두 번 세어지지 않게 한다.
+    rows = [r for r in tradelog.all_rows() if not tradelog.is_namuh_row(r)]
+    warns = [tradelog.warning()] if tradelog.warning() else []
+    try:
+        w = worker_client.get_json("/api/internal/trade_rows", timeout=15)
+        rows += w.get("rows", [])
+        if w.get("warning"):
+            warns.append(f"나무증권 일지: {w['warning']}")
+    except WorkerDown as e:
+        rows += [r for r in tradelog.all_rows() if tradelog.is_namuh_row(r)]
+        warns.append(f"{e} — 나무증권 체결은 나누기 전 기록까지만 보입니다.")
+    return bot_manager.all_trade_history(rows=rows, ledger_warning=" · ".join(warns) or None)
 
 
 @app.get("/api/muma/table")
@@ -413,6 +505,8 @@ def muma_table():
 
 @app.post("/api/bot/stop")
 def stop_bot(req: BotIdRequest):
+    if roles.ROLE == "crypto" and not bot_manager.get(req.botId):
+        return _worker_or_raise("POST", "/api/bot/stop", req.dict())
     if not bot_manager.stop(req.botId):
         raise HTTPException(404, f"봇을 찾을 수 없습니다: {req.botId}")
     return {"success": True, "botId": req.botId}
@@ -420,6 +514,8 @@ def stop_bot(req: BotIdRequest):
 
 @app.post("/api/bot/delete")
 def delete_bot(req: BotIdRequest):
+    if roles.ROLE == "crypto" and not bot_manager.get(req.botId):
+        return _worker_or_raise("POST", "/api/bot/delete", req.dict())
     try:
         deleted = bot_manager.delete(req.botId)
     except LiquidationFailed as e:
@@ -446,13 +542,28 @@ def dismiss_restore_notice():
         return {"success": False,
                 "message": "봇 상태를 복원하지 못한 알림은 닫을 수 없습니다. "
                            "원인을 고친 뒤 서비스를 재시작하세요."}
+    if roles.ROLE == "crypto":
+        try:
+            w = _worker_or_raise("POST", "/api/bot/dismiss_restore_notice", timeout=15)
+            if not w.get("success"):
+                return w
+        except HTTPException as e:
+            return {"success": False, "message": f"나무증권 쪽 알림을 닫지 못했습니다: {e.detail}"}
     RESTORE_SUMMARY = {"restored": len(bot_manager.bots), "resumed": bot_manager.active_count(), "held": 0, "notes": []}
     return {"success": True}
 
 
 @app.post("/api/bot/stop_all")
 def stop_all_bots():
-    return {"success": True, "stoppedCount": bot_manager.stop_all()}
+    n = bot_manager.stop_all()
+    if roles.ROLE == "crypto":
+        # 한쪽이 실패해도 다른 쪽은 멈춘다. 실패는 숨기지 않는다.
+        try:
+            n += _worker_or_raise("POST", "/api/bot/stop_all", timeout=180).get("stoppedCount", 0)
+        except HTTPException as e:
+            raise HTTPException(e.status_code,
+                                f"빗썸 봇 {n}개는 정지했지만 나무증권 봇 정지에 실패했습니다: {e.detail}")
+    return {"success": True, "stoppedCount": n}
 
 
 # ───────────────────────── 빗썸 계정 ─────────────────────────
@@ -674,6 +785,7 @@ def gemini_save(req: GeminiKeyRequest):
         gemini_keystore.save(req.apiKey.strip(), req.model)
     except PermissionError as e:
         raise HTTPException(409, str(e))
+    _sync_worker_gemini()
     return {"success": True, **gemini_keystore.status()}
 
 
@@ -684,7 +796,27 @@ def gemini_clear():
         gemini_keystore.clear()
     except PermissionError as e:
         raise HTTPException(409, str(e))
+    _sync_worker_gemini()
     return {"success": True, **gemini_keystore.status()}
+
+
+@app.post("/api/internal/gemini_reload")
+def internal_gemini_reload():
+    """디스크의 Gemini 키를 다시 읽는다. 키는 crypto 쪽이 저장한 파일에 있다."""
+    gemini_keystore._disk_key = ""
+    gemini_keystore._load_disk()
+    return {"success": True, **gemini_keystore.status()}
+
+
+def _sync_worker_gemini() -> None:
+    # 워커의 AI 스마트 조절도 같은 키를 쓴다. 키를 바꿨는데 워커만 옛 키를
+    # 들고 있으면 나무증권 봇의 AI 판단이 조용히 실패한다.
+    if roles.ROLE != "crypto":
+        return
+    try:
+        worker_client.call("POST", "/api/internal/gemini_reload", timeout=10)
+    except WorkerDown as e:
+        logger.warning(f"워커에 Gemini 키 변경을 알리지 못했습니다 (워커 재시작 때 반영): {e}")
 
 
 @app.post("/api/gemini/test")

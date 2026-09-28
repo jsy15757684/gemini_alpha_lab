@@ -1498,14 +1498,17 @@ class BotManager:
     def all_status(self) -> List[Dict[str, Any]]:
         return [b.status() for b in self.bots.values()]
 
-    def all_trade_history(self) -> Dict[str, Any]:
+    def all_trade_history(self, rows: Optional[List[Dict[str, Any]]] = None,
+                          ledger_warning: Optional[str] = None) -> Dict[str, Any]:
         """전체 체결 일지와 누적 손익 정산.
 
         - 암호화폐(KRW)와 미국주식(USD)의 손익을 정확히 통화별로 분리 집계
         - 서울외환시장 공시환율을 적용하여 미국 주식 실현익을 원화로 환산 합산
         - 연간 250만 원 해외주식 양도소득세 비과세 트래커(소진율, 잔여한도, 예상세액) 제공
         """
-        rows = tradelog.all_rows()
+        # 프로세스를 나눴으면 호출부가 두 일지를 합쳐서 넘긴다.
+        rows = tradelog.all_rows() if rows is None else sorted(
+            rows, key=lambda r: r.get("time") or "", reverse=True)
 
         fx_rate = 1380.0
         try:
@@ -1658,7 +1661,7 @@ class BotManager:
                 "byCoin": coin_summary,
             },
             "trades": rows[:500],
-            "ledgerWarning": tradelog.warning(),
+            "ledgerWarning": ledger_warning if ledger_warning is not None else tradelog.warning(),
         }
 
     # ── 영속화 / 복원 ──
