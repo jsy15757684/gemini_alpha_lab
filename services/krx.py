@@ -27,15 +27,41 @@ from services.namuh import NamuhError, _nh_post
 
 logger = logging.getLogger(__name__)
 
-# ORB 는 장 초반 유동성이 두터운 종목에서만 의미가 있다. 호가가 얇으면
-# 돌파 신호 자체가 한두 건의 주문으로 만들어진다. 목록을 좁게 둔다.
+# ORB 스캐너 기본 감시 목록. 거래대금이 두터운 대형주 + 레버리지 ETF.
+# 2026-09-28 나무증권 시세로 코드·이름·시장을 하나씩 확인했다. 호가가 얇으면
+# 돌파 신호 자체가 한두 건의 주문으로 만들어지므로 목록을 넓히지 않는다.
+# index 는 '상장 시장' 이 아니라 '따라가는 지수' 다 — 코스닥150 레버리지는
+# 코스피에 상장돼 있지만 코스닥을 따라간다.
 KRX_STOCKS: Dict[str, Dict[str, Any]] = {
-    "069500": {"name": "KODEX 200", "etf": True, "index": "kospi"},
-    "122630": {"name": "KODEX 레버리지", "etf": True, "index": "kospi"},
-    "233740": {"name": "KODEX 코스닥150레버리지", "etf": True, "index": "kosdaq"},
     "005930": {"name": "삼성전자", "etf": False, "index": "kospi"},
     "000660": {"name": "SK하이닉스", "etf": False, "index": "kospi"},
+    "373220": {"name": "LG에너지솔루션", "etf": False, "index": "kospi"},
+    "207940": {"name": "삼성바이오로직스", "etf": False, "index": "kospi"},
+    "005380": {"name": "현대차", "etf": False, "index": "kospi"},
+    "000270": {"name": "기아", "etf": False, "index": "kospi"},
+    "068270": {"name": "셀트리온", "etf": False, "index": "kospi"},
+    "105560": {"name": "KB금융", "etf": False, "index": "kospi"},
+    "055550": {"name": "신한지주", "etf": False, "index": "kospi"},
+    "035420": {"name": "NAVER", "etf": False, "index": "kospi"},
+    "035720": {"name": "카카오", "etf": False, "index": "kospi"},
+    "005490": {"name": "POSCO홀딩스", "etf": False, "index": "kospi"},
+    "006400": {"name": "삼성SDI", "etf": False, "index": "kospi"},
+    "051910": {"name": "LG화학", "etf": False, "index": "kospi"},
+    "012450": {"name": "한화에어로스페이스", "etf": False, "index": "kospi"},
+    "329180": {"name": "HD현대중공업", "etf": False, "index": "kospi"},
+    "034020": {"name": "두산에너빌리티", "etf": False, "index": "kospi"},
+    "028260": {"name": "삼성물산", "etf": False, "index": "kospi"},
+    "012330": {"name": "현대모비스", "etf": False, "index": "kospi"},
+    "042660": {"name": "한화오션", "etf": False, "index": "kospi"},
+    "009540": {"name": "HD한국조선해양", "etf": False, "index": "kospi"},
+    "010140": {"name": "삼성중공업", "etf": False, "index": "kospi"},
+    "247540": {"name": "에코프로비엠", "etf": False, "index": "kosdaq"},
+    "086520": {"name": "에코프로", "etf": False, "index": "kosdaq"},
+    "196170": {"name": "알테오젠", "etf": False, "index": "kosdaq"},
+    "122630": {"name": "KODEX 레버리지", "etf": True, "index": "kospi"},
+    "233740": {"name": "KODEX 코스닥150레버리지", "etf": True, "index": "kosdaq"},
 }
+MAX_WATCH = 28          # 실시간 구독 30 - 지수 ETF 2
 
 # 지수 필터에 쓰는 지수 추종 ETF. 나무증권에서 지수 시세 경로를 찾지 못했다.
 INDEX_PROXY = {"kospi": ("069500", "코스피(KODEX 200)"), "kosdaq": ("229200", "코스닥(KODEX 코스닥150)")}
@@ -47,7 +73,9 @@ FEE_PCT = 0.015         # 나무증권 온라인 수수료 (대략값)
 
 
 def is_krx(code: str) -> bool:
-    return str(code or "").strip() in KRX_STOCKS
+    """국내 종목코드(숫자 6자리)인가. 미국 티커 · 코인은 영문이라 겹치지 않는다."""
+    c = str(code or "").strip()
+    return len(c) == 6 and c.isdigit()
 
 
 def tick_size(price: float, etf: bool) -> int:

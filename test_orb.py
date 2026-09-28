@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
-"""국내주식 ORB — 판단(services/orb.py) · 호가 단위(krx) · 봇 주문/장부(orb_bot).
+"""국내주식 ORB — 판단(services/orb.py) · 호가 단위 · 국내 잔고 해석(krx).
+
+봇(스캐너)의 주문·장부는 test_orb_scanner.py 가 본다.
 
 시세는 가짜 스냅샷으로 만든다. 나무증권에 아무것도 보내지 않는다
 (LIVE 경로도 krx 함수를 바꿔 끼워 확인한다).
@@ -21,7 +23,6 @@ tradelog._rows.clear()
 tradelog._loaded = True
 
 from services import krx, orb                           # noqa: E402
-from services import orb_bot as ob                       # noqa: E402
 from services.namuh import NamuhError                   # noqa: E402
 
 PASS, FAIL = [], []
@@ -223,48 +224,6 @@ for b in bad:
         errs += 1
 check("말이 안 되는 설정은 거부한다", errs == 3, f"{errs}/3")
 
-print("── 봇 장부 (모의) ──")
-bot = ob.OrbBot("ORB-t1", "122630", "PAPER", 1_000_000, {}, None)
-bot.day = orb.OrbDay("2026-09-29")
-bot._buy({"price": 110_900, "ask": 110_905, "bid": 110_895, "upperLimit": 0}, "테스트 돌파")
-fee = krx.FEE_PCT / 100
-check("자본으로 살 수 있는 만큼 정수로 산다", bot.pos.units == int(1_000_000 // (110_915 * (1 + fee))),
-      f"{bot.pos.units}주 @ {bot.pos.entryPrice:,.0f}")
-cash_after_buy = bot.cash
-bot._sell({"price": 113_200, "bid": 113_195, "ask": 113_205, "lowerLimit": 0}, "익절")
-check("매도하면 포지션이 비고 현금이 돌아온다", not bot.pos.open and bot.cash > cash_after_buy, f"현금 {bot.cash:,.0f}")
-check("ETF 는 거래세 없이 수수료만 뺀다",
-      abs(bot.realized_pnl - (9 * 113_195 * (1 - fee) - 9 * 110_905 * (1 + fee))) < 1,
-      f"실현 {bot.realized_pnl:+,.0f}원")
-acts = [t["action"] for t in reversed(bot.trade_history)]
-check("체결 일지에 BUY · SELL 이 원화·국내로 남는다",
-      acts == ["BUY", "SELL"] and bot.trade_history[0]["currency"] == "KRW" and bot.trade_history[0]["market"] == "KRX", "")
-check("나무증권 워커 일지로 분류된다", tradelog.is_namuh_row(bot.trade_history[0]), "")
-
-bot2 = ob.OrbBot("ORB-t2", "005930", "PAPER", 1_000_000, {"takeProfitPct": 1.5}, None)
-bot2.day = orb.OrbDay("2026-09-29")
-bot2._buy({"price": 275_000, "ask": 275_500, "bid": 274_500, "upperLimit": 0}, "t")
-bot2.day.entered = True
-snap_ = bot2.snapshot()
-r2 = ob.OrbBot.restore(snap_, None)
-check("저장 → 복원하면 포지션·설정·오늘 진입 여부가 그대로다",
-      (r2.pos.units, r2.pos.entryPrice, r2.orb.takeProfitPct, r2.day.entered) == (bot2.pos.units, 275_500, 1.5, True),
-      f"{r2.pos.units}주 @ {r2.pos.entryPrice:,.0f}")
-check("상태는 원화로 보인다", r2.status()["currency"] == "KRW" and r2.status()["strategyType"] == "orb", "")
-tiny = ob.OrbBot("ORB-t3", "005930", "PAPER", 200_000, {}, None)
-tiny.day = orb.OrbDay("2026-09-29")
-tiny._buy({"price": 275_000, "ask": 275_500, "bid": 274_500, "upperLimit": 0}, "t")
-check("1주 값이 안 되는 자본이면 사지 않고 그날을 끝낸다 (20만원 · 27.5만원)", not tiny.pos.open and tiny.day.done, "")
-
-hb = ob.OrbBot("ORB-h", "122630", "PAPER", 1_000_000, {}, None)
-hb.or_vol_history = {"2026-09-23": 900, "2026-09-28": 1200, "2026-09-29": 5000}
-check("RVOL 기준은 오늘 이전의 가장 최근 거래일 기록", hb._prev_or_vol("2026-09-29") == 1200, "")
-rb = ob.OrbBot.restore(hb.snapshot(), None)
-check("거래량 기록도 저장·복원된다", rb.or_vol_history == hb.or_vol_history, "")
-check("종목에 맞는 지수를 고른다 (코스닥150 레버리지 → 코스닥)",
-      ob.OrbBot("x", "233740", "PAPER", 1e6, {}, None)._index_key() == "kosdaq"
-      and ob.OrbBot("x", "005930", "PAPER", 1e6, {}, None)._index_key() == "kospi", "")
-
 print("── 국내 잔고 해석 (모의계좌 실측 응답 · 2026-09-28) ──")
 
 
@@ -299,70 +258,6 @@ try:
     check("종목코드 없는 매도 미결제 행은 무시한다", len(bb["holdings"]) == 0, "")
 finally:
     krx._post = orig_post
-
-print("── 봇 주문 (실전 경로 · krx 함수를 바꿔 끼움) ──")
-calls = []
-state = {"qty": 0, "avg": 0.0, "fill": True}
-
-
-class FakeAcc:
-    configured = True
-    account_no = "00000000000"
-
-
-def f_balance(acc, fresh=False):
-    return {"cash": 5_000_000, "holdings": {"122630": {"qty": state["qty"], "avg": state["avg"]}} if state["qty"] else {}}
-
-
-def f_order(acc, side, code, qty, limit):
-    calls.append((side, qty, limit))
-    if state["fill"]:
-        if side == "buy":
-            state["avg"] = (state["qty"] * state["avg"] + qty * (limit - 10)) / (state["qty"] + qty)
-            state["qty"] += qty
-        else:
-            state["qty"] -= qty
-    return f"NO-{len(calls)}"
-
-
-def f_await(acc, code, before, want, side, wait_sec=8.0):
-    now = state["qty"]
-    filled = now - before if side == "buy" else before - now
-    return {"filled": max(0, min(want, filled)), "qtyAfter": now, "avgAfter": state["avg"]}
-
-
-orig = (krx.balance, krx.order, krx.await_fill)
-krx.balance, krx.order, krx.await_fill = f_balance, f_order, f_await
-try:
-    live = ob.OrbBot("ORB-L1", "122630", "LIVE", 1_000_000, {}, FakeAcc())
-    live.day = orb.OrbDay("2026-09-29")
-    live._buy({"price": 110_900, "ask": 110_905, "bid": 110_895, "upperLimit": 130_000}, "돌파")
-    check("시장성 지정가: 매도호가 + 2호가", calls[-1] == ("buy", live.pos.units, 110_915), f"{calls[-1]}")
-    check("체결가는 잔고 평단으로 역산한다 (지정가보다 10원 싸게 붙음)", live.pos.entryPrice == 110_905,
-          f"{live.pos.entryPrice:,.0f}")
-    live._sell({"price": 112_000, "bid": 111_995, "ask": 112_005, "lowerLimit": 90_000}, "익절")
-    check("매도: 매수호가 - 2호가 · 전량", calls[-1] == ("sell", 9, 111_985) and not live.pos.open, f"{calls[-1]}")
-
-    state.update(qty=0, avg=0.0, fill=False)
-    stuck = ob.OrbBot("ORB-L2", "122630", "LIVE", 1_000_000, {}, FakeAcc())
-    stuck.day = orb.OrbDay("2026-09-29")
-    try:
-        stuck._buy({"price": 110_900, "ask": 110_905, "bid": 110_895, "upperLimit": 0}, "돌파")
-        raised = False
-    except NamuhError as e:
-        raised = "체결되지 않았습니다" in e.message
-    check("미체결이면 장부를 바꾸지 않고 미체결 주문으로 남긴다",
-          raised and not stuck.pos.open and len(stuck.pending_orders) == 1, "")
-
-    state.update(qty=3, avg=110_000.0, fill=True)
-    partial = ob.OrbBot("ORB-L3", "122630", "LIVE", 1_000_000, {}, FakeAcc())
-    partial.day = orb.OrbDay("2026-09-29")
-    partial.pos = ob._Pos(5, 110_000, 550_000, "2026-09-29")
-    partial._sell({"price": 111_000, "bid": 110_995, "ask": 111_005, "lowerLimit": 0}, "타임컷")
-    check("계좌에 장부보다 적게 있으면 있는 만큼만 판다", calls[-1][:2] == ("sell", 3) and partial.pos.units == 2,
-          f"{calls[-1]} · 남음 {partial.pos.units}주")
-finally:
-    krx.balance, krx.order, krx.await_fill = orig
 
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")

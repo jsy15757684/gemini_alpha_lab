@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=5.2.0">
+<link rel="stylesheet" href="/static/css/style.css?v=5.2.1">
 </head>
 <body>
 
@@ -425,12 +425,20 @@
     <section id="panel-orb" class="panel hidden">
       <div class="grid-2">
         <div class="card">
-          <h2 class="card-title">📐 국내 ORB 봇 가동</h2>
-          <p class="muted small" style="margin:.2rem 0 .8rem">나무증권 국내주식 · 매 거래일 09:00 장 초반에만 매매합니다.</p>
-          <div class="form-grid">
+          <h2 class="card-title">📐 국내 ORB 스캐너 가동</h2>
+          <p class="muted small" style="margin:.2rem 0 .8rem">감시 목록 전 종목을 <b>실시간 체결 스트림</b>으로 동시에 보다가,
+            신호가 먼저 뜬 종목부터 최대 N종목을 삽니다. 매 거래일 09:00 장 초반에만 매매합니다.</p>
+          <div>
+            <label class="label">감시 종목 <span class="muted" id="orbWatchCount"></span></label>
+            <textarea class="input" id="orbWatch" rows="6" spellcheck="false"
+              style="font-family:var(--mono); font-size:.8rem; resize:vertical"></textarea>
+            <div class="muted small" style="margin-top:.35rem">한 줄에 한 종목 — 앞의 <b>6자리 코드</b>만 읽고 뒤 이름은 무시합니다.
+              최대 28종목 (실시간 구독 한도 30 − 지수 ETF 2). <a href="#" id="orbWatchReset">기본 목록으로</a></div>
+          </div>
+          <div class="form-grid" style="margin-top:.8rem">
             <div>
-              <label class="label">국내 종목</label>
-              <select class="input" id="orbCoin"></select>
+              <label class="label">최대 동시 보유 (종목)</label>
+              <input class="input" type="number" id="orbMaxPos" value="3" min="1" max="10" step="1">
             </div>
             <div>
               <label class="label">매매 모드</label>
@@ -441,7 +449,7 @@
             </div>
             <div class="span-2">
               <label class="label">운용 자본 (원)</label>
-              <input class="input" type="number" id="orbCapital" value="1000000" min="100000" step="100000">
+              <input class="input" type="number" id="orbCapital" value="3000000" min="300000" step="100000">
               <div class="muted small" id="orbCapitalHint" style="margin-top:.35rem">잔고 확인 중…</div>
             </div>
           </div>
@@ -489,8 +497,10 @@
               <input type="checkbox" id="orb_useOrLowStop" checked> OR 저가를 깨면 손절</label>
             <details class="note note-warn" style="margin-top:10px">
               <summary>알고 쓰셔야 할 것</summary>
-              · 분봉 API 가 없어 <b>2초마다 받는 시세</b>로 판단합니다. OR 고저는 개장 직후 '당일 고저' 로 재서 폴링 사이를 놓치지 않지만,
+              · 나무증권 <b>실시간 체결 스트림(KRX 전용)</b>으로 목록 전 종목을 동시에 받습니다. NXT 프리마켓 체결은 섞지 않습니다.
                 거래량 급증은 <b>누적 거래량이 늘어나는 속도</b>(최근 60초 vs OR 평균)로 봅니다.<br>
+              · 종목당 자본 = 운용자본 ÷ 최대 동시 보유. <b>1주 값이 그보다 비싼 종목(예: SK하이닉스 약 178만원)은 신호가 떠도 건너뜁니다.</b><br>
+              · 산 종목은 실시간 시세가 10초 넘게 멈추면 REST 시세로 따로 보고 청산합니다.<br>
               · 주문은 <b>시장성 지정가</b>(매수 = 매도호가 +2호가, 매도 = 매수호가 −2호가)입니다. 모의계좌가 지정가만 받습니다.<br>
               · 매도 체결가는 잔고로 알 수 없어 <b>최우선 매수호가로 추정</b>해 장부에 적습니다. 매수 평단은 잔고로 정확히 역산합니다.<br>
               · 호가가 멈춰 있는 날(휴장·수능일 지연 개장)은 OR 을 못 재므로 그날은 쉽니다.<br>
@@ -503,17 +513,17 @@
           </div>
 
           <div class="deploy-actions">
-            <button class="btn btn-primary btn-block" id="orbDeployBtn">ORB 봇 가동</button>
+            <button class="btn btn-primary btn-block" id="orbDeployBtn">ORB 스캐너 가동</button>
           </div>
           <div class="alert alert-error hidden" id="orbDeployError"></div>
         </div>
 
         <div class="card">
           <div class="card-head">
-            <h2 class="card-title">가동 중인 ORB 봇 <span class="muted" id="orbBotCount"></span></h2>
+            <h2 class="card-title">ORB 스캐너 <span class="muted" id="orbBotCount"></span></h2>
           </div>
           <div class="alert alert-danger hidden" id="orbWorkerNotice"></div>
-          <div id="orbBotList" class="bot-list"><div class="empty">가동 중인 ORB 봇이 없습니다.</div></div>
+          <div id="orbBotList" class="bot-list"><div class="empty">가동 중인 ORB 스캐너가 없습니다.</div></div>
         </div>
       </div>
     </section>
@@ -719,6 +729,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.8.0"></script>
+<script src="/static/js/app.js?v=5.9.0"></script>
 </body>
 </html>

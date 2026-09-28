@@ -325,8 +325,9 @@ function renderOrbCapitalHint() {
   if (!el) return;
   if (!a) { el.textContent = "잔고 확인 중…"; return; }
   if (!a.connected) { el.textContent = "나무증권 미연동 — 계정 탭에서 API 키를 등록하세요. (ORB 는 모의투자도 나무증권 시세가 필요합니다)"; return; }
+  const per = Math.floor(Number($("orbCapital")?.value || 0) / Math.max(1, parseInt($("orbMaxPos")?.value || "3", 10)));
   el.innerHTML = a.krCash != null
-    ? `국내 주문가능 <b style="color:var(--accent)">${won(a.krCash)}원</b>${a.mock ? " · 🧪 모의계좌" : ""}`
+    ? `국내 주문가능 <b style="color:var(--accent)">${won(a.krCash)}원</b> · 종목당 ${won(per)}원${a.mock ? " · 🧪 모의계좌" : ""}`
     : `국내 잔고를 받지 못했습니다${a.krError ? ": " + escapeHtml(a.krError) : ""}`;
 }
 
@@ -441,6 +442,48 @@ function readOrbParams() {
   };
 }
 
+// 감시 목록 textarea — 줄마다 앞의 6자리 코드만 읽는다
+function readOrbWatch() {
+  const codes = ($("orbWatch")?.value || "").split(/[\n,]+/)
+    .map(l => (l.trim().match(/^(\d{6})/) || [])[1]).filter(Boolean);
+  return [...new Set(codes)];
+}
+
+function renderOrbWatchCount() {
+  const n = readOrbWatch().length, max = window.ORB_MAX_WATCH || 28;
+  if ($("orbWatchCount")) {
+    $("orbWatchCount").textContent = `(${n}/${max})`;
+    $("orbWatchCount").style.color = n > max ? "var(--down)" : "";
+  }
+}
+
+function fillOrbWatchDefault() {
+  if (!$("orbWatch")) return;
+  $("orbWatch").value = KR_STOCKS.map(c => `${c.code} ${c.name}`).join("\n");
+  renderOrbWatchCount();
+}
+
+// 스캐너 카드 밑 종목별 실시간 감시표
+function orbWatchTable(b) {
+  const rows = (b.orbScan?.watch || []).map(w => {
+    const held = w.held;
+    const state = held ? `<span class="up">보유 ${held.units}주 @ ${won(held.entryPrice)}</span>`
+      : (w.done ? `<span class="muted">${escapeHtml((w.reason || "오늘 끝").slice(0, 40))}</span>`
+                : `<span>${escapeHtml((w.reason || "대기").slice(0, 40))}</span>`);
+    return `<tr><td>${escapeHtml(w.name)}<span class="muted"> ${w.code}</span></td>
+      <td>${w.price ? won(w.price) : "-"}</td><td>${w.orHigh ? won(w.orHigh) : "-"}</td><td>${w.orLow ? won(w.orLow) : "-"}</td>
+      <td>${w.vwap ? won(w.vwap) : "-"}</td><td>${w.rvol != null ? Math.round(w.rvol * 100) + "%" : (w.prevOrVol ? "-" : "수집 중")}</td>
+      <td class="reason" style="min-width:160px" title="${escapeHtml(w.reason || "")}">${state}</td></tr>`;
+  }).join("");
+  const st = b.orbScan?.stream || {};
+  return `<details class="muma-bot" ${b.orbScan?.watch?.some(w => w.held) ? "open" : ""}>
+    <summary><b>종목별 감시</b> <span class="muted small">실시간 ${st.connected ? "연결됨" : "끊김 · 장 밖에는 닫아 둡니다"}
+      · 종목당 ${won(b.orbScan?.slotBudget)}원 · 최대 ${b.orbScan?.maxPositions}종목</span></summary>
+    <div class="muma-body"><div class="tbl-wrap"><table>
+      <thead><tr><th>종목</th><th>현재가</th><th>OR 고</th><th>OR 저</th><th>VWAP</th><th>RVOL</th><th>상태</th></tr></thead>
+      <tbody>${rows}</tbody></table></div></div></details>`;
+}
+
 function renderOrbExitMode() {
   const trailing = $("orb_exitMode")?.value === "trailing";
   document.querySelectorAll(".orb-trail").forEach(el => el.classList.toggle("hidden", !trailing));
@@ -453,12 +496,19 @@ async function deployOrbBot() {
   setAlert($("orbDeployError"), null);
   const mode = $("orbMode").value;
   const p = readOrbParams();
+  const watch = readOrbWatch();
+  const maxPos = parseInt($("orbMaxPos").value || "3", 10);
+  const capital = Number($("orbCapital").value || 0);
+  if (!watch.length) return setAlert($("orbDeployError"), "감시할 종목코드(6자리)를 한 줄에 하나씩 넣으세요.");
+  if (watch.length > (window.ORB_MAX_WATCH || 28))
+    return setAlert($("orbDeployError"), `감시 종목은 ${window.ORB_MAX_WATCH || 28}개까지입니다 (지금 ${watch.length}개).`);
   const hm = (m) => `${String(9 + Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
   const summary = [
-    "이 설정으로 국내주식 ORB 봇을 만듭니다.", "",
-    `종목      : ${$("orbCoin").selectedOptions[0]?.textContent || $("orbCoin").value}`,
+    "이 설정으로 국내 ORB 스캐너를 만듭니다.", "",
+    `감시 종목 : ${watch.length}종목 (실시간)`,
+    `동시 보유 : 최대 ${maxPos}종목 · 종목당 ${Math.floor(capital / maxPos).toLocaleString()}원`,
     `매매 모드 : ${mode === "LIVE" ? "실전 — 나무증권 국내 실주문 (원화)" : "모의투자 — 주문이 나가지 않습니다"}`,
-    `운용 자본 : ${Number($("orbCapital").value || 0).toLocaleString()}원 (매수할 때 전액)`,
+    `운용 자본 : ${capital.toLocaleString()}원`,
     `레인지    : 09:00 ~ ${hm(p.rangeMin)} 고가·저가`,
     `진입      : ${hm(p.rangeMin)} ~ ${hm(p.entryEndMin)} · OR 고가 돌파${p.useVwap ? " · VWAP 위" : ""}${p.volSurge > 0 ? ` · 거래속도 ×${p.volSurge}` : ""}`,
     p.exitMode === "trailing"
@@ -474,15 +524,15 @@ async function deployOrbBot() {
   try {
     await api("/api/bot/deploy", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ coin: $("orbCoin").value, broker: "namuh", interval: "ORB", mode,
-                             capitalKrw: parseFloat($("orbCapital").value), params: p }),
+      body: JSON.stringify({ coin: "ORB", broker: "namuh", interval: "ORB", mode, capitalKrw: capital,
+                             params: { ...p, watchlist: watch, maxPositions: maxPos } }),
     });
     await loadBots();
     document.querySelector('.tab[data-panel="panel-orb"]')?.click();
   } catch (e) {
     setAlert($("orbDeployError"), e.message);
   } finally {
-    btn.disabled = false; btn.textContent = "ORB 봇 가동";
+    btn.disabled = false; btn.textContent = "ORB 스캐너 가동";
   }
 }
 
@@ -571,23 +621,17 @@ function botCard(b) {
                : "-",
              b.units > 0 && isUsd ? `약 ${won(b.unrealizedPnlKrwConverted)}원` : "",
              "산 물량만 놓고 본 손익. 익절·손절 판정이 쓰는 값이 이쪽이다.")}
-      ${cell("보유 · 평단", b.units > 0 ? fmtUnits(b.units) : "-",
+      ${isOrb ? cell("감시", `${b.orbScan?.watch?.length || 0}종목`,
+             b.orbScan?.stream?.connected ? "실시간 연결됨" : "실시간 대기") : ""}
+      ${isOrb ? "" : cell("보유 · 평단", b.units > 0 ? fmtUnits(b.units) : "-",
              b.units > 0 ? fmtCurr(b.entryPrice) : "")}
-      ${cell("현재가", fmtCurr(b.currentPrice),
+      ${isOrb ? "" : cell("현재가", fmtCurr(b.currentPrice),
              b.priceAgeSec != null
                ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : ''}">${Math.round(b.priceAgeSec)}초 전</span>`
                : "")}
       ${isOrb
-        ? cell("OR 고 · 저", b.orb?.orHigh ? `${won(b.orb.orHigh)}` : "-",
-               b.orb?.orLow ? `저 ${won(b.orb.orLow)}` : "",
-               `09:00 부터 레인지 분 동안의 고가·저가. 가격이 고가를 넘으면 돌파로 본다.`
-               + (b.orb?.vwap ? ` 당일 VWAP ${won(b.orb.vwap)}원.` : "")
-               + (b.orb?.rvol != null ? ` RVOL ${Math.round(b.orb.rvol * 100)}%.` : ""))
-        : ""}
-      ${isOrb
-        ? cell("VWAP · RVOL", b.orb?.vwap ? won(b.orb.vwap) : "-",
-               b.orb?.rvol != null ? `RVOL ${Math.round(b.orb.rvol * 100)}%` : (b.orb?.prevOrVol ? "" : "RVOL 기준 수집 중"),
-               "당일 거래량가중평균가 · 09:05 누적 거래량 ÷ 전 거래일 같은 시각")
+        ? cell("보유 종목", `${b.turn||0}<span class="s-of"> / ${b.splitCount||3}</span>`,
+               `<span class="s-bar"><i style="width:${Math.min(100, (b.turn||0) / (b.splitCount||3) * 100)}%"></i></span>`)
         : cell("회차", `${b.turn||0}<span class="s-of"> / ${b.splitCount||40}</span>`,
              `<span class="s-bar"><i style="width:${Math.min(100, turnPct)}%"></i></span>`)}
       ${cell("거래 · 승률", `${b.totalTrades||0}회`,
@@ -681,8 +725,8 @@ async function loadBots() {
       : `<div class="empty">가동 중인 무한매수 봇이 없습니다.</div>`;
     if ($("orbBotList")) {
       $("orbBotList").innerHTML = orbBots.length
-        ? orbBots.map(botCard).join("")
-        : `<div class="empty">가동 중인 ORB 봇이 없습니다.</div>`;
+        ? orbBots.map(b => botCard(b) + orbWatchTable(b)).join("")
+        : `<div class="empty">가동 중인 ORB 스캐너가 없습니다.</div>`;
       $("orbBotCount").textContent = orbBots.length ? `(${orbBots.filter(b => b.isRunning).length}개 가동)` : "";
     }
     const byId = Object.fromEntries(bots.map(b => [b.botId, b]));
@@ -1755,6 +1799,7 @@ async function boot() {
   if ($("btnMarketCrypto")) $("btnMarketCrypto").onclick = () => setMarket("crypto");
   if ($("btnMarketStock")) $("btnMarketStock").onclick = () => setMarket("stock");
   if ($("orbDeployBtn")) $("orbDeployBtn").onclick = deployOrbBot;
+  ["orbCapital", "orbMaxPos"].forEach(id => { if ($(id)) $(id).oninput = renderOrbCapitalHint; });
   if ($("orb_exitMode")) { $("orb_exitMode").onchange = renderOrbExitMode; renderOrbExitMode(); }
   if ($("testNamuhKeyBtn")) $("testNamuhKeyBtn").onclick = () => namuhKeyAction(false);
   if ($("saveNamuhKeyBtn")) $("saveNamuhKeyBtn").onclick = () => namuhKeyAction(true);
@@ -1775,16 +1820,14 @@ async function boot() {
   try {
     const k = await api("/api/namuh/kr_stocks");
     KR_STOCKS = (k?.stocks || []).map(s => ({ code: s.code, name: s.name }));
+    window.ORB_MAX_WATCH = k?.maxWatch || 28;
   } catch (e) {
     KR_STOCKS = [];            // 못 받으면 비운다 — 서버가 거부할 종목을 보여 주지 않는다
     console.warn("국내 종목 조회 실패:", e);
   }
-  if ($("orbCoin")) {
-    $("orbCoin").innerHTML = KR_STOCKS.length
-      ? KR_STOCKS.map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`).join("")
-      : `<option value="">국내 종목 목록을 받지 못했습니다</option>`;
-    $("orbCoin").disabled = !KR_STOCKS.length;
-  }
+  fillOrbWatchDefault();
+  if ($("orbWatch")) $("orbWatch").oninput = renderOrbWatchCount;
+  if ($("orbWatchReset")) $("orbWatchReset").onclick = (e) => { e.preventDefault(); fillOrbWatchDefault(); };
 
   $("tabs").querySelectorAll(".tab").forEach(tab => tab.onclick = () => {
     $("tabs").querySelectorAll(".tab").forEach(t => t.classList.remove("active"));

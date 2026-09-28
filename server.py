@@ -299,43 +299,60 @@ class BotIdRequest(BaseModel):
 
 def _is_namuh_deploy(req: "DeployRequest") -> bool:
     return ((req.broker or "").lower() == "namuh" or req.coin.upper().strip() in namuh.NAMUH_STOCKS
-            or krx.is_krx(req.coin))
+            or (req.params or {}).get("strategyType") == "orb")
 
 
 def _deploy_orb(req: "DeployRequest"):
-    """국내주식 ORB 봇. 해외 무한매수와 검증 항목이 다르다."""
-    code = req.coin.strip()
-    if not krx.is_krx(code):
-        names = ", ".join(v["name"] + "(" + k + ")" for k, v in krx.KRX_STOCKS.items())
-        raise HTTPException(400, f"ORB 를 지원하지 않는 국내 종목입니다: {code} (지원: {names})")
+    """국내주식 ORB 스캐너. 감시 목록 전체를 실시간으로 보고 신호가 뜬 종목을 산다."""
+    p = dict(req.params or {})
+    watch = [str(c).strip() for c in (p.get("watchlist") or list(krx.KRX_STOCKS))]
+    watch = list(dict.fromkeys(c for c in watch if c))
+    bad = [c for c in watch if not krx.is_krx(c)]
+    if bad:
+        raise HTTPException(400, f"국내 종목코드는 숫자 6자리입니다: {', '.join(bad[:5])}")
+    if not watch:
+        raise HTTPException(400, "감시할 종목이 없습니다.")
+    if len(watch) > krx.MAX_WATCH:
+        raise HTTPException(400, f"감시 목록은 {krx.MAX_WATCH}종목까지입니다 (실시간 구독 한도 30 − 지수 ETF 2). "
+                                 f"지금 {len(watch)}종목.")
+    try:
+        maxpos = int(p.get("maxPositions") or 3)
+    except (TypeError, ValueError):
+        raise HTTPException(400, "최대 동시 보유 수가 숫자가 아닙니다.")
+    if not (1 <= maxpos <= 10):
+        raise HTTPException(400, "최대 동시 보유는 1 ~ 10 종목입니다.")
     mode = req.mode.upper()
     if mode not in ("PAPER", "LIVE"):
         raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
-    if req.capitalKrw < 100_000:
-        raise HTTPException(400, "국내주식 ORB 운용 자본은 100,000원 이상이어야 합니다.")
+    if req.capitalKrw < 300_000:
+        raise HTTPException(400, "ORB 스캐너 운용 자본은 300,000원 이상이어야 합니다.")
     try:
-        orb.OrbParams.from_dict(req.params)
+        orb.OrbParams.from_dict({k: v for k, v in p.items() if k not in ("watchlist", "maxPositions", "names", "strategyType")})
     except (ValueError, TypeError) as e:
         raise HTTPException(400, f"ORB 설정이 올바르지 않습니다: {e}")
+    if any(getattr(b.params, "strategyType", "") == "orb" for b in bot_manager.bots.values()):
+        # 실시간 연결은 앱키당 2개 · 연결당 30종목이다. 스캐너가 둘이면 한도를 나눠 쓴다.
+        raise HTTPException(409, "ORB 스캐너는 하나만 둘 수 있습니다. 기존 스캐너를 지운 뒤 다시 만드세요.")
     acc = namuh_keystore.account
     if not acc.configured:
-        # 모의투자도 시세를 나무증권에서 받는다.
-        raise HTTPException(400, "국내주식 ORB 는 모의투자도 나무증권 시세가 필요합니다. API 키를 먼저 등록하세요.")
-    try:
-        q = krx.quote(acc, code)
-    except namuh.NamuhError as e:
-        raise HTTPException(503, f"{code} 시세를 받지 못해 봇을 가동할 수 없습니다: {e.message}")
+        raise HTTPException(400, "국내 ORB 는 모의투자도 나무증권 실시간 시세가 필요합니다. API 키를 먼저 등록하세요.")
+    # 기본 목록 밖의 종목은 있는 종목인지 한 번 본다 (이름도 얻는다).
+    names = {}
+    for c in [c for c in watch if c not in krx.KRX_STOCKS][:10]:
+        try:
+            names[c] = krx.quote(acc, c)["name"]
+        except namuh.NamuhError as e:
+            raise HTTPException(400, f"{c} 시세를 받지 못했습니다 — 종목코드를 확인하세요: {e.message}")
     if mode == "LIVE":
         try:
             cash = krx.balance(acc, fresh=True)["cash"]
         except namuh.NamuhError as e:
             raise HTTPException(400, f"나무증권 국내 잔고를 받지 못했습니다: {e.message}")
         if cash < req.capitalKrw:
-            raise HTTPException(400, f"국내 주문가능 현금({cash:,.0f}원)이 운용 자본({req.capitalKrw:,.0f}원)보다 적습니다.")
-    if req.capitalKrw < q["price"] * 1.01:
-        raise HTTPException(400, f"운용 자본 {req.capitalKrw:,.0f}원으로는 {q['name']}({q['price']:,}원) 1주를 살 수 없습니다.")
+            raise HTTPException(400, f"국내 주문가능 금액({cash:,.0f}원)이 운용 자본({req.capitalKrw:,.0f}원)보다 적습니다.")
+    params = {**p, "strategyType": "orb", "watchlist": watch, "maxPositions": maxpos, "names": names}
     try:
-        bot = bot_manager.deploy(code, "ORB", mode, req.capitalKrw, {**(req.params or {}), "strategyType": "orb"},
+        bot = bot_manager.deploy("ORB", "ORB", mode, req.capitalKrw, params,
                                  account=None, namuh_account=acc, broker="namuh")
     except TooManyBots as e:
         raise HTTPException(429, str(e))
@@ -363,7 +380,7 @@ def deploy_bot(req: DeployRequest):
     broker = (req.broker or "bithumb").lower()
     raw_coin = req.coin.upper().strip()
 
-    if (req.params or {}).get("strategyType") == "orb" or krx.is_krx(req.coin):
+    if (req.params or {}).get("strategyType") == "orb":
         return _deploy_orb(req)
 
     if broker == "namuh" or raw_coin in namuh.NAMUH_STOCKS:
@@ -679,8 +696,9 @@ class NamuhKeyRequest(BaseModel):
 @app.get("/api/namuh/kr_stocks")
 def namuh_kr_stocks():
     """국내주식 ORB 로 고를 수 있는 종목과 기본 설정."""
-    return {"stocks": [{"code": k, "name": v["name"], "etf": v["etf"]} for k, v in krx.KRX_STOCKS.items()],
-            "defaults": orb.OrbParams().to_dict()}
+    return {"stocks": [{"code": k, "name": v["name"], "etf": v["etf"], "index": v["index"]}
+                       for k, v in krx.KRX_STOCKS.items()],
+            "maxWatch": krx.MAX_WATCH, "defaults": orb.OrbParams().to_dict()}
 
 
 @app.get("/api/namuh/stocks")

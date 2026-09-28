@@ -1443,8 +1443,9 @@ class BotManager:
             raise TooManyBots(f"동시 가동 봇 상한({MAX_ACTIVE_BOTS}개)에 도달했습니다. "
                               f"기존 봇을 정지한 뒤 다시 시도하세요.")
         if (params or {}).get("strategyType") == "orb":
-            from services.orb_bot import OrbBot
-            bot = OrbBot(self._new_id(coin), coin, mode, capital_krw, params, namuh_account)
+            from services.orb_scanner import OrbScanner
+            bot = OrbScanner(self._new_id("ORB"), mode, capital_krw, params, namuh_account,
+                             names=(params or {}).get("names"))
             self.bots[bot.bot_id] = bot
             bot.start()
             return bot
@@ -1770,8 +1771,8 @@ class BotManager:
             if (r.get("params") or {}).get("strategyType") == "orb":
                 # 국내주식 ORB 는 해외 잔고가 아니라 국내 잔고로 대조한다.
                 try:
-                    from services.orb_bot import OrbBot
-                    bot = OrbBot.restore(r, namuh_account)
+                    from services.orb_scanner import OrbScanner
+                    bot = OrbScanner.restore(r, namuh_account)
                 except Exception as e:
                     logger.error(f"ORB 봇 복원 실패 {r.get('botId')}: {e}")
                     continue
@@ -1784,9 +1785,10 @@ class BotManager:
                     bot.log("ERROR", why); notes.append(f"[{bot.bot_id}] {why}")
                     held += 1
                     continue
-                if bot.pos.open:
-                    bot.log("WARNING", f"포지션을 들고 재시작되었습니다 — {bot.pos.units}주 @ "
-                                       f"{bot.pos.entryPrice:,.0f}원. 청산 감시를 재개합니다.")
+                if bot.positions:
+                    bot.log("WARNING", "포지션을 들고 재시작되었습니다 — "
+                            + ", ".join(f"{bot._name(c)} {p.units}주 @ {p.entryPrice:,.0f}원" for c, p in bot.positions.items())
+                            + ". 청산 감시를 재개합니다.")
                 bot.start()
                 resumed += 1
                 continue
