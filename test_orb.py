@@ -265,6 +265,41 @@ check("종목에 맞는 지수를 고른다 (코스닥150 레버리지 → 코�
       ob.OrbBot("x", "233740", "PAPER", 1e6, {}, None)._index_key() == "kosdaq"
       and ob.OrbBot("x", "005930", "PAPER", 1e6, {}, None)._index_key() == "kospi", "")
 
+print("── 국내 잔고 해석 (모의계좌 실측 응답 · 2026-09-28) ──")
+
+
+class _Res:
+    status_code = 200
+
+
+def fake_post(rows, o0):
+    return lambda acc, base, path, inp, read: (_Res(), {"Output_0": o0, "Output_1": rows})
+
+
+class _Acc:
+    configured = True
+    account_no = "5000000000"
+
+
+O0 = {"dca": 500000000, "orr_pbl_amt1": 499013753}
+orig_post = krx._post
+try:
+    krx._post = fake_post([{"iem_cd": "069500", "iem_nm": "KODEX 200", "itg_bnc_qty": 0.0, "rsdl_qty": 1.0,
+                            "ny_stl_qty": 1.0, "phs_pr": 109917, "now_pr": 109915}], O0)
+    bb = krx.balance(_Acc(), fresh=True)
+    check("산 직후: 보유 1주 · 평단 109,917 (결제 잔고 0 이어도)",
+          bb["holdings"]["069500"]["qty"] == 1 and bb["holdings"]["069500"]["avg"] == 109917, "")
+    check("주문가능 현금은 예수금이 아니라 주문가능금액", bb["cash"] == 499013753 and bb["deposit"] == 500000000, "")
+    krx._post = fake_post([{"iem_nm": "KODEX 200", "iem_cd": "069500", "ny_stl_qty": 1.0, "rsdl_qty": 0.0,
+                            "phs_pr": 109917, "now_pr": 109910, "sll_amt": 109900, "sll_pls_amt": -17},
+                           {"ny_stl_qty": -1.0}], O0)
+    bb = krx.balance(_Acc(), fresh=True)
+    check("판 직후: 미결제 1주가 남아도 보유 0 으로 본다 (broker.py 의 '최댓값' 규칙이 틀렸던 곳)",
+          "069500" not in bb["holdings"], f"{bb['holdings']}")
+    check("종목코드 없는 매도 미결제 행은 무시한다", len(bb["holdings"]) == 0, "")
+finally:
+    krx._post = orig_post
+
 print("── 봇 주문 (실전 경로 · krx 함수를 바꿔 끼움) ──")
 calls = []
 state = {"qty": 0, "avg": 0.0, "fill": True}

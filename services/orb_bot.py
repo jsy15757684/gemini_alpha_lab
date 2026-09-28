@@ -341,7 +341,9 @@ class OrbBot:
             filled = int(r["filled"])
             if filled <= 0:
                 raise NamuhError(f"매도 주문({qty}주 @ {limit:,}원)이 8초 안에 체결되지 않았습니다.")
-            # 매도 체결가는 잔고로 알 수 없다. 접수 순간의 최우선 매수호가로 추정한다.
+            # 매도 체결가는 잔고로 알 수 없다(sll_amt 는 평가 금액이다 — krx.balance 참고).
+            # 접수 순간의 최우선 매수호가로 추정한다. 모의 실측: 지정가 -2호가로
+            # 냈을 때 매수호가 근처(+10원)에서 붙었다.
             fill = float(base)
         else:
             filled, fill = units, float(base)

@@ -165,14 +165,29 @@ def balance(acc: namuh.NamuhAccount, fresh: bool = False) -> Dict[str, Any]:
     holdings = {}
     for row in b.get("Output_1") or []:
         code = str(row.get("iem_cd") or "").strip()
-        # NH 는 당일 미결제 매수의 일부 수량 칸을 0 으로 준다. 가장 큰 값을 쓴다
-        # (broker.py 가 실계좌에서 겪은 일 — 방금 산 종목이 사라져 손절이 안 걸렸다).
-        qty = max(_i(row.get("itg_bnc_qty")), _i(row.get("rsdl_qty")), _i(row.get("ny_stl_qty")))
-        if not code or qty <= 0:
+        # 수량 칸이 셋이다 (모의계좌 실측 2026-09-28, 1주 사고 바로 판 뒤):
+        #   rsdl_qty     지금 보유 — 사면 1, 팔면 0 (이것이 체결 확인의 기준)
+        #   ny_stl_qty   미결제 — 산 1주가 이틀 뒤 결제까지 남는다. 매도분은
+        #                종목코드 없는 -1 행으로 따로 온다
+        #   itg_bnc_qty  결제 잔고 — 당일 산 것은 0
+        # broker.py 는 '셋 중 가장 큰 값' 을 썼는데, 그러면 판 뒤에도 1주가
+        # 있는 것으로 보인다(미결제 1). 봇이 판 주식을 계속 들고 있다고 믿게 된다.
+        if "rsdl_qty" in row:
+            qty = _i(row.get("rsdl_qty"))
+        else:
+            qty = max(_i(row.get("itg_bnc_qty")), _i(row.get("ny_stl_qty")))
+        if not code:
             continue
-        holdings[code] = {"qty": qty, "avg": _f(row.get("phs_pr")), "price": _i(row.get("now_pr")),
-                          "name": str(row.get("iem_nm") or code).strip().lstrip("*#").strip()}
-    out = {"cash": _i((b.get("Output_0") or {}).get("dca")), "holdings": holdings}
+        # sll_amt · sll_pls_amt 는 '지금 팔면 받을 평가 금액 · 손익' 이다. 체결된
+        # 매도 금액이 아니다 — 두 번째 매도 뒤 오히려 58원 줄었다(2026-09-28).
+        # 그래서 매도 체결가는 이것으로 내지 않는다.
+        if qty > 0:
+            holdings[code] = {"qty": qty, "avg": _f(row.get("phs_pr")), "price": _i(row.get("now_pr")),
+                              "name": str(row.get("iem_nm") or code).strip().lstrip("*#").strip()}
+    o0 = b.get("Output_0") or {}
+    # dca(예수금)는 당일 매수를 빼지 않는다(결제 기준). 주문가능금액이 맞다.
+    cash = _i(o0.get("orr_pbl_amt1")) or _i(o0.get("dca"))
+    out = {"cash": cash, "deposit": _i(o0.get("dca")), "holdings": holdings}
     with _BAL_LOCK:
         _BAL_CACHE[ck] = (time.time(), dict(out))
     return out

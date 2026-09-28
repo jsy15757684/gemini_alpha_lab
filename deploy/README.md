@@ -113,6 +113,22 @@ sudo systemctl restart bithumb-bot    # 재시작
 sudo journalctl -u bithumb-bot -f     # 실시간 로그
 ```
 
+### 크립토 / 나무증권 두 서비스로 나눴을 때 (`deploy/split-services.sh`)
+
+| 서비스 | 역할 | 주소 |
+|---|---|---|
+| `bithumb-bot` | 화면 · 로그인 · 빗썸 봇 (`APP_ROLE=crypto`) | 127.0.0.1:8888 |
+| `bithumb-namuh` | 나무증권 봇 — 해외 무한매수 · 국내 ORB (`APP_ROLE=namuh`) | 127.0.0.1:8889 (내부 전용) |
+
+```bash
+sudo systemctl restart bithumb-bot bithumb-namuh      # 둘 다 재시작
+sudo journalctl -u bithumb-namuh -f                    # 나무증권 쪽 로그
+sudo bash deploy/split-services.sh --undo             # 한 서비스로 되돌리기
+```
+
+한쪽만 재시작하면 그쪽 코드만 바뀐다. 화면만 고친 업데이트면 `bithumb-bot` 만
+재시작해도 되고, 그때 나무증권 봇(미국장 LOC 창 포함)은 끊기지 않는다.
+
 프로세스가 죽으면 **5초 뒤 자동 재시작**되고, 서버가 재부팅돼도 자동으로 뜹니다.
 봇 상태는 `data/bots.json` 에 저장되어 재시작 후 복원되며, 실전 봇이 포지션을
 들고 있었다면 **빗썸 실제 보유량과 대조한 뒤에만** 재가동합니다.
@@ -121,6 +137,8 @@ sudo journalctl -u bithumb-bot -f     # 실시간 로그
 
 ```bash
 cd /opt/gemini_alpha_lab && git pull && bash deploy/fix-perms.sh && systemctl restart bithumb-bot
+# 두 서비스로 나눴다면
+cd /opt/gemini_alpha_lab && git pull && bash deploy/fix-perms.sh && systemctl restart bithumb-bot bithumb-namuh
 ```
 
 `git pull` 은 root 로 실행되므로 새 파일이 root 소유로 생깁니다. `fix-perms.sh`
