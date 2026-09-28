@@ -58,7 +58,7 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog
-from services import roles, worker_client
+from services import roles, worker_client, krx, orb
 from services.worker_client import WorkerDown
 from services.gemini_service import gemini_keystore
 from services.keystore import keystore, namuh_keystore
@@ -298,7 +298,48 @@ class BotIdRequest(BaseModel):
 
 
 def _is_namuh_deploy(req: "DeployRequest") -> bool:
-    return (req.broker or "").lower() == "namuh" or req.coin.upper().strip() in namuh.NAMUH_STOCKS
+    return ((req.broker or "").lower() == "namuh" or req.coin.upper().strip() in namuh.NAMUH_STOCKS
+            or krx.is_krx(req.coin))
+
+
+def _deploy_orb(req: "DeployRequest"):
+    """국내주식 ORB 봇. 해외 무한매수와 검증 항목이 다르다."""
+    code = req.coin.strip()
+    if not krx.is_krx(code):
+        names = ", ".join(v["name"] + "(" + k + ")" for k, v in krx.KRX_STOCKS.items())
+        raise HTTPException(400, f"ORB 를 지원하지 않는 국내 종목입니다: {code} (지원: {names})")
+    mode = req.mode.upper()
+    if mode not in ("PAPER", "LIVE"):
+        raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
+    if req.capitalKrw < 100_000:
+        raise HTTPException(400, "국내주식 ORB 운용 자본은 100,000원 이상이어야 합니다.")
+    try:
+        orb.OrbParams.from_dict(req.params)
+    except (ValueError, TypeError) as e:
+        raise HTTPException(400, f"ORB 설정이 올바르지 않습니다: {e}")
+    acc = namuh_keystore.account
+    if not acc.configured:
+        # 모의투자도 시세를 나무증권에서 받는다.
+        raise HTTPException(400, "국내주식 ORB 는 모의투자도 나무증권 시세가 필요합니다. API 키를 먼저 등록하세요.")
+    try:
+        q = krx.quote(acc, code)
+    except namuh.NamuhError as e:
+        raise HTTPException(503, f"{code} 시세를 받지 못해 봇을 가동할 수 없습니다: {e.message}")
+    if mode == "LIVE":
+        try:
+            cash = krx.balance(acc, fresh=True)["cash"]
+        except namuh.NamuhError as e:
+            raise HTTPException(400, f"나무증권 국내 잔고를 받지 못했습니다: {e.message}")
+        if cash < req.capitalKrw:
+            raise HTTPException(400, f"국내 주문가능 현금({cash:,.0f}원)이 운용 자본({req.capitalKrw:,.0f}원)보다 적습니다.")
+    if req.capitalKrw < q["price"] * 1.01:
+        raise HTTPException(400, f"운용 자본 {req.capitalKrw:,.0f}원으로는 {q['name']}({q['price']:,}원) 1주를 살 수 없습니다.")
+    try:
+        bot = bot_manager.deploy(code, "ORB", mode, req.capitalKrw, {**(req.params or {}), "strategyType": "orb"},
+                                 account=None, namuh_account=acc, broker="namuh")
+    except TooManyBots as e:
+        raise HTTPException(429, str(e))
+    return bot.status()
 
 
 def _worker_or_raise(method: str, path: str, payload: Any = None, timeout: float = 90.0) -> Any:
@@ -321,6 +362,9 @@ def deploy_bot(req: DeployRequest):
         raise HTTPException(400, "나무증권 워커는 빗썸 봇을 띄우지 않습니다.")
     broker = (req.broker or "bithumb").lower()
     raw_coin = req.coin.upper().strip()
+
+    if (req.params or {}).get("strategyType") == "orb" or krx.is_krx(req.coin):
+        return _deploy_orb(req)
 
     if broker == "namuh" or raw_coin in namuh.NAMUH_STOCKS:
         broker = "namuh"
@@ -632,6 +676,13 @@ class NamuhKeyRequest(BaseModel):
     accountNo: str = ""
 
 
+@app.get("/api/namuh/kr_stocks")
+def namuh_kr_stocks():
+    """국내주식 ORB 로 고를 수 있는 종목과 기본 설정."""
+    return {"stocks": [{"code": k, "name": v["name"], "etf": v["etf"]} for k, v in krx.KRX_STOCKS.items()],
+            "defaults": orb.OrbParams().to_dict()}
+
+
 @app.get("/api/namuh/stocks")
 def namuh_stocks():
     """나무증권 지원 미국 ETF 종목 목록."""
@@ -672,6 +723,11 @@ def namuh_account_status():
             })
         except namuh.NamuhError as e:
             st.update({"balanceOk": False, "error": e.message})
+        # 국내주식 ORB 의 자본 힌트. 해외 잔고와 별개 호출이다(5초 캐시).
+        try:
+            st["krCash"] = krx.balance(namuh_keystore.account)["cash"]
+        except namuh.NamuhError as e:
+            st["krError"] = e.message
     return st
 
 

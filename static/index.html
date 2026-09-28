@@ -50,7 +50,8 @@
 
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
-    <button class="tab" data-panel="panel-bots">자동매매 봇</button>
+    <button class="tab" data-panel="panel-bots">🔄 무한매수 봇</button>
+    <button class="tab" data-panel="panel-orb">📐 국내 ORB 봇</button>
     <button class="tab" data-panel="panel-muma">📋 무매법 표</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
@@ -263,7 +264,7 @@
 
         <div class="card">
           <div class="card-head">
-            <h2 class="card-title">가동 중인 봇 <span class="muted" id="botCount"></span></h2>
+            <h2 class="card-title">가동 중인 무한매수 봇 <span class="muted" id="botCount"></span></h2>
             <button class="btn btn-ghost btn-sm" id="stopAllBtn">전체 정지</button>
           </div>
           <div class="alert alert-danger hidden" id="workerNotice"></div>
@@ -416,6 +417,103 @@
               <tr><td colspan="10" class="empty">체결 내역이 없습니다.</td></tr>
             </tbody>
           </table>
+        </div>
+      </div>
+    </section>
+
+    <!-- 국내 ORB 봇 — 무한매수와 설정·주기·시장이 전혀 달라 탭을 따로 둔다 -->
+    <section id="panel-orb" class="panel hidden">
+      <div class="grid-2">
+        <div class="card">
+          <h2 class="card-title">📐 국내 ORB 봇 가동</h2>
+          <p class="muted small" style="margin:.2rem 0 .8rem">나무증권 국내주식 · 매 거래일 09:00 장 초반에만 매매합니다.</p>
+          <div class="form-grid">
+            <div>
+              <label class="label">국내 종목</label>
+              <select class="input" id="orbCoin"></select>
+            </div>
+            <div>
+              <label class="label">매매 모드</label>
+              <select class="input" id="orbMode">
+                <option value="PAPER" selected>모의투자 (주문 안 나감)</option>
+                <option value="LIVE">실전 (나무증권 국내 실주문)</option>
+              </select>
+            </div>
+            <div class="span-2">
+              <label class="label">운용 자본 (원)</label>
+              <input class="input" type="number" id="orbCapital" value="1000000" min="100000" step="100000">
+              <div class="muted small" id="orbCapitalHint" style="margin-top:.35rem">잔고 확인 중…</div>
+            </div>
+          </div>
+          <!-- 국내주식 ORB (09:00~09:30 장 초반 돌파) — 무한매수와 설정이 전혀 다르다 -->
+          <div id="orbBotOptions" style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
+            <label class="label" style="font-weight: 600; margin-bottom: 8px;">📐 ORB · 오프닝 레인지 돌파 + VWAP 필터</label>
+            <p class="muted small" style="margin: 0 0 10px;">
+              09:00부터 <b>레인지 분</b> 동안 고가·저가를 재고, 그 고가를 <b>VWAP 위</b>에서 <b>거래량을 동반해</b> 넘으면 삽니다.
+              익절·손절·OR 저가 이탈·타임컷 중 먼저 오는 것으로 팔고, <b>하루 한 번만</b> 들어갑니다.
+            </p>
+            <div class="form-grid">
+              <div><label class="label">레인지 (분)</label>
+                <input class="input" type="number" id="orb_rangeMin" value="5" min="1" max="30" step="1"></div>
+              <div><label class="label">진입 마감 (09:MM)</label>
+                <input class="input" type="number" id="orb_entryEndMin" value="25" min="2" max="59" step="1"></div>
+              <div><label class="label">타임컷 (09:MM)</label>
+                <input class="input" type="number" id="orb_cutoffMin" value="30" min="3" max="60" step="1"></div>
+              <div><label class="label">익절 (%)</label>
+                <input class="input" type="number" id="orb_takeProfitPct" value="2.0" min="0.1" max="20" step="0.1"></div>
+              <div><label class="label">손절 (%)</label>
+                <input class="input" type="number" id="orb_stopLossPct" value="1.0" min="0.1" max="20" step="0.1"></div>
+              <div><label class="label">거래량 배수 (0 = 끔)</label>
+                <input class="input" type="number" id="orb_volSurge" value="1.5" min="0" max="10" step="0.1"></div>
+            </div>
+            <div class="label" style="margin-top:12px; font-weight:600">🧰 가짜 돌파 필터</div>
+            <div class="form-grid">
+              <div><label class="label">RVOL 최소 (배 · 0 = 끔)</label>
+                <input class="input" type="number" id="orb_rvolMin" value="2.0" min="0" max="20" step="0.1">
+                <div class="muted small" style="margin-top:.3rem">09:05 누적 거래량 ÷ 전 거래일 같은 시각</div></div>
+              <div><label class="label">청산 방식</label>
+                <select class="input" id="orb_exitMode">
+                  <option value="timecut" selected>타임컷 + 고정 익절</option>
+                  <option value="trailing">트레일링 스탑 (추세 추종)</option>
+                </select></div>
+              <div class="orb-trail hidden"><label class="label">트레일링 폭 (%)</label>
+                <input class="input" type="number" id="orb_trailPct" value="1.0" min="0.1" max="20" step="0.1"></div>
+              <div class="orb-trail hidden"><label class="label">최종 청산 시각</label>
+                <input class="input" type="time" id="orb_finalCut" value="15:15" min="09:30" max="15:20"></div>
+            </div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
+              <input type="checkbox" id="orb_marketFilter" checked> 지수가 당일 시가 아래면 사지 않음 (코스피 = KODEX 200 · 코스닥 = KODEX 코스닥150 로 판단)</label>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
+              <input type="checkbox" id="orb_useVwap" checked> 당일 VWAP 위에서만 매수</label>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:4px; font-size:.86rem; cursor:pointer">
+              <input type="checkbox" id="orb_useOrLowStop" checked> OR 저가를 깨면 손절</label>
+            <details class="note note-warn" style="margin-top:10px">
+              <summary>알고 쓰셔야 할 것</summary>
+              · 분봉 API 가 없어 <b>2초마다 받는 시세</b>로 판단합니다. OR 고저는 개장 직후 '당일 고저' 로 재서 폴링 사이를 놓치지 않지만,
+                거래량 급증은 <b>누적 거래량이 늘어나는 속도</b>(최근 60초 vs OR 평균)로 봅니다.<br>
+              · 주문은 <b>시장성 지정가</b>(매수 = 매도호가 +2호가, 매도 = 매수호가 −2호가)입니다. 모의계좌가 지정가만 받습니다.<br>
+              · 매도 체결가는 잔고로 알 수 없어 <b>최우선 매수호가로 추정</b>해 장부에 적습니다. 매수 평단은 잔고로 정확히 역산합니다.<br>
+              · 호가가 멈춰 있는 날(휴장·수능일 지연 개장)은 OR 을 못 재므로 그날은 쉽니다.<br>
+              · <b>RVOL 을 켜면 봇을 띄운 첫 거래일은 사지 않습니다.</b> 전일 같은 시각 거래량은 봇이 매일 09:05 에 나무증권 시세로 직접 적어 두는데,
+                공개 분봉은 20분 늦고 누적 거래량이 10~20% 적게 나와 섞어 쓸 수 없었습니다(2026-09-28 대조). 첫날은 기록만 합니다.<br>
+              · 지수 필터는 지수 대신 지수 추종 ETF 의 시가를 봅니다 (나무증권 지수 시세 경로를 찾지 못했습니다).<br>
+              · 트레일링은 고정 익절을 쓰지 않고, 손절 · OR 저가 · 최종 청산 시각(기본 15:15, 종가 동시호가 전)은 그대로 지킵니다.<br>
+              · 이 전략은 <b>아직 백테스트하지 않았습니다</b> (분봉 과거 데이터가 없습니다). 모의투자로 먼저 쌓아 보세요.
+            </details>
+          </div>
+
+          <div class="deploy-actions">
+            <button class="btn btn-primary btn-block" id="orbDeployBtn">ORB 봇 가동</button>
+          </div>
+          <div class="alert alert-error hidden" id="orbDeployError"></div>
+        </div>
+
+        <div class="card">
+          <div class="card-head">
+            <h2 class="card-title">가동 중인 ORB 봇 <span class="muted" id="orbBotCount"></span></h2>
+          </div>
+          <div class="alert alert-danger hidden" id="orbWorkerNotice"></div>
+          <div id="orbBotList" class="bot-list"><div class="empty">가동 중인 ORB 봇이 없습니다.</div></div>
         </div>
       </div>
     </section>
@@ -621,6 +719,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.5.0"></script>
+<script src="/static/js/app.js?v=5.8.0"></script>
 </body>
 </html>
