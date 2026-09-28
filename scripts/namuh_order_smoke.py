@@ -33,7 +33,9 @@ from services.keystore import namuh_keystore       # noqa: E402
 SELL_TICKER = "TQQQ"      # 고아 물량이 있는 종목
 CANCEL_TICKER = "UPRO"    # 어떤 봇도 쓰지 않는 종목
 CANCEL_PRICE_RATIO = 0.85  # 현재가의 85% — 6초 안에 체결될 수 없는 가격
-BOTS_FILE = "/opt/gemini_alpha_lab/data/bots.json"
+# 크립토/나무증권을 두 서비스로 나눈 뒤에는 나무증권 봇이 bots_namuh.json 에 있다.
+# 한 파일만 읽으면 봇 장부를 0 으로 보고 봇 몫까지 '남는 물량' 으로 판다.
+BOTS_FILES = ("/opt/gemini_alpha_lab/data/bots.json", "/opt/gemini_alpha_lab/data/bots_namuh.json")
 
 results = []
 
@@ -45,15 +47,28 @@ def report(name, ok, detail=""):
 
 
 def bot_ledger_units(ticker):
-    """돌고 있는 나무증권 봇들이 장부에 들고 있는 이 종목 수량의 합."""
-    try:
-        d = json.load(open(BOTS_FILE, encoding="utf-8"))
+    """나무증권 봇들이 장부에 들고 있는 이 종목 수량의 합 (두 장부 파일 모두).
+
+    같은 봇이 두 파일에 다 있으면(나누다 멈춘 경우) 한 번만 센다.
+    파일이 하나라도 있는데 못 읽으면 None — 모르면 팔지 않는다.
+    """
+    import os
+    seen, total, found = set(), 0.0, False
+    for path in BOTS_FILES:
+        if not os.path.exists(path):
+            continue
+        found = True
+        try:
+            d = json.load(open(path, encoding="utf-8"))
+        except Exception as e:
+            print(f"  봇 장부를 읽지 못했습니다 ({path}): {e}")
+            return None
         bots = d.get("bots", d) if isinstance(d, dict) else d
-        return sum(float(b.get("units") or 0) for b in bots
-                   if b.get("broker") == "namuh" and b.get("coin") == ticker)
-    except Exception as e:
-        print(f"  봇 장부를 읽지 못했습니다: {e}")
-        return None
+        for b in bots:
+            if b.get("broker") == "namuh" and b.get("coin") == ticker and b.get("botId") not in seen:
+                seen.add(b.get("botId"))
+                total += float(b.get("units") or 0)
+    return total if found else None
 
 
 def main():
