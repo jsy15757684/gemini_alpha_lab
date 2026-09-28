@@ -438,9 +438,9 @@
           <div id="orbAutoBox" style="margin-top:.8rem">
             <div class="form-grid">
               <div><label class="label">예상 갭 하한 (%)</label>
-                <input class="input" type="number" id="sel_gapMinPct" value="1.0" min="-30" max="30" step="0.5"></div>
+                <input class="input" type="number" id="sel_gapMinPct" value="1.5" min="-30" max="30" step="0.5"></div>
               <div><label class="label">예상 갭 상한 (%)</label>
-                <input class="input" type="number" id="sel_gapMaxPct" value="15.0" min="-30" max="30" step="0.5"></div>
+                <input class="input" type="number" id="sel_gapMaxPct" value="6.0" min="-30" max="30" step="0.5"></div>
               <div><label class="label">예상 거래대금 하한 (억 원)</label>
                 <input class="input" type="number" id="sel_minExpTurnoverEok" value="3" min="0" step="1"></div>
               <div><label class="label">감시 종목 수 (최대 28)</label>
@@ -512,6 +512,17 @@
               <div class="orb-trail hidden"><label class="label">최종 청산 시각</label>
                 <input class="input" type="time" id="orb_finalCut" value="15:15" min="09:30" max="15:20"></div>
             </div>
+            <div class="label" style="margin-top:12px; font-weight:600">📈 갭 앤 고 조건 (09:05 에 한 번 봅니다)</div>
+            <div class="form-grid">
+              <div><label class="label">실제 시초가 갭 하한 (%)</label>
+                <input class="input" type="number" id="orb_gapMinPct" value="2.0" min="-30" max="30" step="0.5"></div>
+              <div><label class="label">실제 시초가 갭 상한 (%) · 둘 다 0 = 끔</label>
+                <input class="input" type="number" id="orb_gapMaxPct" value="5.0" min="-30" max="30" step="0.5"></div>
+            </div>
+            <div class="muted small" style="margin-top:.3rem">자동 선정은 08:48 예상체결로 고르지만 동시호가는 09:00 직전까지 바뀝니다.
+              실제 시가로 한 번 더 거릅니다. 선정 갭 범위는 이보다 조금 넓게 두세요.</div>
+            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
+              <input type="checkbox" id="orb_openHold" checked> 시초가 지지 — 첫 5분의 1분 종가가 모두 시가 이상이고 5분 양봉인 종목만</label>
             <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
               <input type="checkbox" id="orb_marketFilter" checked> 지수가 당일 시가 아래면 사지 않음 (코스피 = KODEX 200 · 코스닥 = KODEX 코스닥150 로 판단)</label>
             <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
@@ -531,7 +542,7 @@
                 목록이 매일 바뀌어도 첫날부터 RVOL 을 봅니다 (2026-09-23 카카오 60,622주 — 공개 1분봉 60,575주와 일치).<br>
               · 지수 필터는 지수 대신 지수 추종 ETF 의 시가를 봅니다 (나무증권 지수 시세 경로를 찾지 못했습니다).<br>
               · 트레일링은 고정 익절을 쓰지 않고, 손절 · OR 저가 · 최종 청산 시각(기본 15:15, 종가 동시호가 전)은 그대로 지킵니다.<br>
-              · 이 전략은 <b>아직 백테스트하지 않았습니다</b> (분봉 과거 데이터가 없습니다). 모의투자로 먼저 쌓아 보세요.
+              · 2026-08-24 ~ 09-28 (23거래일 · 346종목) 1분봉 백테스트에서 <b>수익이 확인되지 않았습니다</b> (①+② 14건 · 거래당 −0.32% · 비용 포함). 표본이 작아 결론은 못 냅니다 — 모의투자로 더 쌓아 보세요. (<code>scripts/orb_backtest.py</code>)
             </details>
           </div>
 
@@ -752,6 +763,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.11.0"></script>
+<script src="/static/js/app.js?v=5.12.0"></script>
 </body>
 </html>

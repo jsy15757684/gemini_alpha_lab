@@ -454,6 +454,7 @@ function readOrbParams() {
     // "15:15" → 09:00 부터 분
     finalCutMin: (([h, m]) => (h - 9) * 60 + m)(($("orb_finalCut").value || "15:15").split(":").map(Number)),
     marketFilter: $("orb_marketFilter").checked,
+    gapMinPct: n("orb_gapMinPct") || 0, gapMaxPct: n("orb_gapMaxPct") || 0, openHold: $("orb_openHold").checked,
   };
 }
 
@@ -553,9 +554,10 @@ async function deployOrbBot() {
     p.exitMode === "trailing"
       ? `청산      : 트레일링 고점 -${p.trailPct}% · 손절 -${p.stopLossPct}%${p.useOrLowStop ? " · OR 저가 이탈" : ""} · ${hm(p.finalCutMin)} 최종 청산`
       : `청산      : 익절 +${p.takeProfitPct}% · 손절 -${p.stopLossPct}%${p.useOrLowStop ? " · OR 저가 이탈" : ""} · ${hm(p.cutoffMin)} 타임컷`,
+    `갭 앤 고  : ${p.gapMinPct || p.gapMaxPct ? `실제 시초가 갭 ${p.gapMinPct}~${p.gapMaxPct}%` : "시초가 갭 끔"} · ${p.openHold ? "시초가 지지 + 5분 양봉" : "시초가 지지 끔"}`,
     `필터      : ${p.rvolMin > 0 ? `RVOL ≥ ${Math.round(p.rvolMin * 100)}% (첫 거래일은 기록만 하고 사지 않음)` : "RVOL 끔"} · ${p.marketFilter ? "지수 시가 위" : "지수 필터 끔"}`,
     "", mode === "LIVE"
-      ? "⚠️ 실제 주문이 나가며 손실이 발생할 수 있습니다. 이 전략은 아직 백테스트하지 않았습니다. 계속하시겠습니까?"
+      ? "⚠️ 실제 주문이 나가며 손실이 발생할 수 있습니다. 6주 백테스트에서 수익이 확인되지 않았습니다(표본 작음). 계속하시겠습니까?"
       : "위 설정이 맞습니까? (틀리면 취소하고 화면에서 고치세요)",
   ];
   if (!confirm(summary.join("\n"))) return;

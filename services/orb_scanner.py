@@ -191,7 +191,9 @@ class OrbScanner:
                          + (" · VWAP 위" if p.useVwap else "")
                          + (f" · 거래속도 ×{p.volSurge:g}" if p.volSurge > 0 else "")
                          + (f" · RVOL ≥ {p.rvolMin * 100:.0f}%" if p.rvolMin > 0 else "")
-                         + (" · 지수 시가 위" if p.marketFilter else ""))
+                         + (" · 지수 시가 위" if p.marketFilter else "")
+                         + (f" · 시초가 갭 {p.gapMinPct:+g}~{p.gapMaxPct:+g}%" if p.gap_on else "")
+                         + (" · 시초가 지지" if p.openHold else ""))
         self._thread = threading.Thread(target=self._loop, name=f"orb-{self.bot_id}", daemon=True)
         self._thread.start()
         self._persist()
@@ -766,6 +768,7 @@ class OrbScanner:
             day.entered, day.done, day.stale, day.note = (bool(od.get("entered")), bool(od.get("done")),
                                                           bool(od.get("stale")), od.get("note") or "")
             day.rvol, day.rvolChecked = od.get("rvol"), bool(od.get("rvolChecked"))
+            day.orMinClose, day.minute, day.minuteLast = od.get("orMinClose"), od.get("minute"), od.get("minuteLast")
             if od.get("orVol0"):
                 day.orVol0 = tuple(od["orVol0"])
             if od.get("orVol1"):

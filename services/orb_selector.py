@@ -29,8 +29,10 @@ logger = logging.getLogger(__name__)
 @dataclass
 class SelectParams:
     topN: int = 28
-    gapMinPct: float = 1.0          # 예상 갭 하한 — ORB 는 매수만 하므로 위로 뜨는 종목
-    gapMaxPct: float = 15.0         # 상한 — 상한가 근처 · 과열은 돌파 뒤 여유가 없다
+    # 예상 갭 범위. 09:05 에 실제 시초가 갭(OrbParams 2~5%)으로 다시 거르므로, 예상과
+    # 실제의 차이를 감안해 그보다 조금 넓게 고른다. ORB 는 매수만 하므로 위로 뜨는 종목.
+    gapMinPct: float = 1.5
+    gapMaxPct: float = 6.0
     minExpTurnoverEok: float = 3.0  # 예상 거래대금 하한(억 원) — 호가가 얇으면 신호가 가짜다
 
     @classmethod

@@ -45,8 +45,9 @@ def snap(now, price, high=None, low=None, vol=0, vwap=None, hoga=None, bid=None,
             "bid": bid or price - 5, "ask": ask or price + 5, "upperLimit": 0, "lowerLimit": 0}
 
 
-# 기본 ORB 동작은 세 필터를 끈 설정으로 본다. 필터는 아래에서 따로 본다.
-P = orb.OrbParams(rvolMin=0, marketFilter=False)
+# 기본 ORB 동작은 필터를 끈 설정으로 본다. 필터 · 갭 앤 고 조건은 아래에서 따로 본다.
+OFF = dict(gapMinPct=0, gapMaxPct=0, openHold=False)
+P = orb.OrbParams(rvolMin=0, marketFilter=False, **OFF)
 
 
 def run_range(day, base=10000, vol0=100_000, rate=100):
@@ -110,7 +111,7 @@ for sec in (360, 380, 400):
     now = at(f"09:0{sec // 60}:{sec % 60:02d}")
     r = orb.decide(P, d4, snap(now, 10150, vol=v + 300 * (sec - 360), vwap=10200), now, None)
 check("VWAP 아래 돌파는 사지 않는다", r["action"] is None and "VWAP 10,200 아래" in r["reason"], "")
-p_novwap = orb.OrbParams(useVwap=False, rvolMin=0, marketFilter=False)
+p_novwap = orb.OrbParams(useVwap=False, rvolMin=0, marketFilter=False, **OFF)
 d4b = orb.OrbDay("2026-09-29"); run_range(d4b)
 for sec in (360, 380, 400):
     now = at(f"09:0{sec // 60}:{sec % 60:02d}")
@@ -157,7 +158,7 @@ check("주말에는 촘촘히 보지 않는다", orb.next_wake(P, sat, False, Fa
 check("새벽에는 10분 단위로 잔다", orb.next_wake(P, at("03:00:00"), False, False) == 600, "")
 
 print("── 필터 1: RVOL (전일 같은 시각 거래량) ──")
-PR = orb.OrbParams(marketFilter=False)            # RVOL 200% 기본값
+PR = orb.OrbParams(marketFilter=False, **OFF)     # RVOL 200% 기본값
 IDX_UP = {"name": "코스피", "price": 110_000, "open": 109_000}
 
 
@@ -183,18 +184,84 @@ check("RVOL 250% 면 돌파를 산다", r["action"] == "buy" and "RVOL 250%" in 
 check("RVOL 은 OR 이 끝난 뒤 한 번만 본다", dd3.rvolChecked and abs(dd3.rvol - 2.5) < 0.01, f"{dd3.rvol:.2f}")
 
 print("── 필터 3: 지수 (당일 시가 위) ──")
-PM = orb.OrbParams(rvolMin=0)
+PM = orb.OrbParams(rvolMin=0, **OFF)
 _, r = breakout(PM, index={"name": "코스피", "price": 108_000, "open": 109_000})
 check("지수 ETF 가 시가 아래면 돌파여도 사지 않는다", r["action"] is None and "시가 아래" in r["reason"], r["reason"][-30:])
 _, r = breakout(PM, index=None)
 check("지수 시세가 없으면 사지 않는다 (모르면 쉰다)", r["action"] is None and "지수 시세 없음" in r["reason"], "")
 _, r = breakout(PM, index=IDX_UP)
 check("지수 ETF 가 시가 위면 산다", r["action"] == "buy" and "시가 위" in r["reason"], "")
-_, r = breakout(orb.OrbParams(), prev=int(end_vol / 3), index=IDX_UP)
+_, r = breakout(orb.OrbParams(**OFF), prev=int(end_vol / 3), index=IDX_UP)
 check("세 필터를 다 켜고 다 통과하면 산다 (기본 설정)", r["action"] == "buy", r["reason"][:50])
 
+print("── 갭 앤 고 조건: 시초가 갭 · 시초가 지지 (기본 켜짐) ──")
+PG = orb.OrbParams(rvolMin=0, marketFilter=False)          # 갭 2~5% · 시초가 지지 기본값
+check("기본값: 실제 시초가 갭 2~5% · 시초가 지지 켜짐", PG.gap_on and PG.openHold
+      and (PG.gapMinPct, PG.gapMaxPct) == (2.0, 5.0), "")
+
+
+def gng(params, open_=10000, prev=9709, dip=False, wick=False, after=10150, stream_tick=False, no_open=False):
+    """시가 open_ · 전일 종가 prev.
+    dip   09:03 한 분 동안 가격이 시가 아래(9,950)에 머문다 → 그 분 1분 종가가 시가 아래
+    wick  저가만 시가 아래(9,950)를 찍고 가격은 곧 돌아온다 → 1분 종가는 시가 위"""
+    dday = orb.OrbDay("2026-09-29")
+    for sec in range(5, 300, 10):
+        now_ = orb_now = at(f"09:0{sec // 60}:{sec % 60:02d}")
+        px = 9950 if (dip and 180 <= sec < 240) else open_ + (100 if sec >= 125 else 0)
+        q = snap(now_, px, high=open_ + 100 if sec >= 125 else open_,
+                 low=9950 if ((dip or wick) and sec >= 180) else open_, vol=100_000 + 100 * sec)
+        q["open"] = 0 if no_open else open_
+        orb.decide(params, dday, q, orb_now, None)
+    rr = None
+    for sec in (360, 380, 400):
+        now_ = at(f"09:0{sec // 60}:{sec % 60:02d}")
+        q = snap(now_, after, high=max(after, open_ + 100), low=9950 if (dip or wick) else open_,
+                 vol=129_500 + 300 * (sec - 360), vwap=10050)
+        q["open"] = 0 if no_open else open_
+        if stream_tick:
+            q["changePct"] = round((after / prev - 1) * 100, 2)      # 실시간 체결에는 전일 종가가 없다
+        else:
+            q["prevClose"] = prev
+        rr = orb.decide(params, dday, q, now_, None)
+        if rr["action"] or dday.done:
+            break
+    return dday, rr
+
+
+dg, r = gng(PG)
+check("갭 +3% · 첫 5분 시가 지지 · 5분 양봉 → 돌파를 산다", r["action"] == "buy", r["reason"][:40])
+check("OR 구간 1분 종가 최저를 잰다 (시가 이상)", dg.orMinClose == 10000, f"{dg.orMinClose}")
+dg, r = gng(PG, wick=True)
+check("저가 꼬리만 시가 아래를 찍고 1분 종가가 버티면 산다 (첫 1분 흔들림)", r["action"] == "buy", r["reason"][:40])
+dg, r = gng(PG, prev=9901)
+check("갭 +1% 는 범위 밖이라 쉰다", dg.done and r["action"] is None and "시초가 갭 +1.00%" in r["reason"], r["reason"][:40])
+dg, r = gng(PG, prev=9434)
+check("갭 +6% 도 범위 밖이라 쉰다 (상한)", dg.done and "시초가 갭 +6.00%" in r["reason"], r["reason"][:40])
+dg, r = gng(PG, dip=True)
+check("첫 5분 중 한 분이라도 1분 종가가 시가 아래면 쉰다",
+      dg.done and "시초가 지지 실패" in r["reason"] and "9,950" in r["reason"], r["reason"][:60])
+dg, r = gng(PG, after=10000)
+check("09:05 가격이 시가 이하(음봉)면 쉰다", dg.done and "음봉" in r["reason"], r["reason"][:50])
+dg, r = gng(PG, stream_tick=True)
+check("실시간 체결(전일 종가 없음)은 등락률로 전일 종가를 되돌려 갭을 본다", r["action"] == "buy", r["reason"][:40])
+dg, r = gng(PG, no_open=True)
+check("시가를 모르면 사지 않는다", dg.done and r["action"] is None and "시가" in r["reason"], r["reason"][:40])
+dg, r = gng(orb.OrbParams(rvolMin=0, marketFilter=False, gapMinPct=0, gapMaxPct=0), prev=9901)
+check("갭 조건을 끄면(0 · 0) 갭 +1% 도 본다 — 시초가 지지는 그대로", r["action"] == "buy", r["reason"][:40])
+dg, r = gng(orb.OrbParams(rvolMin=0, marketFilter=False, openHold=False), dip=True)
+check("시초가 지지를 끄면 시가 아래로 밀렸던 종목도 산다", r["action"] == "buy", r["reason"][:40])
+bad = 0
+for b in ({"gapMinPct": 5, "gapMaxPct": 2}, {"gapMinPct": -40, "gapMaxPct": 5}):
+    try:
+        orb.OrbParams.from_dict(b)
+    except ValueError:
+        bad += 1
+check("갭 범위가 거꾸로이거나 ±30% 밖이면 거부한다", bad == 2, f"{bad}/2")
+check("예전에 만든 봇(설정에 새 칸 없음)을 되살리면 새 조건이 켜진다",
+      orb.OrbParams.from_dict({"rvolMin": 2.0}).openHold is True, "")
+
 print("── 필터 2: 트레일링 스탑 ──")
-PT = orb.OrbParams(rvolMin=0, marketFilter=False, exitMode="trailing", trailPct=1.0)
+PT = orb.OrbParams(rvolMin=0, marketFilter=False, exitMode="trailing", trailPct=1.0, **OFF)
 dt_ = orb.OrbDay("2026-09-29"); dt_.orLow = 9950
 def tr(hms, px, peak):
     now_ = at(hms)

@@ -125,7 +125,9 @@ def tick_snap(code, now, price, high, low, vol, vwap=None):
                      "hogaTime": now.strftime("%H:%M:%S"), "market": "kospi"}
 
 
-P = {"rvolMin": 0, "marketFilter": False, "watchMode": "manual"}
+# 갭 앤 고 조건(시초가 갭 · 시초가 지지)은 test_orb.py 가 본다 — 여기서는 끈다
+OFF = {"gapMinPct": 0, "gapMaxPct": 0, "openHold": False}
+P = {"rvolMin": 0, "marketFilter": False, "watchMode": "manual", **OFF}
 CODES = ["005930", "000660", "035720", "105560"]
 bot = osc.OrbScanner("ORB-t", "PAPER", 900_000, {**P, "watchlist": CODES, "maxPositions": 3}, None)
 bot.day_date = "2026-09-29"
@@ -212,7 +214,7 @@ check("1주가 종목당 자본(30만원)보다 비싸면 건너뛴다 (SK하이
       not bot.positions and bot.days["000660"].done and "살 수 없어" in bot.days["000660"].note, bot.days["000660"].note[:30])
 BASE.update(BASE_SAVE); bot = bot_save
 
-rv = osc.OrbScanner("ORB-r", "PAPER", 900_000, {"marketFilter": False, "watchlist": ["035720"], "watchMode": "manual"}, None)
+rv = osc.OrbScanner("ORB-r", "PAPER", 900_000, {"marketFilter": False, "watchlist": ["035720"], "watchMode": "manual", **OFF}, None)
 rv.or_vol_history = {"035720": {"2026-09-28": 5_000, "2026-09-25": 100}}
 check("RVOL 기준은 종목별 · 오늘 이전 가장 최근 거래일", rv._prev_or_vol("035720", "2026-09-29") == 5_000
       and rv._prev_or_vol("005930", "2026-09-29") is None, "")

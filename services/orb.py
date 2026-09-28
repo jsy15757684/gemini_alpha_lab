@@ -30,6 +30,18 @@
   지수          돌파 순간 지수 ETF(코스피=KODEX 200 · 코스닥=KODEX 코스닥150)가
                 당일 시가 아래면 사지 않는다. 나무증권에서 지수 시세 경로를 찾지
                 못해 지수를 따라가는 ETF 로 본다.
+
+갭 앤 고(Gap and Go)에서 가져온 두 조건 — OR 이 끝난 첫 판단에서 RVOL 과 같이 한 번 본다
+
+  시초가 갭      실제 시가가 전일 종가보다 gapMinPct ~ gapMaxPct 위에서 열린 날만.
+                자동 선정은 08:48 예상체결로 고르는데, 동시호가는 09:00 직전까지
+                취소할 수 있어 예상 갭과 실제 갭이 다르다. 실제 시가로 다시 거른다.
+                상한을 두면 시가 대비 +10% 정적 VI 에 닿을 일도 줄어든다.
+  시초가 지지    첫 5분의 1분 종가가 모두 시가 이상이고 5분 끝 가격이 시가 위(양봉)인
+                날만. 갭을 메우며 밀리는 종목을 거른다. 저가(꼬리)로 보면 너무 엄격하다
+                — 개장 첫 1분은 거의 늘 시가 아래를 한 번 찍는다(2026-08~09 1분봉:
+                갭 2~5% 53건 중 저가 기준 1건 · 종가 기준 12건 통과). 1분 종가는
+                그 분의 마지막 스냅샷 가격이다.
 """
 
 from collections import deque
@@ -60,6 +72,9 @@ class OrbParams:
     trailPct: float = 1.0        # 트레일링: 고점 대비 이만큼 빠지면 판다
     finalCutMin: int = 375       # 트레일링 최종 청산 (09:00 + 375분 = 15:15)
     marketFilter: bool = True    # 지수 ETF 가 당일 시가 아래면 사지 않는다
+    gapMinPct: float = 2.0       # 실제 시초가 갭 하한 (하한 · 상한 둘 다 0 이면 끔)
+    gapMaxPct: float = 5.0       # 상한
+    openHold: bool = True        # 첫 5분 1분 종가가 모두 시가 이상 + 5분 양봉
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "OrbParams":
@@ -84,11 +99,28 @@ class OrbParams:
             raise ValueError("청산 방식은 timecut 또는 trailing 이어야 합니다.")
         if not (0.1 <= self.trailPct <= 20):
             raise ValueError("트레일링 폭은 0.1% ~ 20% 사이여야 합니다.")
+        if self.gap_on and not (-30 <= self.gapMinPct < self.gapMaxPct <= 30):
+            raise ValueError("시초가 갭 범위가 올바르지 않습니다 (하한 < 상한, ±30% 안 · 둘 다 0 이면 끔).")
         if not (self.entryEndMin < self.finalCutMin <= 380):
             raise ValueError("트레일링 최종 청산은 진입 마감 뒤 ~ 15:20 사이여야 합니다 (종가 동시호가 전).")
 
+    @property
+    def gap_on(self) -> bool:
+        return bool(self.gapMinPct or self.gapMaxPct)
+
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
+
+
+def open_gap_pct(q: Dict[str, Any]) -> Optional[float]:
+    """실제 시가의 갭(%). 실시간 체결에는 전일 종가가 없어 등락률로 되돌려 낸다."""
+    op, price = float(q.get("open") or 0), float(q.get("price") or 0)
+    prev = float(q.get("prevClose") or 0)
+    if not prev and price > 0 and q.get("changePct") is not None:
+        prev = price / (1 + float(q["changePct"]) / 100)
+    if op <= 0 or prev <= 0:
+        return None
+    return (op / prev - 1) * 100
 
 
 @dataclass
@@ -102,6 +134,9 @@ class OrbDay:
     stale: bool = False                              # 장이 안 열렸다고 판단
     rvol: Optional[float] = None                     # OR 끝 누적 거래량 ÷ 전일 같은 시각
     rvolChecked: bool = False
+    orMinClose: Optional[float] = None               # OR 구간 1분 종가 중 가장 낮은 값 (시초가 지지)
+    minute: Optional[int] = None                     # 지금 담고 있는 1분 칸 (개장 뒤 몇 분째)
+    minuteLast: Optional[float] = None               # 그 칸의 마지막 가격 = 그 분의 종가
     entered: bool = False
     done: bool = False
     note: str = ""
@@ -113,8 +148,15 @@ class OrbDay:
                 # 재시작 뒤 거래 속도(OR 평균)를 다시 낼 수 있게 두 점을 다 남긴다
                 "orVol0": list(self.orVol0) if self.orVol0 else None,
                 "orVol1": list(self.orVol1) if self.orVol1 else None,
-                "rvolChecked": self.rvolChecked,
+                "rvolChecked": self.rvolChecked, "orMinClose": self.orMinClose,
+                "minute": self.minute, "minuteLast": self.minuteLast,
                 "stale": self.stale, "entered": self.entered, "done": self.done, "note": self.note}
+
+    def close_minute(self) -> None:
+        """담고 있던 1분 칸을 닫는다 — 그 분의 마지막 가격을 1분 종가로 친다."""
+        if self.minuteLast is not None:
+            self.orMinClose = min(self.orMinClose if self.orMinClose is not None else float("inf"),
+                                  self.minuteLast)
 
     @property
     def or_rate(self) -> Optional[float]:
@@ -225,6 +267,10 @@ def decide(p: OrbParams, day: OrbDay, q: Dict[str, Any], now: datetime,
             day.orVol0 = (now_s, vol)
         day.orVol1 = (now_s, vol)
         day.samples.append((now_s, vol))
+        k = int(m)
+        if day.minute is not None and k != day.minute:
+            day.close_minute()
+        day.minute, day.minuteLast = k, price
         return {"action": None, "phase": "range",
                 "reason": f"OR 측정 중 · 고 {day.orHigh:,.0f} · 저 {day.orLow:,.0f}"}
 
@@ -240,9 +286,35 @@ def decide(p: OrbParams, day: OrbDay, q: Dict[str, Any], now: datetime,
     if not fresh:
         return {"action": None, "phase": "watch", "reason": "호가가 멈춰 있어 판단을 미룹니다"}
 
-    # ── RVOL: OR 이 끝난 첫 판단에서 한 번만 본다 ──
+    # ── OR 이 끝난 첫 판단에서 한 번만 본다: 시초가 갭 · 시초가 지지 · RVOL ──
     if not day.rvolChecked:
         day.rvolChecked = True
+        op = float(q.get("open") or 0)
+        if p.gap_on:
+            gap = open_gap_pct(q)
+            if gap is None:
+                day.done = True
+                day.note = "시가 · 전일 종가를 몰라 시초가 갭을 볼 수 없습니다 — 오늘은 쉽니다"
+                return {"action": None, "phase": "done", "reason": day.note}
+            if not (p.gapMinPct <= gap <= p.gapMaxPct):
+                day.done = True
+                day.note = f"시초가 갭 {gap:+.2f}% — 범위 {p.gapMinPct:+g}~{p.gapMaxPct:+g}% 밖이라 쉽니다"
+                return {"action": None, "phase": "done", "reason": day.note}
+        if p.openHold:
+            if op <= 0:
+                day.done = True
+                day.note = "시가를 몰라 시초가 지지를 볼 수 없습니다 — 오늘은 쉽니다"
+                return {"action": None, "phase": "done", "reason": day.note}
+            day.close_minute()                           # 마지막 1분(09:04~09:05)도 넣는다
+            if day.orMinClose is not None and day.orMinClose < op:
+                day.done = True
+                day.note = (f"첫 {p.rangeMin}분 중 1분 종가가 시가 {op:,.0f}원 아래({day.orMinClose:,.0f}원)로 "
+                            f"밀렸습니다 — 시초가 지지 실패라 쉽니다")
+                return {"action": None, "phase": "done", "reason": day.note}
+            if price <= op:
+                day.done = True
+                day.note = f"{hm(p.rangeMin)} 가격 {price:,.0f}원이 시가 {op:,.0f}원 이하(음봉) — 쉽니다"
+                return {"action": None, "phase": "done", "reason": day.note}
         if p.rvolMin > 0:
             end_vol = day.orVol1[1] if day.orVol1 else 0
             if not prev_or_vol:
