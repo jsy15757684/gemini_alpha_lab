@@ -40,6 +40,9 @@ SECRET_ENV = (
     "BITHUMB_API_KEY", "BITHUMB_SECRET_KEY",
     "BINANCE_API_KEY", "BINANCE_SECRET_KEY",
     "GEMINI_API_KEY", "BITHUMB_PROXY_URL",
+    # 나무증권 — 모의투자여도 같은 앱키로 실서버 토큰을 받는다. 미리보기가 받으면
+    # 운영 서버의 토큰을 무효로 만들 수 있다('만료 전 재발급 금지').
+    "NAMUH_APP_KEY", "NAMUH_APP_SECRET", "NAMUH_ACCOUNT_NO",
 )
 
 
@@ -93,6 +96,18 @@ def block_live_calls() -> None:
     keystore.KEYS_FILE = os.path.join(keys_dir, "keys.json")
     gemini_service.GEMINI_KEY_FILE = os.path.join(keys_dir, "gemini_key.json")
 
+    # 나무증권: 키 파일 · 토큰 파일을 빈 폴더로 돌리고, 이미 올라온 키도 비운다.
+    # 그다음 토큰 발급 · 주문 · 국내 시세/실시간 통로를 예외로 바꾼다.
+    from services import namuh, krx, krx_stream
+    keystore.NAMUH_KEYS_FILE = os.path.join(keys_dir, "namuh_key.json")
+    namuh.TOKEN_FILE = os.path.join(keys_dir, "namuh_token.json")
+    keystore.namuh_keystore.account = namuh.NamuhAccount()
+    keystore.namuh_keystore.source = "none"
+    for name in ("get_token", "market_buy", "market_sell", "cancel_order", "get_balance", "test_connection"):
+        setattr(namuh.NamuhAccount, name, refuse(f"나무증권 API({name})"))
+    krx._post = refuse("나무증권 국내 API")
+    krx_stream.KrxStream.ensure = refuse("나무증권 실시간 시세")
+
     # Gemini: 할당량을 쓰는 호출 전부
     for name in ("analyze_coin", "scan_all_coins", "analyze_raoer_context"):
         if hasattr(gemini_service, name):
@@ -111,6 +126,19 @@ def verify() -> None:
     if leaked:
         _fail(f"환경변수에 키가 남아 있습니다: {', '.join(leaked)} "
               "— .env 가 다시 주입됐을 수 있습니다 (APP_SKIP_DOTENV 확인)")
+
+    from services import namuh, krx
+    if keystore.namuh_keystore.account.configured:
+        _fail(f"나무증권 키스토어가 키를 들고 있습니다 (출처 {keystore.namuh_keystore.source})")
+    for call, label in ((lambda: namuh.NamuhAccount("k", "s", "1").get_token(), "나무증권 토큰"),
+                        (lambda: krx._post(None, "", "/x", {}, read=True), "나무증권 국내")):
+        try:
+            call()
+        except Blocked:
+            continue
+        except Exception as e:
+            _fail(f"{label} 가 Blocked 가 아닌 예외로 실패했습니다 ({e!r})")
+        _fail(f"{label} 호출이 막히지 않았습니다")
 
     if keystore.keystore.account.configured:
         _fail(f"빗썸 키스토어가 실계좌 키를 들고 있습니다 "
@@ -149,6 +177,7 @@ def verify() -> None:
 
     print("  ✅ 빗썸 인증 API 4종 차단")
     print("  ✅ Gemini 호출 3종 차단")
+    print("  ✅ 나무증권 토큰 · 주문 · 국내 시세 · 실시간 차단")
     print("  ✅ 환경변수에 실키 없음")
     print("  ✅ .env 미로드 (APP_SKIP_DOTENV=1)")
 

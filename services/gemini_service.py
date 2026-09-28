@@ -118,8 +118,8 @@ class GeminiKeyStore:
         self._disk_key = api_key.strip()
         if model and model in SUPPORTED_MODELS:
             self._model = model.strip()
-        with open(GEMINI_KEY_FILE, "w", encoding="utf-8") as f:
-            json.dump({"apiKey": self._disk_key, "model": self._model}, f, ensure_ascii=False, indent=2)
+        from services.keystore import _write_secret
+        _write_secret(GEMINI_KEY_FILE, {"apiKey": self._disk_key, "model": self._model})
 
     def clear(self):
         if self._env_key:
@@ -134,7 +134,8 @@ class GeminiKeyStore:
         if not target_key:
             return {"success": False, "message": "Gemini API 키가 설정되지 않았습니다."}
 
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={target_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent"
+        key_hdr = {"x-goog-api-key": target_key}
         payload = {
             "contents": [
                 {
@@ -147,7 +148,7 @@ class GeminiKeyStore:
         }
 
         try:
-            resp = requests.post(url, json=payload, timeout=10)
+            resp = requests.post(url, json=payload, headers=key_hdr, timeout=10)
             if resp.status_code == 200:
                 data = resp.json()
                 text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")
@@ -378,7 +379,8 @@ def analyze_coin(coin: str, interval: str = "1h",
 
         prompt = _build_analysis_prompt(norm_coin, interval, current_price, bars, pos_open, entry_price)
         target_model = gemini_keystore.model
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={gemini_keystore.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent"
+        key_hdr = {"x-goog-api-key": gemini_keystore.api_key}
 
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
@@ -387,7 +389,7 @@ def analyze_coin(coin: str, interval: str = "1h",
 
         resp = None
         for attempt in range(2):
-            resp = _HTTP_SESSION.post(url, json=payload, timeout=45)
+            resp = _HTTP_SESSION.post(url, json=payload, headers=key_hdr, timeout=45)
             if resp.status_code != 429:
                 break
             # 429 할당량 초과 시 2초 대기 후 1회 재시도
@@ -576,12 +578,13 @@ def analyze_raoer_context(coin: str, interval: str = "1h",
 }}
 """
         target_model = gemini_keystore.model
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent?key={gemini_keystore.api_key}"
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/{target_model}:generateContent"
+        key_hdr = {"x-goog-api-key": gemini_keystore.api_key}
         payload = {
             "contents": [{"parts": [{"text": prompt}]}],
             "generationConfig": _gen_config(1024)
         }
-        resp = _HTTP_SESSION.post(url, json=payload, timeout=30)
+        resp = _HTTP_SESSION.post(url, json=payload, headers=key_hdr, timeout=30)
         if resp.status_code == 200:
             data = resp.json()
             raw_text = data.get("candidates", [{}])[0].get("content", {}).get("parts", [{}])[0].get("text", "")

@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.middleware.gzip import GZipMiddleware
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, field_validator
 
 CURRENT_DIR = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, CURRENT_DIR)
@@ -66,7 +66,8 @@ from services.strategy import StrategyParams, compute_indicators, entry_rule_cat
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, LiquidationFailed, bot_manager
 from services.envconf import env_int
 
-app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0")
+# /docs · /openapi.json 은 /api 밖이라 로그인 없이 열렸다. 전체 API 지도를 내줄 이유가 없다.
+app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 _origins = [o.strip() for o in os.getenv("APP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
@@ -92,8 +93,24 @@ def _forward_raw(method: str, path: str, query: str, body: bytes, ctype: Optiona
     return Response(content=raw, status_code=status, media_type="application/json")
 
 
+CSRF_HEADER = "x-requested-with"
+UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
+
+
+def _security_headers(resp: Response) -> Response:
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "no-referrer")
+    resp.headers.setdefault("Content-Security-Policy", "frame-ancestors 'none'")
+    return resp
+
+
 @app.middleware("http")
 async def auth_gate(request: Request, call_next):
+    return _security_headers(await _auth_gate(request, call_next))
+
+
+async def _auth_gate(request: Request, call_next):
     path = request.url.path
     if roles.ROLE == "namuh":
         # 워커는 crypto 프로세스만 부른다. 화면·로그인·정적 파일을 내주지 않는다.
@@ -102,6 +119,12 @@ async def auth_gate(request: Request, call_next):
         if not roles.valid_internal(request.headers.get(roles.INTERNAL_HEADER)):
             return JSONResponse(status_code=403, content={"detail": "내부 요청이 아닙니다."})
         return await call_next(request)
+    if path.startswith("/api/") and request.method in UNSAFE_METHODS and not request.headers.get(CSRF_HEADER):
+        # CSRF: 쿠키는 같은 사이트(localhost 의 다른 포트 등)에서 온 폼에도 붙는다.
+        # 화면은 모든 변경 요청에 이 헤더를 붙인다. 폼 · 다른 출처 스크립트는 못 붙인다
+        # (CORS 가 Content-Type 외 헤더를 허용하지 않는다). 전체 정지 한 번이면 전 포지션이 팔린다.
+        return JSONResponse(status_code=403, content={"detail": "허용되지 않은 요청입니다 (CSRF 보호).",
+                                                      "code": "CSRF"})
     if not path.startswith("/api/") or path in PUBLIC_API_PATHS or request.method == "OPTIONS":
         return await call_next(request)
     if not auth.is_configured():
@@ -112,6 +135,10 @@ async def auth_gate(request: Request, call_next):
         return JSONResponse(status_code=401,
                             content={"detail": "로그인이 필요합니다.", "code": "AUTH_REQUIRED"})
     if roles.ROLE == "crypto" and path.startswith(WORKER_PREFIXES):
+        raw_path = request.scope.get("raw_path", b"").decode("latin-1").lower()
+        if ".." in path or "%2e" in raw_path or "//" in path:
+            # 접두사만 보고 넘기면 /api/namuh/../bot/deploy 가 워커의 다른 경로로 풀린다
+            return JSONResponse(status_code=400, content={"detail": "잘못된 경로입니다."})
         from starlette.concurrency import run_in_threadpool
         body = await request.body()
         return await run_in_threadpool(_forward_raw, request.method, path, request.url.query,
@@ -215,7 +242,7 @@ def login(req: LoginRequest, request: Request):
     logger.info(f"로그인 성공 ip={ip}")
     resp = JSONResponse({"success": True, "expiresAt": int(expires)})
     resp.set_cookie(auth.COOKIE_NAME, token, max_age=int(auth.SESSION_TTL_SEC),
-                    httponly=True, samesite="lax",
+                    httponly=True, samesite="strict",
                     secure=auth.is_https(request), path="/")
     return resp
 
@@ -291,6 +318,15 @@ class DeployRequest(BaseModel):
     capitalKrw: float = 1_000_000.0
     broker: str = "bithumb"
     params: Dict[str, Any] = {}
+
+    @field_validator("capitalKrw")
+    @classmethod
+    def _finite_capital(cls, v: float) -> float:
+        # JSON NaN 은 float 로 그대로 들어온다. NaN 은 모든 '< 최소' · '잔고 부족' 비교가
+        # 거짓이라 실전 가동 검사를 전부 통과하고, 그 뒤 매 틱 int(NaN) 으로 터진다.
+        if not math.isfinite(v) or v <= 0 or v > 1e13:
+            raise ValueError("운용 자본은 0 보다 큰 유한한 숫자여야 합니다.")
+        return v
 
 
 class BotIdRequest(BaseModel):
@@ -398,6 +434,10 @@ def deploy_bot(req: DeployRequest):
 
     if (req.params or {}).get("strategyType") == "orb":
         return _deploy_orb(req)
+    # 전략을 빼고 보내면 StrategyParams 기본값(quant_ai — 화면에서 없앤 지표 전략)으로
+    # 뜬다. 사용자가 본 적 없는 기본 진입조건으로 매매하게 되는 함정이라 명시를 요구한다.
+    if (req.params or {}).get("strategyType") != "raoer_infinite":
+        raise HTTPException(400, "strategyType 은 raoer_infinite(무한매수) 또는 orb(국내 ORB) 여야 합니다.")
 
     if broker == "namuh" or raw_coin in namuh.NAMUH_STOCKS:
         broker = "namuh"
@@ -584,7 +624,11 @@ def muma_table():
 def stop_bot(req: BotIdRequest):
     if roles.ROLE == "crypto" and not bot_manager.get(req.botId):
         return _worker_or_raise("POST", "/api/bot/stop", req.dict())
-    if not bot_manager.stop(req.botId):
+    try:
+        stopped = bot_manager.stop(req.botId)
+    except LiquidationFailed as e:
+        raise HTTPException(409, str(e))
+    if not stopped:
         raise HTTPException(404, f"봇을 찾을 수 없습니다: {req.botId}")
     return {"success": True, "botId": req.botId}
 
@@ -632,15 +676,17 @@ def dismiss_restore_notice():
 
 @app.post("/api/bot/stop_all")
 def stop_all_bots():
-    n = bot_manager.stop_all()
+    n, skipped = bot_manager.stop_all()
     if roles.ROLE == "crypto":
         # 한쪽이 실패해도 다른 쪽은 멈춘다. 실패는 숨기지 않는다.
         try:
-            n += _worker_or_raise("POST", "/api/bot/stop_all", timeout=180).get("stoppedCount", 0)
+            w = _worker_or_raise("POST", "/api/bot/stop_all", timeout=180)
+            n += w.get("stoppedCount", 0)
+            skipped += w.get("skipped", [])
         except HTTPException as e:
             raise HTTPException(e.status_code,
                                 f"빗썸 봇 {n}개는 정지했지만 나무증권 봇 정지에 실패했습니다: {e.detail}")
-    return {"success": True, "stoppedCount": n}
+    return {"success": True, "stoppedCount": n, "skipped": skipped}
 
 
 # ───────────────────────── 빗썸 계정 ─────────────────────────

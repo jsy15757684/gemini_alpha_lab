@@ -18,3 +18,7 @@ deploy/mac/server.conf
 
 # 생성물 (docs/make_raoer_doc.py 로 다시 만들 수 있다)
 docs/*.pdf
+
+# 개인 자료 — 공개 저장소에 올리지 않는다 (git add -A 사고 방지)
+*.xlsx
+/*.pdf

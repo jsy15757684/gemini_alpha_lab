@@ -1,5 +1,10 @@
-fastapi>=0.100.0
-uvicorn>=0.22.0
-pydantic>=2.0.0
-requests>=2.31.0
-PyJWT>=2.8.0
+# 운영 서버(VPS)와 같은 버전으로 고정한다. '>=' 로 두면 새로 설치할 때 동작이 바뀐다
+# — 예: FastAPI 는 0.1xx 에서 Content-Type 없는 JSON 을 받지 않도록 바뀌었고, 그게
+# CSRF 방어의 한 겹이다. 올릴 때는 테스트를 모두 돌린 뒤 여기를 함께 고친다.
+fastapi==0.141.1
+starlette==1.6.0
+uvicorn==0.53.0
+pydantic==2.13.5
+pydantic_core==2.46.5
+requests==2.34.2
+PyJWT==2.14.0

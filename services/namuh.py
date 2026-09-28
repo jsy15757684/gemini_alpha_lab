@@ -310,11 +310,12 @@ class NamuhAccount:
         try:
             os.makedirs(os.path.dirname(TOKEN_FILE), exist_ok=True)
             tmp = TOKEN_FILE + ".tmp"
-            with open(tmp, "w", encoding="utf-8") as f:
+            # 처음부터 0600 으로 만든다 (chmod 는 쓰고 난 뒤라 그 사이에 읽힐 수 있다)
+            fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
                 json.dump({"keyId": self._token_cache_key(), "token": self._token,
                            "expiresAt": self._token_expires_at}, f)
             os.replace(tmp, TOKEN_FILE)
-            os.chmod(TOKEN_FILE, 0o600)
         except Exception as e:
             logger.warning(f"나무증권 토큰을 저장하지 못했습니다: {e}")
 

@@ -260,11 +260,20 @@ def f_order(acc, side, code, qty, limit):
 def f_await(acc, code, before, want, side, wait_sec=8.0):
     now_q = state["qty"].get(code, 0)
     filled = now_q - before if side == "buy" else before - now_q
-    return {"filled": max(0, min(want, filled)), "qtyAfter": now_q, "avgAfter": state["avg"].get(code, 0)}
+    return {"filled": max(0, min(want, filled)), "qtyAfter": now_q, "avgAfter": state["avg"].get(code, 0), "known": True}
 
 
-orig = (krx.balance, krx.order, krx.await_fill)
-krx.balance, krx.order, krx.await_fill = f_balance, f_order, f_await
+cancels = []
+state["cancel_ok"] = True
+def f_cancel(acc, order_no, code, qty=None):
+    cancels.append((order_no, code, qty))
+    if not state["cancel_ok"]:
+        raise NamuhError("취소 거부 (테스트)")
+    return "C-1"
+
+
+orig = (krx.balance, krx.order, krx.await_fill, krx.cancel)
+krx.balance, krx.order, krx.await_fill, krx.cancel = f_balance, f_order, f_await, f_cancel
 try:
     live = osc.OrbScanner("ORB-L", "LIVE", 900_000, {**P, "watchlist": ["122630"], "maxPositions": 3}, FakeAcc())
     live.day_date = "2026-09-29"
@@ -286,15 +295,199 @@ try:
         raised = False
     except NamuhError as e:
         raised = "체결되지 않았습니다" in e.message
-    check("미체결이면 장부를 바꾸지 않고 미체결 주문으로 남긴다", raised and not stuck.positions and stuck.pending_orders, "")
+    check("미체결이면 잔량을 취소하고 장부를 바꾸지 않는다 (취소 성공 → 미체결로 남기지 않음)",
+          raised and not stuck.positions and not stuck.pending_orders and cancels[-1] == (calls[-1] and "NO-%d" % len(calls), "122630", None), f"{cancels[-1:]}")
+    state["cancel_ok"] = False
+    stuck2 = osc.OrbScanner("ORB-S2", "LIVE", 900_000, {**P, "watchlist": ["122630"]}, FakeAcc())
+    stuck2.day_date = "2026-09-29"; stuck2.days["122630"] = orb.OrbDay("2026-09-29")
+    try:
+        stuck2._buy("122630", "돌파")
+    except NamuhError:
+        pass
+    check("취소도 실패하면 미체결 주문으로 남겨 지켜본다", len(stuck2.pending_orders) == 1 and not stuck2.positions, "")
+    # 나중에 체결됐다 → 장부에 넣고 감시를 붙인다
+    state["qty"]["122630"] = state["qty"].get("122630", 0) + 2
+    state["avg"]["122630"] = 110_900.0
+    stuck2._check_pending(10)
+    check("미체결 매수가 뒤늦게 붙으면 장부에 넣는다 (주인 없는 주식이 생기지 않게)",
+          stuck2.positions.get("122630") and stuck2.positions["122630"].units == 2, f"{stuck2.positions}")
+    state["cancel_ok"] = True
+    state.update(qty={}, avg={})
+
+    # 체결 확인 중 마지막 잔고 조회 하나가 실패해도 앞서 본 체결을 버리지 않는다
+    seq = iter([{"cash": 1, "holdings": {"069500": {"qty": 2, "avg": 100}}}, NamuhError("429")])
+    def flaky_balance(acc, fresh=False):
+        v = next(seq, NamuhError("429"))
+        if isinstance(v, Exception):
+            raise v
+        return v
+    krx.balance = flaky_balance
+    import services.krx as _k
+    _sleep = _k.time.sleep
+    _k.time.sleep = lambda s_: None
+    try:
+        rr = orig[2](FakeAcc(), "069500", 0, 2, "buy", wait_sec=0.05)
+    finally:
+        _k.time.sleep = _sleep
+        krx.balance = f_balance
+    check("체결 확인: 마지막 조회가 실패해도 앞서 본 2주 체결을 돌려준다", rr["filled"] == 2 and rr["known"], f"{rr}")
+
+    # 부분 체결 → 나머지만 취소
+    state["partial"] = True
+    def f_order_partial(acc, side, code, qty, limit):
+        calls.append((side, code, qty, limit))
+        if side == "buy":
+            state["qty"][code] = state["qty"].get(code, 0) + 1
+            state["avg"][code] = limit - 10
+        return "NO-P"
+    krx.order = f_order_partial
+    pp = osc.OrbScanner("ORB-P", "LIVE", 900_000, {**P, "watchlist": ["122630"]}, FakeAcc())
+    pp.day_date = "2026-09-29"; pp.days["122630"] = orb.OrbDay("2026-09-29")
+    pp._buy("122630", "돌파")
+    check("부분 체결이면 남은 수량만 취소하고 체결분만 장부에 넣는다",
+          pp.positions["122630"].units == 1 and cancels[-1] == ("NO-P", "122630", 1), f"{cancels[-1]}")
+    krx.order = f_order
+
+    # 주문 응답을 못 받았다 → 들어갔는지 모른다 → 다시 사지 않는다
+    def f_order_timeout(acc, side, code, qty, limit):
+        raise krx.OrderUnknown("응답 없음 (테스트)")
+    krx.order = f_order_timeout
+    ou = osc.OrbScanner("ORB-U", "LIVE", 900_000, {**P, "watchlist": ["122630"]}, FakeAcc())
+    ou.day_date = "2026-09-29"; ou.days["122630"] = orb.OrbDay("2026-09-29")
+    try:
+        ou._buy("122630", "돌파"); unk = False
+    except krx.OrderUnknown:
+        unk = True
+    check("주문 응답을 못 받으면 미체결로 남기고 예외를 올린다 (호출부가 그날 다시 사지 않는다)",
+          unk and ou.pending_orders and ou.pending_orders[0]["orderNo"] is None, "")
+    krx.order = f_order
+
+    # 계좌에 없는 보유 — 한 번 비어 온 것일 수 있다
+    state.update(qty={}, avg={})
+    gone = osc.OrbScanner("ORB-G", "LIVE", 900_000, {**P, "watchlist": ["122630"]}, FakeAcc())
+    gone.day_date = "2026-09-29"
+    gone.positions["122630"] = osc._Pos(3, 110_000, 330_000, "2026-09-29")
+    try:
+        gone._sell("122630", "타임컷"); first_raise = False
+    except NamuhError:
+        first_raise = True
+    check("계좌에 안 보여도 한 번에 장부를 닫지 않는다 (잔고가 잠깐 비어 올 수 있다)",
+          first_raise and "122630" in gone.positions, "")
+    gone._missing["122630"] -= 30
+    gone._sell("122630", "타임컷")
+    check("25초 넘게 계속 없으면 장부를 닫아 슬롯을 푼다", "122630" not in gone.positions, "")
     state.update(fill=True, qty={"122630": 3}, avg={"122630": 110_000.0})
     rc = osc.OrbScanner("ORB-R", "LIVE", 900_000, {**P, "watchlist": ["122630"]}, FakeAcc())
     rc.positions["122630"] = osc._Pos(5, 110_000, 550_000, "2026-09-29")
     why = rc.reconcile()
     check("복원 대조: 장부가 계좌보다 많으면 재가동을 보류한다", why and "보류" in why, (why or "")[:40])
 finally:
-    krx.balance, krx.order, krx.await_fill = orig
+    krx.balance, krx.order, krx.await_fill, krx.cancel = orig
     krx.quote = orig_quote
+
+print("── 실시간 스트림 수명 ──")
+st2 = krx_stream.KrxStream()
+check("연결 전에는 '조용함' 을 재지 않는다 (재접속을 걸지 않는다)", st2.quiet_for() is None, "")
+st2.last_msg_at, st2.connected, st2.connected_at = 1.0, True, __import__("time").time()
+check("연결 직후에는 어제 마지막 체결이 아니라 연결 시각부터 잰다", st2.quiet_for() < 5, f"{st2.quiet_for():.1f}")
+st2._snap["005930"] = {"price": 1, "receivedAt": 1.0}
+st2.release()
+check("연결을 닫으면 어제 값(마지막 체결 시각 · 스냅샷)을 지운다",
+      st2.last_msg_at == 0 and st2.connected_at == 0 and st2.get("005930") is None, "")
+
+print("── 메인 루프 한 바퀴 (시계를 바꿔 끼움) ──")
+
+
+class _OneShot:
+    """_stop 대신 — 한 번 기다리면 루프를 끝낸다."""
+    def __init__(self): self.waits, self._set = [], False
+    def is_set(self): return self._set
+    def set(self): self._set = True
+    def clear(self): self._set = False
+    def wait(self, t): self.waits.append(t); self._set = True
+
+
+def one_loop(bot_, when):
+    class FakeDT(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return when
+    real_dt = osc.datetime
+    osc.datetime = FakeDT
+    bot_._stop = _OneShot()
+    try:
+        bot_._loop()
+    finally:
+        osc.datetime = real_dt
+    return bot_._stop.waits
+
+
+class LoopStream(FakeStream):
+    def __init__(self):
+        super().__init__(); self.released = 0; self.kicks = []; self.quiet = None; self.connected = True
+    def release(self): self.released += 1; self.connected = False
+    def kick(self, why): self.kicks.append(why)
+    def quiet_for(self): return self.quiet
+
+
+ls = LoopStream()
+osc.stream = ls
+rest = []
+krx.quote = lambda acc, code: rest.append(code) or {"price": 1, "hogaTime": "00:00:00", "etf": False,
+                                                     "bid": 1, "ask": 1, "upperLimit": 0, "lowerLimit": 0}
+hb2 = osc.OrbScanner("ORB-N", "LIVE", 900_000, {**P, "watchlist": ["035720"]}, None)
+hb2.positions["035720"] = osc._Pos(5, 34_000, 170_000, "2026-09-29")
+sat = datetime(2026, 10, 3, 3, 0, 0, tzinfo=orb.KST)
+w = one_loop(hb2, sat)
+check("토요일 새벽에 들고 있어도 시세를 부르지 않고 연결을 닫고 길게 잔다",
+      not rest and ls.released >= 1 and w and w[0] >= 60, f"REST {len(rest)} · 잠 {w}")
+w = one_loop(hb2, at("20:00:00"))
+check("평일 밤에도 마찬가지 (해외 봇과 같이 쓰는 호출 한도를 지킨다)", not rest and w and w[0] >= 60, f"{w}")
+w = one_loop(hb2, at("08:30:00"))
+check("개장 전(08:30)에도 들고 있는 종목 시세를 부르지 않는다", not rest, "")
+
+late = osc.OrbScanner("ORB-L2", "PAPER", 900_000, {**P, "watchMode": "auto", "watchlist": ["035720", "005930"]}, None)
+sel_calls = []
+real_select = osc.orb_selector.select
+osc.orb_selector.select = lambda *a, **k: sel_calls.append(1) or {}
+try:
+    one_loop(late, at("09:10:00"))
+finally:
+    osc.orb_selector.select = real_select
+check("장중(09:10)에 늦게 떴으면 6분짜리 선정을 건너뛰고 직접 입력 목록으로 본다",
+      not sel_calls and late.watch == ["035720", "005930"] and late.prepared_date == "2026-09-29", f"{late.watch}")
+
+k = osc.OrbScanner("ORB-K", "PAPER", 900_000, {**P, "watchlist": ["035720"]}, None)
+k.prepared_date = "2026-09-29"
+ls.connected, ls.quiet, ls.kicks = True, 40.0, []
+one_loop(k, at("09:00:10"))
+check("09:00 직후(동시호가 체결 전)에는 조용해도 재접속하지 않는다", not ls.kicks, f"{ls.kicks}")
+ls.connected = True
+one_loop(k, at("09:02:00"))
+check("장 초반에 연결된 뒤 20초 넘게 체결이 없으면 다시 붙는다", len(ls.kicks) == 1, f"{ls.kicks}")
+ls.quiet = None; ls.kicks = []; ls.connected = True
+one_loop(k, at("09:02:00"))
+check("아직 연결 전이면(재접속 중) 끊지 않는다 — 끊으면 영영 못 붙는다", not ls.kicks, "")
+krx.quote = orig_quote
+osc.stream = fs
+
+print("── 정지 규칙 (BotManager) ──")
+from services import trader as _tr    # noqa: E402
+class _B:
+    coin = "ORB"; is_running = True
+    def __init__(self, ok): self.ok = ok; self.stopped = False
+    def can_liquidate(self): return (self.ok, "국내 정규장(09:00~15:30)이 아닙니다.")
+    def stop(self, liquidate=True): self.stopped = True; return True
+bm = _tr.BotManager()
+bm.bots = {"a": _B(False), "b": _B(True)}
+try:
+    bm.stop("a"); refused = False
+except _tr.LiquidationFailed:
+    refused = True
+check("팔 수 없을 때는 정지를 거부한다 (포지션이 감시 없이 남지 않게)", refused and not bm.bots["a"].stopped, "")
+n, skipped = bm.stop_all()
+check("전체 정지는 팔 수 있는 봇만 멈추고 나머지는 사유와 함께 알린다",
+      n == 1 and bm.bots["b"].stopped and not bm.bots["a"].stopped and skipped, f"{skipped}")
 
 print("── 자동 선정: 종목 마스터 (m_new_stock.mst 레이아웃) ──")
 from services import krx_master, orb_selector   # noqa: E402

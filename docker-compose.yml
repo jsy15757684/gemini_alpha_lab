@@ -6,7 +6,9 @@ services:
     container_name: bithumb-krw-bot
     restart: always
     ports:
-      - "8888:8888"
+      # 127.0.0.1 에만 연다. 0.0.0.0 으로 열면 평문 HTTP 로그인 화면이 인터넷에 노출된다.
+      # 밖에서 쓰려면 SSH 터널이나 TLS 리버스 프록시를 앞에 둔다.
+      - "127.0.0.1:8888:8888"
     environment:
       - PYTHONUNBUFFERED=1
       - PORT=8888

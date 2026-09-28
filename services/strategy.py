@@ -141,6 +141,14 @@ class StrategyParams:
         return base * max(1.0, self.raoerMaxMultiplier)
 
     def validated(self) -> "StrategyParams":
+        # NaN · inf 는 min/max 로 걸러지지 않는다 (max(0.5, min(100, nan)) == nan).
+        # 숫자 칸은 먼저 기본값으로 되돌린다.
+        import math
+        defaults = StrategyParams.__dataclass_fields__
+        for name, f in defaults.items():
+            v = getattr(self, name)
+            if isinstance(v, float) and not math.isfinite(v):
+                setattr(self, name, f.default)
         if self.raoerVersion not in ("v4", "v1"):
             self.raoerVersion = "v4"
         if self.raoerTrendMode not in ("off", "pause_down", "boost_up"):
@@ -152,6 +160,10 @@ class StrategyParams:
         self.splitCount = max(5, min(100, self.splitCount))
         self.targetProfitPct = max(0.5, min(100.0, self.targetProfitPct))
         self.quarterCutPct = max(5.0, min(50.0, self.quarterCutPct))
+        # AI 배수 · 가변 익절은 1회 매수금 상한과 AI 판단 범위에 그대로 들어간다
+        self.raoerMaxMultiplier = max(1.0, min(3.0, self.raoerMaxMultiplier))
+        self.raoerMinProfitPct = max(0.5, min(50.0, self.raoerMinProfitPct))
+        self.raoerMaxProfitPct = max(self.raoerMinProfitPct, min(100.0, self.raoerMaxProfitPct))
         # 매수선이 매도선보다 높으면 사자마자 파는 무한 루프가 된다.
 
         self.rsiPeriod = max(2, min(100, self.rsiPeriod))

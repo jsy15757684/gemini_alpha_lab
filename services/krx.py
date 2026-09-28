@@ -150,6 +150,10 @@ def _f(v: Any) -> float:
         return 0.0
 
 
+class OrderUnknown(NamuhError):
+    """주문을 보냈는데 응답을 못 받았다 — 들어갔는지 모른다. 다시 보내면 두 번 산다."""
+
+
 def _post(acc: namuh.NamuhAccount, base: str, path: str, inp: Dict[str, Any], *, read: bool):
     if not acc.configured:
         raise NamuhError("나무증권 계정 키가 설정되지 않았습니다.")
@@ -269,13 +273,18 @@ def order(acc: namuh.NamuhAccount, side: str, code: str, qty: int, limit: int) -
     if qty < 1 or limit <= 0:
         raise NamuhError(f"주문 수량·가격이 올바르지 않습니다 ({qty}주 @ {limit}원)")
     path = "/krstock/order/v1/cashBuy" if side == "buy" else "/krstock/order/v1/cashSell"
-    res, b = _post(acc, namuh.trade_base_url(), path, {
+    try:
+        res, b = _post(acc, namuh.trade_base_url(), path, {
         "act_no": acc.account_no, "iem_cd": code, "orr_qty": int(qty),
         "nmn_pr_tp_cd": "01",               # 지정가
         "orr_pr": int(limit),
         "orr_cnd_dit_cd": "00", "ssl_nmn_pr_dit_cd": "00",
         "rmt_mkt_cd": "KRX", "sor_mkt_sli_yn": "N",
-    }, read=False)
+        }, read=False)
+    except NamuhError as e:
+        # 통신 오류 = 서버가 받았는지 모른다. 호출부는 '주문이 살아 있을 수 있다' 로 다뤄야 한다.
+        raise OrderUnknown(f"국내 {'매수' if side == 'buy' else '매도'} 주문 응답을 받지 못했습니다 — "
+                           f"접수됐을 수 있습니다: {e.message}")
     out = b.get("Output_0") or {}
     order_no = str(out.get("mkt_orr_no") or out.get("orr_no") or "").strip()
     if res.status_code != 200 or not order_no:
@@ -286,24 +295,43 @@ def order(acc: namuh.NamuhAccount, side: str, code: str, qty: int, limit: int) -
     return order_no
 
 
+def cancel(acc: namuh.NamuhAccount, order_no: str, code: str, qty: Optional[int] = None) -> str:
+    """미체결 잔량 취소. qty 가 없으면 전량. 취소 주문 번호를 돌려준다. 재시도하지 않는다."""
+    inp = {"act_no": acc.account_no, "org_mkt_orr_no": str(order_no), "iem_cd": code,
+           "all_pat_dit_cd": "2" if qty else "1"}
+    if qty:
+        inp["cor_qty"] = int(qty)
+    res, b = _post(acc, namuh.trade_base_url(), "/krstock/order/v1/cancel", inp, read=False)
+    out = b.get("Output_0") or {}
+    no = str(out.get("mkt_orr_no") or "").strip()
+    if res.status_code != 200 or not no:
+        raise NamuhError(f"국내 주문 취소 거부 ({b.get('rsp_cd')}): {b.get('rsp_msg') or (res.text or '')[:160]}", b)
+    with _BAL_LOCK:
+        _BAL_CACHE.pop(acc.account_no, None)
+    return no
+
+
 def await_fill(acc: namuh.NamuhAccount, code: str, qty_before: int, want: int,
                side: str, wait_sec: float = 8.0) -> Dict[str, Any]:
-    """접수 뒤 잔고 변화로 체결을 확인한다. {filled, avgAfter, qtyAfter}"""
+    """접수 뒤 잔고 변화로 체결을 확인한다. {filled, avgAfter, qtyAfter, known}
+
+    잔고 조회가 중간에 한 번 실패해도 앞서 본 값을 버리지 않는다. 마지막 조회
+    하나가 실패했다고 '체결 확인 실패' 로 올리면, 호출부가 이미 들어간 주문을
+    '안 샀다' 로 보고 다시 산다. 한 번도 못 봤으면 known=False 로 돌려준다.
+    """
     t0 = time.time()
-    last = None
+    best: Dict[str, Any] = {"filled": 0, "qtyAfter": qty_before, "avgAfter": 0.0, "known": False}
     while time.time() - t0 < wait_sec:
         time.sleep(1.5)
         try:
             bal = balance(acc, fresh=True)
-        except NamuhError as e:
-            last = e
+        except NamuhError:
             continue
         h = bal["holdings"].get(code) or {}
         now = int(h.get("qty") or 0)
         filled = (now - qty_before) if side == "buy" else (qty_before - now)
+        best = {"filled": max(0, min(want, filled)), "qtyAfter": now,
+                "avgAfter": float(h.get("avg") or 0), "known": True}
         if filled >= want:
-            return {"filled": want, "qtyAfter": now, "avgAfter": float(h.get("avg") or 0)}
-        last = {"filled": max(0, filled), "qtyAfter": now, "avgAfter": float(h.get("avg") or 0)}
-    if isinstance(last, dict):
-        return last
-    raise NamuhError(f"체결 확인 중 잔고를 받지 못했습니다: {last}")
+            break
+    return best

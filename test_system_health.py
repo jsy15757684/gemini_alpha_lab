@@ -20,7 +20,8 @@ def call(name, path, method="GET", payload=None, expect=200):
     req = urllib.request.Request(
         BASE + path,
         data=json.dumps(payload).encode() if payload is not None else None,
-        headers={"Content-Type": "application/json"} if payload is not None else {})
+        headers={**({"Content-Type": "application/json"} if payload is not None else {}),
+                 "X-Requested-With": "system-health"})
     req.get_method = lambda: method
     try:
         res = OPENER.open(req, timeout=30)

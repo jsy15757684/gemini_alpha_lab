@@ -36,6 +36,8 @@ STALE_HELD_SEC = 10.0       # 산 종목 시세가 이만큼 조용하면 REST �
 STALE_STREAM_SEC = 20.0     # 장 초반 스트림 전체가 이만큼 조용하면 다시 붙는다
 PREP_MIN = -5.0             # 08:55 부터 실시간 연결
 SELECT_MIN = -12.0          # 08:48 부터 자동 선정 (약 6분) · 전일 거래량 받기
+SESSION_MIN = 390.0         # 15:30 장 마감
+PENDING_CHECK_SEC = 10.0    # 미체결 주문을 다시 보는 간격
 
 
 class _Pos:
@@ -126,6 +128,9 @@ class OrbScanner:
         self._reasons: Dict[str, str] = {}
         self._retry_after: Dict[str, float] = {}
         self._slot_logged: set = set()
+        self._rest_next: Dict[str, float] = {}
+        self._missing: Dict[str, float] = {}
+        self._pending_checked = 0.0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
@@ -254,9 +259,16 @@ class OrbScanner:
         s = stream.get(code)
         age = stream.age(code)
         if code in self.positions and (s is None or (age or 999) > STALE_HELD_SEC):
+            # 호출 한도를 해외 봇과 같이 쓴다. 3초에 한 번, 호가가 멈춘 날(휴장)은 1분에 한 번.
+            if time.time() < self._rest_next.get(code, 0):
+                return None
             try:
-                return krx.quote(self.namuh_account, code)
+                q = krx.quote(self.namuh_account, code)
+                fresh = orb._hoga_fresh(q.get("hogaTime", ""), datetime.now(orb.KST))
+                self._rest_next[code] = time.time() + (3 if fresh else 60)
+                return q
             except Exception as e:
+                self._rest_next[code] = time.time() + 5
                 self.price_failures += 1
                 if self.price_failures in (1, 5) or self.price_failures % 30 == 0:
                     self.log("ERROR", f"{self._name(code)} 시세 조회 실패 ({self.price_failures}회째): {e}")
@@ -272,7 +284,9 @@ class OrbScanner:
                 self.day_date, self.days = date, {}
                 self._slot_logged.clear()
             weekday = now.weekday() < 5
-            if weekday and SELECT_MIN <= m < self.orb.entryEndMin and self.prepared_date != date:
+            in_session = weekday and 0 <= m < SESSION_MIN
+            # 1) 장 전 준비 — 한 번. 장이 열린 뒤에는 하지 않는다(6분 동안 산 종목 감시가 멈춘다).
+            if weekday and SELECT_MIN <= m < 0 and self.prepared_date != date:
                 try:
                     self._prepare_day(date, now)
                 except Exception as e:
@@ -282,14 +296,34 @@ class OrbScanner:
                 self.prepared_date = date
                 self._persist()
                 continue
-            if weekday and m < PREP_MIN and not self.positions:
-                self.last_decision = (f"장 전 준비 끝 · 오늘 감시 {len(self.watch)}종목 · 08:55 실시간 연결"
-                                      if self.prepared_date == date else "개장 전 대기 (08:48 종목 선정)")
-                self._stop.wait(max(1.0, min(30.0, (PREP_MIN - m) * 60)))
+            if in_session and self.prepared_date != date:
+                if self.watch_mode == "auto":
+                    self.watch = list(self.manual_watch)
+                self.prepared_date = date
+                self.log("WARNING", "장이 열린 뒤에 떠서 종목 선정 · 전일 거래량 받기를 건너뜁니다 — "
+                                    + ("직접 입력 목록으로 보고, " if self.watch_mode == "auto" else "")
+                                    + "RVOL 기준이 없는 종목은 오늘 사지 않습니다")
+                self._persist()
+            # 2) 개장 전 — 산 종목이 있어도 시세를 부르지 않는다 (장이 열려야 팔 수 있다)
+            if weekday and m < PREP_MIN:
+                if stream.connected:
+                    stream.release()
+                self.last_decision = ((f"장 전 준비 끝 · 오늘 감시 {len(self.watch)}종목 · 08:55 실시간 연결"
+                                       if self.prepared_date == date else "개장 전 대기 (08:48 종목 선정)")
+                                      + (f" · 보유 {len(self.positions)}종목 (장 시작에 청산 판단)" if self.positions else ""))
+                self._stop.wait(max(1.0, min(30.0, (SELECT_MIN - m) * 60 if m < SELECT_MIN else (PREP_MIN - m) * 60)))
+                continue
+            # 3) 장 밖에 들고 있는 경우 — 밤새 1초마다 REST 를 부르지 않는다
+            if self.positions and not in_session and not (weekday and PREP_MIN <= m < 0):
+                if stream.connected:
+                    stream.release()
+                self.last_decision = (f"보유 {len(self.positions)}종목 · 장이 닫혀 있습니다 — "
+                                      f"다음 거래일 장 시작에 청산을 판단합니다")
+                self._stop.wait(self._sleep_until_prep(now))
                 continue
             entry_open = weekday and PREP_MIN <= m < self.orb.entryEndMin + 1
             watching = entry_open and not all(d.done for d in self.days.values()) if self.days else entry_open
-            if not (self.positions or watching):
+            if not (self.positions or watching or self.pending_orders):
                 if stream.connected:
                     stream.release()
                 self.last_decision = ("오늘 ORB 끝 — 다음 거래일 08:48 에 종목을 고릅니다"
@@ -300,8 +334,10 @@ class OrbScanner:
                 stream.ensure(self.namuh_account, self._codes_to_stream())
             except Exception as e:
                 self.log("ERROR", f"실시간 시세를 시작하지 못했습니다: {e}")
-            if 0 <= m < self.orb.cutoffMin and stream.last_msg_at and time.time() - stream.last_msg_at > STALE_STREAM_SEC:
-                stream.kick(f"{STALE_STREAM_SEC:.0f}초 넘게 체결이 없음")
+            # 09:00 동시호가 체결이 오기 전(08:55~09:00)은 원래 조용하다. 연결된 뒤부터 잰다.
+            quiet = stream.quiet_for()
+            if 0.5 <= m < self.orb.cutoffMin and quiet is not None and quiet > STALE_STREAM_SEC:
+                stream.kick(f"연결된 뒤 {quiet:.0f}초 넘게 체결이 없음")
             try:
                 self._tick(now, date, m)
             except Exception as e:
@@ -310,9 +346,9 @@ class OrbScanner:
             self._stop.wait(1.0)
 
     def _sleep_until_prep(self, now: datetime) -> float:
-        """다음 08:47 까지. 10분씩 끊어 자서 정지 요청을 받는다."""
+        """다음 08:47 까지 (보유 중이면 08:55). 10분씩 끊어 자서 정지 요청을 받는다."""
         n = now.astimezone(orb.KST)
-        prep = n.replace(hour=8, minute=47, second=0, microsecond=0)
+        prep = n.replace(hour=8, minute=55 if self.positions else 47, second=0, microsecond=0)
         if n >= prep:
             prep += timedelta(days=1)
         return max(1.0, min(600.0, (prep - n).total_seconds()))
@@ -331,9 +367,10 @@ class OrbScanner:
             res = orb_selector.select(acc, cands, self.slot_budget(), self.select_params,
                                       deadline, self._stop.is_set)
             self.selection = res
-            if res["scanned"] and not res["withExpected"]:
+            if not res["withExpected"]:
                 self.watch = list(self.manual_watch)
-                self.log("WARNING", f"동시호가 예상체결을 한 종목도 받지 못했습니다 ({res['scanned']}종목 조회) — "
+                self.log("WARNING", f"동시호가 예상체결을 한 종목도 받지 못했습니다 ({res['scanned']}종목 조회 · "
+                                    f"실패 {res['errors']}) — "
                                     f"직접 입력 목록 {len(self.watch)}종목으로 봅니다")
             else:
                 chosen = res["chosen"]
@@ -364,6 +401,9 @@ class OrbScanner:
             self.log("INFO", f"📒 전 거래일 {orb.hm(self.orb.rangeMin)} 거래량 {got}종목 받음 (RVOL 기준)")
 
     def _tick(self, now: datetime, date: str, m: float):
+        if self.pending_orders and self.mode == "LIVE" and time.time() - self._pending_checked >= PENDING_CHECK_SEC:
+            self._pending_checked = time.time()
+            self._check_pending(m)
         # 1) 산 종목 청산부터
         for code in list(self.positions):
             q = self._quote_for(code)
@@ -386,6 +426,8 @@ class OrbScanner:
             return
         # 2) 감시 종목
         for code in self.watch:
+            if self._stop.is_set():
+                return                                # 정지 요청 뒤에는 새로 사지 않는다
             if code in self.positions:
                 continue
             q = stream.get(code)
@@ -420,11 +462,52 @@ class OrbScanner:
             except Exception as e:
                 self._retry_after[code] = time.time() + RETRY_SEC
                 self.log("ERROR", f"{self._name(code)} 매수 실패 — {e}")
-                if any(o.get("code") == code for o in self.pending_orders):
+                if isinstance(e, krx.OrderUnknown) or any(o.get("code") == code for o in self.pending_orders):
                     day.done = True                   # 주문이 살아 있을 수 있다 — 두 번 사지 않는다
                 else:
                     day.entered = False
         self._summarize(m)
+
+    def _check_pending(self, m: float) -> None:
+        """미체결로 남긴 매수를 본다: 늦게 붙은 수량은 장부에 넣고, 남은 것은 취소를 다시 건다."""
+        acc = self.namuh_account
+        try:
+            h = krx.balance(acc, fresh=True)["holdings"]
+        except NamuhError:
+            return
+        keep = []
+        for o in self.pending_orders:
+            if o.get("side") != "buy":
+                continue
+            code = o["code"]
+            now_q = int((h.get(code) or {}).get("qty") or 0)
+            extra = now_q - int(o.get("q0") or 0) - int(o.get("adopted") or 0)
+            if extra > 0:
+                avg = float((h.get(code) or {}).get("avg") or o.get("limit") or 0)
+                p = self.positions.get(code)
+                fee = krx.FEE_PCT / 100
+                cost = extra * float(o.get("limit") or avg) * (1 + fee)
+                if p:
+                    self.positions[code] = _Pos(p.units + extra, (p.entryPrice * p.units + avg * extra) / (p.units + extra),
+                                                p.invested + cost, p.date, p.peak)
+                else:
+                    self.positions[code] = _Pos(extra, avg, cost, self.day_date, peak=avg)
+                self.cash -= cost
+                o["adopted"] = int(o.get("adopted") or 0) + extra
+                self.log("WARNING", f"{self._name(code)} 미체결 매수가 뒤늦게 {extra}주 체결 — 장부에 넣고 청산 감시를 붙입니다")
+                self._record(code, "BUY", avg, extra, cost, reason="미체결 주문 뒤늦은 체결")
+                self._persist()
+            if o.get("orderNo") and not o.get("cancelled") and o["adopted"] < o["qty"]:
+                try:
+                    krx.cancel(acc, o["orderNo"], code, None)
+                    o["cancelled"] = True
+                    self.log("INFO", f"{self._name(code)} 미체결 매수 잔량을 취소했습니다")
+                except NamuhError:
+                    pass
+            done = o["adopted"] >= o["qty"] or (o.get("cancelled") and time.time() - o["at"] > 60) or m >= SESSION_MIN
+            if not done:
+                keep.append(o)
+        self.pending_orders = keep
 
     _persist_due = 0.0
 
@@ -471,14 +554,36 @@ class OrbScanner:
         if self.mode == "LIVE":
             before = krx.balance(acc, fresh=True)["holdings"].get(code) or {}
             q0, a0 = int(before.get("qty") or 0), float(before.get("avg") or 0)
-            order_no = krx.order(acc, "buy", code, qty, limit)
+            try:
+                order_no = krx.order(acc, "buy", code, qty, limit)
+            except krx.OrderUnknown:
+                # 들어갔는지 모른다 — 미체결로 두고 잔고로 지켜본다. 다시 사지 않는다.
+                self.pending_orders.append({"code": code, "orderNo": None, "side": "buy", "qty": qty,
+                                            "limit": limit, "at": time.time(), "q0": q0, "adopted": 0,
+                                            "cancelled": False})
+                raise
             r = krx.await_fill(acc, code, q0, qty, "buy")
             filled = int(r["filled"])
-            if filled <= 0:
-                self.pending_orders.append({"code": code, "orderNo": order_no, "side": "buy", "qty": qty,
-                                            "limit": limit, "at": time.time()})
-                raise NamuhError(f"매수 주문({order_no} · {qty}주 @ {limit:,}원)이 8초 안에 체결되지 않았습니다. "
-                                 f"나무증권 앱에서 확인하세요.")
+            if filled < qty or not r["known"]:
+                # 남은 수량은 취소한다. 걸어 두면 나중에 체결돼 장부에 없는 주식이 생긴다.
+                cancelled = False
+                try:
+                    krx.cancel(acc, order_no, code, (qty - filled) if (filled and r["known"]) else None)
+                    cancelled = True
+                except NamuhError as e:
+                    self.log("ERROR", f"{self._name(code)} 매수 잔량 취소 실패 — 나무증권 앱에서 확인하세요: {e}")
+                r2 = krx.await_fill(acc, code, q0, qty, "buy", wait_sec=3)   # 취소 전에 붙은 것까지
+                if r2["known"]:
+                    r, filled = r2, int(r2["filled"])
+                if not cancelled or not r["known"]:
+                    self.pending_orders.append({"code": code, "orderNo": order_no, "side": "buy", "qty": qty,
+                                                "limit": limit, "at": time.time(), "q0": q0, "adopted": filled,
+                                                "cancelled": cancelled})
+                if filled <= 0:
+                    raise NamuhError(f"매수 주문({order_no} · {qty}주 @ {limit:,}원)이 체결되지 않았습니다 — "
+                                     + ("잔량을 취소했습니다." if cancelled else "취소하지 못해 미체결로 지켜봅니다."))
+                self.log("WARNING", f"{self._name(code)} {qty}주 중 {filled}주만 체결 — 나머지는 "
+                                    + ("취소했습니다" if cancelled else "취소하지 못해 지켜봅니다"))
             qa, aa = int(r["qtyAfter"]), float(r["avgAfter"])
             fill = (qa * aa - q0 * a0) / filled if aa and qa > q0 else float(limit)
             if not (0 < fill <= limit * 1.001):
@@ -505,14 +610,32 @@ class OrbScanner:
             held = int((krx.balance(acc, fresh=True)["holdings"].get(code) or {}).get("qty") or 0)
             qty = min(units, held)
             if qty < 1:
-                raise NamuhError(f"계좌에 {self._name(code)} 가 없습니다 (장부 {units}주). 장부를 바꾸지 않습니다.")
-            krx.order(acc, "sell", code, qty, limit)
-            r = krx.await_fill(acc, code, held, qty, "sell")
-            filled = int(r["filled"])
-            if filled <= 0:
-                raise NamuhError(f"매도 주문({qty}주 @ {limit:,}원)이 8초 안에 체결되지 않았습니다.")
-            # 매도 체결가는 잔고로 알 수 없다(sll_amt 는 평가 금액). 최우선 매수호가로 추정.
-            fill = float(base)
+                # 장부에는 있는데 계좌에 없다 — 앞선 매도가 늦게 체결됐거나 손으로 팔았다.
+                # '없습니다' 만 되풀이하면 슬롯이 영영 막힌다. 다만 잔고가 한 번 비어 온 것일
+                # 수도 있으니 25초 넘게 두 번 연속 없을 때만 장부를 닫는다(남은 주식을 놓치지 않게).
+                first = self._missing.setdefault(code, time.time())
+                if time.time() - first < 25:
+                    raise NamuhError(f"계좌에 {self._name(code)} 가 보이지 않습니다 (장부 {units}주) — 잠시 뒤 다시 확인합니다")
+                self._missing.pop(code, None)
+                self.log("WARNING", f"{self._name(code)} 가 계좌에 없습니다 (장부 {units}주) — 이미 팔린 것으로 보고 "
+                                    f"장부를 닫습니다. 손익은 최우선 매수호가 {base:,}원으로 추정합니다.")
+                filled, fill = units, float(base)
+            else:
+                self._missing.pop(code, None)
+                no = krx.order(acc, "sell", code, qty, limit)
+                r = krx.await_fill(acc, code, held, qty, "sell")
+                filled = int(r["filled"])
+                if filled < qty or not r["known"]:
+                    try:
+                        krx.cancel(acc, no, code, (qty - filled) if (filled and r["known"]) else None)
+                    except NamuhError as e:
+                        self.log("ERROR", f"{self._name(code)} 매도 잔량 취소 실패: {e}")
+                    r2 = krx.await_fill(acc, code, held, qty, "sell", wait_sec=3)
+                    if r2["known"]:
+                        filled = int(r2["filled"])
+                if filled <= 0:
+                    raise NamuhError(f"매도 주문({qty}주 @ {limit:,}원)이 체결되지 않았습니다 — 잔량 취소를 시도했습니다.")
+                fill = float(base)      # 매도 체결가는 잔고로 알 수 없다 — 최우선 매수호가로 추정
         else:
             filled, fill = units, float(base)
         fee = krx.FEE_PCT / 100
@@ -541,10 +664,12 @@ class OrbScanner:
     def watch_rows(self) -> List[Dict[str, Any]]:
         rows = []
         sel = {c["code"]: c for c in ((self.selection or {}).get("chosen") or [])}
-        for code in list(dict.fromkeys(list(self.positions) + self.watch)):
+        # 루프 스레드가 바꾸는 중에도 읽을 수 있게 먼저 복사한다 (dict.copy 는 한 번에 된다)
+        positions, days = self.positions.copy(), self.days.copy()
+        for code in list(dict.fromkeys(list(positions) + list(self.watch))):
             s = stream.get(code) or {}
-            d = self.days.get(code)
-            p = self.positions.get(code)
+            d = days.get(code)
+            p = positions.get(code)
             rows.append({
                 "code": code, "name": self._name(code), "price": s.get("price"), "vwap": s.get("vwap"),
                 "orHigh": d.orHigh if d else None, "orLow": d.orLow if d else None,
@@ -559,12 +684,13 @@ class OrbScanner:
     def status(self) -> Dict[str, Any]:
         mark = 0.0
         unreal = 0.0
-        for code, p in self.positions.items():
+        positions = self.positions.copy()
+        for code, p in positions.items():
             px = (stream.get(code) or {}).get("price") or p.entryPrice
             mark += p.units * px
             unreal += (px - p.entryPrice) * p.units
         equity = self.cash + mark
-        invested = sum(p.invested for p in self.positions.values())
+        invested = sum(p.invested for p in positions.values())
         return {
             "botId": self.bot_id, "coin": "ORB", "coinName": self.coin_name,
             "broker": "namuh", "market": "KRX", "currency": "KRW", "currSymbol": "원",
@@ -598,11 +724,11 @@ class OrbScanner:
                 "initialKrw": self.initial_krw, "broker": "namuh", "market": "KRX", "currency": "KRW",
                 "params": self.params.to_dict(), "names": dict(self.names), "cash": self.cash,
                 "pendingOrders": list(self.pending_orders),
-                "positions": {c: p.to_dict() for c, p in self.positions.items()},
+                "positions": {c: p.to_dict() for c, p in self.positions.copy().items()},
                 "units": self.pos.units, "realizedPnl": self.realized_pnl,
                 "totalTrades": self.total_trades, "winningTrades": self.winning_trades,
                 "tradeHistory": self.trade_history, "createdAt": self.created_at, "wasRunning": self.is_running,
-                "orVolHistory": {c: dict(h) for c, h in self.or_vol_history.items()},
+                "orVolHistory": {c: h.copy() for c, h in self.or_vol_history.copy().items()},
                 # 오늘 고른 목록. 선정 뒤 재시작하면 6분 걸리는 선정을 다시 하지 않는다.
                 "preparedDate": self.prepared_date, "todayWatch": list(self.watch),
                 "indexOf": dict(self.index_of),
@@ -610,7 +736,7 @@ class OrbScanner:
                               if self.selection else None),
                 # 오늘 진입한 종목은 저장한다. 재시작으로 같은 종목을 하루 두 번 사지 않게.
                 "dayDate": self.day_date,
-                "days": {c: d.to_dict() for c, d in self.days.items()}}
+                "days": {c: d.to_dict() for c, d in self.days.copy().items()}}
 
     @classmethod
     def restore(cls, d: Dict[str, Any], namuh_account: Optional[NamuhAccount]) -> "OrbScanner":
@@ -640,7 +766,11 @@ class OrbScanner:
             day.entered, day.done, day.stale, day.note = (bool(od.get("entered")), bool(od.get("done")),
                                                           bool(od.get("stale")), od.get("note") or "")
             day.rvol, day.rvolChecked = od.get("rvol"), bool(od.get("rvolChecked"))
-            if od.get("orVolEnd"):
+            if od.get("orVol0"):
+                day.orVol0 = tuple(od["orVol0"])
+            if od.get("orVol1"):
+                day.orVol1 = tuple(od["orVol1"])
+            elif od.get("orVolEnd"):
                 day.orVol1 = (0.0, int(od["orVolEnd"]))
             bot.days[c] = day
         return bot

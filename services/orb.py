@@ -110,6 +110,9 @@ class OrbDay:
     def to_dict(self) -> Dict[str, Any]:
         return {"date": self.date, "orHigh": self.orHigh, "orLow": self.orLow,
                 "orVolEnd": self.orVol1[1] if self.orVol1 else None, "rvol": self.rvol,
+                # 재시작 뒤 거래 속도(OR 평균)를 다시 낼 수 있게 두 점을 다 남긴다
+                "orVol0": list(self.orVol0) if self.orVol0 else None,
+                "orVol1": list(self.orVol1) if self.orVol1 else None,
                 "rvolChecked": self.rvolChecked,
                 "stale": self.stale, "entered": self.entered, "done": self.done, "note": self.note}
 

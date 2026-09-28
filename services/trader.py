@@ -1422,6 +1422,7 @@ class BotManager:
     def __init__(self):
         self.bots: Dict[str, TradingBot] = {}
         self._lock = threading.Lock()
+        self._persist_lock = threading.RLock()
         # 상태 파일을 읽지 못해 복원을 포기했다면 그 사유. 화면에 계속 띄운다.
         self.restore_error: Optional[str] = None
 
@@ -1463,16 +1464,33 @@ class BotManager:
         bot = self.bots.get(bot_id)
         if not bot:
             return False
-        bot.stop(liquidate=True)
+        # 팔 수 없는 때(장이 닫힘 등) 정지하면 포지션이 감시 없이 남는다. 재시작해도
+        # wasRunning=False 라 다시 붙지 않는다. 삭제와 같은 규칙으로 막는다.
+        ok, why = bot.can_liquidate()
+        if not ok:
+            raise LiquidationFailed(
+                f"{bot.coin} 봇을 정지하지 않았습니다 — {why} 지금 정지하면 보유 포지션이 "
+                f"감시 없이 남습니다. 장이 열린 뒤에 다시 시도하세요.")
+        cleared = bot.stop(liquidate=True)
+        if not cleared:
+            raise LiquidationFailed(
+                f"{bot.coin} 봇은 정지됐지만 청산이 끝나지 않았습니다 — 포지션이 남아 있습니다. "
+                f"로그를 확인하고 나무증권·빗썸에서 직접 정리하세요.")
         return True
 
-    def stop_all(self) -> int:
-        n = 0
+    def stop_all(self) -> Tuple[int, List[str]]:
+        """정지할 수 있는 봇을 모두 정지한다. 팔 수 없어 남긴 봇은 사유와 함께 돌려준다."""
+        n, skipped = 0, []
         for bot in list(self.bots.values()):
-            if bot.is_running:
-                bot.stop(liquidate=True)
-                n += 1
-        return n
+            if not bot.is_running:
+                continue
+            ok, why = bot.can_liquidate()
+            if not ok:
+                skipped.append(f"{bot.coin}: {why}")
+                continue
+            bot.stop(liquidate=True)
+            n += 1
+        return n, skipped
 
     def delete(self, bot_id: str) -> bool:
         bot = self.bots.get(bot_id)
@@ -1674,7 +1692,10 @@ class BotManager:
     # ── 영속화 / 복원 ──
 
     def persist(self) -> None:
-        botstore.save([b.snapshot() for b in self.bots.values()])
+        # 스냅샷을 뜨고 쓰는 것을 한 덩어리로 한다. 여러 봇 스레드가 동시에 저장하면
+        # 먼저 뜬(옛) 스냅샷이 나중에 써져, 방금 산 포지션이 장부에서 빠질 수 있다.
+        with self._persist_lock:
+            botstore.save([b.snapshot() for b in list(self.bots.values())])
 
     def restore(self, account: Optional[bithumb.BithumbAccount],
                 namuh_account: Optional[namuh.NamuhAccount] = None) -> Dict[str, Any]:

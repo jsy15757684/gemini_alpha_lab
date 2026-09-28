@@ -12,8 +12,14 @@ const escapeHtml = (v) => String(v ?? "").replace(/[&<>"']/g,
   (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 const when = (ms) => new Date(ms).toLocaleString("ko-KR", { month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit" });
 
+// 변경 요청(POST)에는 이 헤더를 붙인다. 서버는 이것이 없는 POST 를 거절한다(CSRF) —
+// 다른 사이트의 폼 · 스크립트는 사용자 정의 헤더를 붙일 수 없다.
+const CSRF_HEADER = { "X-Requested-With": "alpha-console" };
+
 async function api(url, options) {
-  const res = await fetch(url, options);
+  const opts = { ...(options || {}) };
+  opts.headers = { ...(opts.headers || {}), ...CSRF_HEADER };
+  const res = await fetch(url, opts);
   let body = null;
   try { body = await res.json(); } catch (_) {}
   if (res.status === 401 || (res.status === 503 && body?.code === "AUTH_NOT_CONFIGURED")) {
@@ -24,11 +30,20 @@ async function api(url, options) {
   return body;
 }
 
+// 서버 · 증권사 · AI 가 준 문자열은 HTML 로 넣지 않는다 (XSS). 기본은 글자 그대로.
 function setAlert(el, message, kind) {
   if (!el) return;
   if (!message) { el.classList.add("hidden"); el.textContent = ""; return; }
   el.className = `alert alert-${kind || "error"}`;
-  el.innerHTML = message;
+  el.textContent = String(message);
+}
+
+// 코드가 만든 HTML(굵게 등)만 넣을 때. 안에 들어가는 바깥 문자열은 호출부가 escapeHtml 로 감싼다.
+function setAlertHtml(el, html, kind) {
+  if (!el) return;
+  if (!html) { el.classList.add("hidden"); el.textContent = ""; return; }
+  el.className = `alert alert-${kind || "error"}`;
+  el.innerHTML = html;
 }
 
 // ───────── 인증 ─────────
@@ -44,7 +59,7 @@ function showGate(reason) {
   if (reason === "not_configured") {
     $("authSub").textContent = "서버에 접속 비밀번호가 설정되지 않았습니다.";
     const local = ["localhost", "127.0.0.1", "[::1]"].includes(location.hostname);
-    setAlert($("authError"), local
+    setAlertHtml($("authError"), local
       ? "프로젝트 폴더의 <b>.env</b> 에 <b>APP_ACCESS_PASSWORD</b> 를 넣고 서버를 재시작하세요."
       : "배포 환경의 환경변수에 <b>APP_ACCESS_PASSWORD</b> 를 설정하세요.");
     pw.disabled = submit.disabled = true;
@@ -79,7 +94,7 @@ async function handleLogin(e) {
   if (submit) { submit.disabled = true; submit.textContent = "확인 중…"; }
   try {
     const res = await fetch("/api/auth/login", {
-      method: "POST", headers: { "Content-Type": "application/json" },
+      method: "POST", headers: { "Content-Type": "application/json", ...CSRF_HEADER },
       body: JSON.stringify({ password }),
     });
     const body = await res.json().catch(() => null);
@@ -224,10 +239,10 @@ async function loadPrices() {
   try {
     const { prices } = await api("/api/prices");
     $("tickerBar").innerHTML = prices.map(p => p.error
-      ? `<div class="tick"><div class="tick-name">${p.name}</div>
+      ? `<div class="tick"><div class="tick-name">${escapeHtml(p.name)}</div>
            <div class="tick-price down" style="font-size:.8rem">조회 실패</div>
-           <div class="tick-chg muted" title="${p.error}">${p.error.slice(0, 26)}</div></div>`
-      : `<div class="tick"><div class="tick-name">${p.name} (${p.coin})</div>
+           <div class="tick-chg muted" title="${escapeHtml(p.error)}">${escapeHtml(p.error.slice(0, 26))}</div></div>`
+      : `<div class="tick"><div class="tick-name">${escapeHtml(p.name)} (${escapeHtml(p.coin)})</div>
            <div class="tick-price">${won(p.price)}</div>
            <div class="tick-chg ${cls(p.changePercent)}">${pct(p.changePercent)}</div></div>`
     ).join("");
@@ -698,7 +713,7 @@ async function loadBots() {
     $("botCount").textContent = `(${activeCount}/${maxActive} 가동)`;
     // 나무증권 워커에 닿지 못하면 그 봇들이 목록에서 빠진다. '없다' 로 보이면
     // 안 되므로 목록 위에 사실을 띄운다. 워커가 돌아오면 저절로 사라진다.
-    ["workerNotice", "orbWorkerNotice"].forEach(id => setAlert($(id), workerError
+    ["workerNotice", "orbWorkerNotice"].forEach(id => setAlertHtml($(id), workerError
       ? `<b>⚠️ 나무증권 봇을 불러오지 못했습니다.</b> ${escapeHtml(workerError)}` : "", "danger"));
 
     // 재시작 후 대조에 걸려 보류된 봇이 있으면 알림 표시, 없으면 숨김
@@ -720,7 +735,7 @@ async function loadBots() {
             <b>재시작 후 ${restoreSummary.held}개 봇이 보류되었습니다.</b> 
             내부 기록과 빗썸 실제 보유량이 맞지 않거나 대조에 실패했습니다. 
             빗썸에서 실제 보유량을 확인하고 정리하세요.<br>
-            ${(restoreSummary.notes || []).map(n => `· ${n}`).join("<br>")}
+            ${(restoreSummary.notes || []).map(n => `· ${escapeHtml(n)}`).join("<br>")}
           </div>
           <button id="dismissNoticeBtn" class="btn btn-ghost btn-sm" style="white-space:nowrap; padding:0.2rem 0.6rem; font-size:0.75rem; border-color:var(--down); color:var(--down);">닫기 ✕</button>
         </div>`;
@@ -761,6 +776,15 @@ async function loadBots() {
 // 정지·삭제는 되돌릴 수 없다. 무엇이 얼마나 팔리는지 숫자로 보여준다.
 // "청산합니다" 만으로는 그냥 넘기기 쉽다.
 function liquidationNotice(b, action) {
+  if (b.strategyType === "orb") {
+    // 스캐너는 종목이 여럿이라 한 줄 평단·현재가가 없다. 종목별로 보여 준다.
+    const held = (b.orbScan?.watch || []).filter(w => w.held);
+    const head = `국내 ORB 스캐너 (나무증권 국내주식 · ${b.mode === "LIVE" ? "실전" : "모의투자"})`;
+    if (!held.length) return `${head}\n\n보유 종목이 없습니다. 주문은 나가지 않습니다.\n\n${action}하시겠습니까?`;
+    return [head, "", ...held.map(w => `· ${w.name} ${w.held.units}주 · 평단 ${won(w.held.entryPrice)}원 · 현재가 ${w.price ? won(w.price) + "원" : "-"}`), "",
+      b.mode === "LIVE" ? `⚠️ 위 ${held.length}종목을 나무증권에 매도 주문으로 냅니다. 되돌릴 수 없습니다.` : "모의투자라 실제 주문은 나가지 않습니다.",
+      "", `${action}하시겠습니까?`].join("\n");
+  }
   const isNamuh = b.broker === "namuh";
   const isUsd = b.currency === "USD" || isNamuh;
   const brokerTitle = isNamuh ? "나무증권 (해외주식)" : "빗썸";
@@ -1018,7 +1042,7 @@ async function loadMuma() {
       d.open ? mumaOpen.add(d.dataset.bot) : mumaOpen.delete(d.dataset.bot);
     }));
     renderMumaRealized(data.realized);
-    const warn = data.accountError ? `증권사 잔고를 받지 못해 잔고검증을 비웠습니다: ${escapeHtml(data.accountError)}`
+    const warn = data.accountError ? `증권사 잔고를 받지 못해 잔고검증을 비웠습니다: ${data.accountError}`
       : (data.rows.some(r => r.verify && !r.verify.qtyOk)
         ? "봇 장부와 계좌 수량이 다른 종목이 있습니다. 계좌에 봇 몫이 아닌 물량이 섞여 있으면 그럴 수 있습니다." : "");
     setAlert($("mumaAlert"), warn, "warn");
@@ -1049,7 +1073,7 @@ async function loadChart() {
       <div class="muted small" style="margin-top:.6rem">
         캔들 ${bars.length}개 · ${when(bars[0].time)} ~ ${when(last.time)} · 출처 ${r.dataSource}</div>`;
   } catch (e) {
-    host.innerHTML = `<div class="alert alert-error">${e.message}</div>`;
+    host.innerHTML = `<div class="alert alert-error">${escapeHtml(e.message)}</div>`;
   }
 }
 
@@ -1083,7 +1107,7 @@ async function loadGeminiScan() {
 
   try {
     const data = await api(`/api/gemini/scan?interval=${interval}`);
-    statusEl.innerHTML = `<span class="muted">스캔 완료 시각: ${data.scanned_at} (모델: <code>${data.model}</code> · ${interval} 기준)</span>`;
+    statusEl.innerHTML = `<span class="muted">스캔 완료 시각: ${escapeHtml(data.scanned_at)} (모델: <code>${escapeHtml(data.model)}</code> · ${escapeHtml(interval)} 기준)</span>`;
     
     if (!data.results || !data.results.length) {
       host.innerHTML = `<div class="empty">분석 결과가 없습니다.</div>`;
@@ -1098,16 +1122,16 @@ async function loadGeminiScan() {
       const cardCls = isBuy ? "action-BUY" : isSell ? "action-SELL" : "action-HOLD";
       const conf = r.confidence || 0;
 
-      const reasonsHtml = (r.reasons || []).map(re => `<li>${re}</li>`).join("");
+      const reasonsHtml = (r.reasons || []).map(re => `<li>${escapeHtml(re)}</li>`).join("");
 
       return `
         <div class="gemini-card ${cardCls}">
           <div class="gemini-card-head">
             <div>
-              <span class="gemini-coin-title">${r.name || r.coin} <span class="muted small">(${r.coin})</span></span>
+              <span class="gemini-coin-title">${escapeHtml(r.name || r.coin)} <span class="muted small">(${escapeHtml(r.coin)})</span></span>
               <div class="muted small" style="margin-top:2px;">현재가: <b class="mono" style="color:var(--text);">${won(r.current_price)}원</b></div>
             </div>
-            <div class="gemini-action-badge ${badgeCls}">${r.action}</div>
+            <div class="gemini-action-badge ${badgeCls}">${escapeHtml(r.action)}</div>
           </div>
 
           <div class="gemini-conf-wrap">
@@ -1121,7 +1145,7 @@ async function loadGeminiScan() {
           </div>
 
           <div class="gemini-summary">
-            ${r.summary || "분석 요약 없음"}
+            ${escapeHtml(r.summary || "분석 요약 없음")}
           </div>
 
           <ul class="gemini-reasons">
@@ -1143,8 +1167,8 @@ async function loadGeminiScan() {
     }).join("");
 
   } catch (err) {
-    statusEl.innerHTML = `<span class="down">스캔 실패: ${err.message}</span>`;
-    host.innerHTML = `<div class="alert alert-error">Gemini AI 스캔 중 오류가 발생했습니다: ${err.message}<br><small>Gemini API 키가 올바르게 설정되어 있는지 확인하세요.</small></div>`;
+    statusEl.innerHTML = `<span class="down">스캔 실패: ${escapeHtml(err.message)}</span>`;
+    host.innerHTML = `<div class="alert alert-error">Gemini AI 스캔 중 오류가 발생했습니다: ${escapeHtml(err.message)}<br><small>Gemini API 키가 올바르게 설정되어 있는지 확인하세요.</small></div>`;
   } finally {
     btn.disabled = false;
     btn.textContent = "⚡ 전체 AI 스캔";
@@ -1176,7 +1200,7 @@ async function loadGeminiStatus() {
       ["연동 상태", s.configured ? "등록됨" : "미등록"],
       ["API 키", s.maskedKey || "-"],
       ["보관 위치", s.source === "env" ? "환경변수 (.env)" : s.source === "disk" ? "서버 파일 (data/gemini_key.json)" : "-"],
-      ["기본 모델", `<code>${s.model}</code>`],
+      ["기본 모델", `<code>${escapeHtml(s.model)}</code>`],
     ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("");
 
     if (s.model && $("geminiModelSelect")) {
@@ -1290,7 +1314,7 @@ async function loadAccount() {
     $("balanceBox").innerHTML = !a.connected
       ? `<div class="empty">빗썸 API 키를 등록하면 표시됩니다.</div>`
       : !a.balanceOk
-        ? `<div class="alert alert-error">${a.error}</div>`
+        ? `<div class="alert alert-error">${escapeHtml(a.error)}</div>`
         : `<div class="kv">
              <div class="kv-row"><span class="kv-k">주문가능 원화</span><span class="kv-v">${won(a.krwAvailable)}원</span></div>
              <div class="kv-row"><span class="kv-k">총 보유 원화</span><span class="kv-v">${won(a.krwTotal)}원</span></div>
@@ -1444,7 +1468,7 @@ async function loadNamuhAccount() {
             <div class="kv-row"><span class="kv-k">총 외화자산</span><span class="kv-v">$${usdTot}</span></div>
             ${holdings.length ? holdings.map(h => `
               <div class="kv-row">
-                <span class="kv-k"><b>${h.symbol}</b> (${h.name || h.symbol})</span>
+                <span class="kv-k"><b>${escapeHtml(h.symbol)}</b> (${escapeHtml(h.name || h.symbol)})</span>
                 <span class="kv-v">${Number(h.quantity || 0).toFixed(4)}주 @ $${Number(h.avgPrice || 0).toFixed(2)}`
                 + (h.evalAmountUsd ? ` · 평가 $${Number(h.evalAmountUsd).toFixed(2)}` : "")
                 + (h.pnlUsd ? ` (${Number(h.pnlUsd) >= 0 ? "+" : ""}$${Number(h.pnlUsd).toFixed(2)})` : "")
@@ -1730,7 +1754,7 @@ async function boot() {
 
   const meta = await api("/api/coins");
   COINS = meta.coins; INTERVALS = meta.intervals;
-  const coinOpts = COINS.map(c => `<option value="${c.code}">${c.name} (${c.code})</option>`).join("");
+  const coinOpts = COINS.map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`).join("");
   const ivOpts = INTERVALS.map(i => `<option value="${i}"${i === "24h" ? " selected" : ""}>${i}</option>`).join("");
   ["botCoin", "btCoin", "chartCoin"].forEach(id => $(id).innerHTML = coinOpts);
   ["botInterval", "btInterval", "chartInterval"].forEach(id => $(id).innerHTML = ivOpts);
@@ -1805,7 +1829,12 @@ async function boot() {
         return;
       }
     }
-    try { await api("/api/bot/stop_all", { method: "POST" }); await loadBots(); await loadTradeHistory(); }
+    try {
+      const r = await api("/api/bot/stop_all", { method: "POST" });
+      await loadBots(); await loadTradeHistory();
+      // 장이 닫혀 팔 수 없는 봇은 정지하지 않고 남겼다 — 사실을 알린다
+      if (r?.skipped?.length) alert(`${r.stoppedCount}개를 정지했습니다.\n\n팔 수 없어 정지하지 않은 봇:\n` + r.skipped.join("\n"));
+    }
     catch (e) { alert(e.message); }
   };
   $("runBacktestBtn").onclick = runBacktest;
@@ -1904,7 +1933,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     };
   }
   $("logoutBtn").onclick = async () => {
-    try { await fetch("/api/auth/logout", { method: "POST" }); } catch (_) {}
+    try { await fetch("/api/auth/logout", { method: "POST", headers: CSRF_HEADER }); } catch (_) {}
     location.reload();
   };
   try {

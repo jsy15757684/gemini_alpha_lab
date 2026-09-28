@@ -25,6 +25,17 @@ ENV_API_KEY = "BITHUMB_API_KEY"
 ENV_SECRET_KEY = "BITHUMB_SECRET_KEY"
 
 
+
+def _write_secret(path: str, obj) -> None:
+    """비밀 파일은 처음부터 0600 으로 만든다. open() 은 umask(보통 0644)로 만들어
+    chmod 전까지 다른 계정이 읽을 수 있다. 임시 파일에 쓰고 바꿔 끼운다."""
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        json.dump(obj, f, ensure_ascii=False, indent=2)
+    os.replace(tmp, path)
+
 class KeyStore:
     def __init__(self):
         self.source = "none"          # "env" | "disk" | "none"
@@ -58,9 +69,7 @@ class KeyStore:
             raise PermissionError(
                 f"키가 환경변수({ENV_API_KEY})로 주입되어 있어 화면에서 변경할 수 없습니다. "
                 f"배포 환경의 환경변수를 수정하세요.")
-        os.makedirs(os.path.dirname(KEYS_FILE), exist_ok=True)
-        with open(KEYS_FILE, "w", encoding="utf-8") as f:
-            json.dump({"apiKey": api_key, "secretKey": secret_key}, f)
+        _write_secret(KEYS_FILE, {"apiKey": api_key, "secretKey": secret_key})
         self.account = BithumbAccount(api_key, secret_key)
         self.source = "disk"
 
@@ -140,9 +149,7 @@ class NamuhKeyStore:
         from services.namuh import NamuhAccount
         if self.source == "env":
             raise PermissionError("키가 환경변수로 주입되어 있어 화면에서 변경할 수 없습니다.")
-        os.makedirs(os.path.dirname(NAMUH_KEYS_FILE), exist_ok=True)
-        with open(NAMUH_KEYS_FILE, "w", encoding="utf-8") as f:
-            json.dump({"appKey": app_key, "appSecret": app_secret, "accountNo": account_no}, f)
+        _write_secret(NAMUH_KEYS_FILE, {"appKey": app_key, "appSecret": app_secret, "accountNo": account_no})
         self.account = NamuhAccount(app_key, app_secret, account_no)
         self.source = "disk"
 

@@ -83,4 +83,7 @@ def internal_token() -> str:
 
 
 def valid_internal(value: Optional[str]) -> bool:
-    return bool(value) and hmac.compare_digest(value, internal_token())
+    # 바이트로 비교한다 — 문자열 compare_digest 는 ASCII 가 아니면 TypeError(500)를 낸다
+    if not value:
+        return False
+    return hmac.compare_digest(value.encode("utf-8", "surrogateescape"), internal_token().encode("utf-8"))

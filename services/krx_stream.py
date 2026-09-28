@@ -79,6 +79,7 @@ class KrxStream:
         self._thread: Optional[threading.Thread] = None
         self._stop = threading.Event()
         self.connected = False
+        self.connected_at = 0.0         # 구독까지 끝낸 시각 — '조용함' 은 이것과 마지막 체결 중 늦은 쪽부터 잰다
         self.error = ""
         self.last_msg_at = 0.0
         self.reconnects = 0
@@ -93,19 +94,31 @@ class KrxStream:
         with self._lock:
             self._acc = acc
             self._codes = codes
-        if not (self._thread and self._thread.is_alive()):
-            self._stop.clear()
-            self._thread = threading.Thread(target=self._run, name="krx-stream", daemon=True)
-            self._thread.start()
+            if not (self._thread and self._thread.is_alive()):
+                # 스레드마다 제 멈춤 신호를 준다. 공용 신호를 다시 켜면(clear) 아직 안 끝난
+                # 옛 스레드까지 되살아나 연결이 둘이 된다 (앱키당 한도 2).
+                self._stop = threading.Event()
+                self._thread = threading.Thread(target=self._run, args=(self._stop,),
+                                                name="krx-stream", daemon=True)
+                self._thread.start()
 
     def release(self) -> None:
         """연결을 닫는다 (장 밖 · 감시할 봇이 없을 때 — 앱키당 연결 한도를 비운다)."""
         self._stop.set()
+        c = getattr(self, "_client", None)
+        if c:
+            c.close()                   # recv 에 묶인 스레드를 바로 깨운다
         t = self._thread
         if t and t.is_alive() and t is not threading.current_thread():
             t.join(timeout=5)
         self._thread = None
         self.connected = False
+        # 어제 값을 남기지 않는다. 남기면 다음 날 09:00 에 '20초 넘게 조용함' 으로
+        # 보고 연결을 끊고, 어제 이 시각의 스냅샷이 오늘 것처럼 보인다.
+        self.last_msg_at = 0.0
+        self.connected_at = 0.0
+        with self._lock:
+            self._snap.clear()
 
     def get(self, code: str) -> Optional[Dict[str, Any]]:
         with self._lock:
@@ -121,6 +134,12 @@ class KrxStream:
                 "subscribed": len(self._subscribed), "error": self.error,
                 "lastMsgAgoSec": round(time.time() - self.last_msg_at, 1) if self.last_msg_at else None,
                 "reconnects": self.reconnects, "rejected": dict(self.rejected)}
+
+    def quiet_for(self) -> Optional[float]:
+        """연결된 뒤 몇 초째 체결이 없는가. 연결 전이면 None."""
+        if not self.connected or not self.connected_at:
+            return None
+        return time.time() - max(self.last_msg_at, self.connected_at)
 
     def kick(self, why: str) -> None:
         """조용해진 연결을 끊고 다시 붙게 한다 (시세가 멈췄을 때)."""
@@ -145,20 +164,21 @@ class KrxStream:
             self._send(client, "1", code, token)
             self._subscribed.add(code)
 
-    def _run(self) -> None:
+    def _run(self, stop: threading.Event) -> None:
         fails = 0
-        while not self._stop.is_set():
+        while not stop.is_set():
             client = ws_lite.WsClient(WS_HOST, WS_PORT)
             self._client = client
             self._subscribed = set()
             try:
                 token = self._acc.get_token()
                 client.connect()
-                self.connected, self.error = True, ""
+                self.error = ""
                 logger.info(f"실시간 시세 연결 ({WS_HOST}:{WS_PORT} · {TR_CD})")
                 self._sync(client, token)
+                self.connected, self.connected_at = True, time.time()
                 fails = 0
-                while not self._stop.is_set():
+                while not stop.is_set():
                     with self._lock:
                         changed = self._codes != self._subscribed
                     if changed:
@@ -169,17 +189,17 @@ class KrxStream:
                     self._on_message(text)
             except Exception as e:
                 self.error = str(e)
-                if not self._stop.is_set():
+                if not stop.is_set():
                     logger.warning(f"실시간 시세 끊김: {e}")
             finally:
                 self.connected = False
                 client.close()
-            if self._stop.is_set():
+            if stop.is_set():
                 break
             wait = BACKOFF[min(fails, len(BACKOFF) - 1)]
             fails += 1
             self.reconnects += 1
-            self._stop.wait(wait)
+            stop.wait(wait)
 
     def _on_message(self, text: str) -> None:
         try:

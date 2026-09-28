@@ -141,9 +141,25 @@ try:
     check("워커는 화면을 내주지 않는다", r.status_code == 403, f"HTTP {r.status_code}")
 
     print("── 화면(crypto) ──")
+    r = requests.post(f"http://127.0.0.1:{cport}/api/auth/login", json={"password": PASSWORD}, timeout=5)
+    check("CSRF: 화면 헤더 없는 POST 는 거절한다 (다른 사이트의 폼이 전체 정지를 못 누르게)",
+          r.status_code == 403, f"HTTP {r.status_code}")
     s = requests.Session()
+    s.headers.update({"X-Requested-With": "alpha-console"})
     r = s.post(f"http://127.0.0.1:{cport}/api/auth/login", json={"password": PASSWORD}, timeout=5)
     check("로그인", r.ok, f"HTTP {r.status_code}")
+    check("세션 쿠키는 SameSite=Strict · HttpOnly",
+          "samesite=strict" in r.headers.get("set-cookie", "").lower() and "httponly" in r.headers.get("set-cookie", "").lower(), "")
+    r = s.get(f"http://127.0.0.1:{cport}/api/namuh/..%2Fbot/list", timeout=5)
+    r2 = requests.get(f"http://127.0.0.1:{cport}/api/namuh/%2e%2e/internal/trade_rows", cookies=s.cookies, timeout=5)
+    check("워커로 넘기는 경로에서 .. 우회를 막는다", r.status_code in (400, 404) and r2.status_code == 400,
+          f"HTTP {r.status_code} · {r2.status_code}")
+    r = requests.get(f"http://127.0.0.1:{cport}/openapi.json", timeout=5)
+    check("API 문서(/docs · /openapi.json)는 내주지 않는다", r.status_code == 404, f"HTTP {r.status_code}")
+    r = requests.get(f"http://127.0.0.1:{cport}/", timeout=5)
+    check("화면 응답에 X-Frame-Options: DENY", r.headers.get("x-frame-options") == "DENY", "")
+    r = requests.get(f"http://127.0.0.1:{wport}/api/bot/list", headers={"X-Internal-Token": "tok\u00e9n-x" * 4}, timeout=5)
+    check("워커: ASCII 가 아닌 토큰도 500 이 아니라 403", r.status_code == 403, f"HTTP {r.status_code}")
     r = requests.get(f"http://127.0.0.1:{cport}/api/muma/table", timeout=5)
     check("로그인 없이 나무증권 경로를 넘기지 않는다", r.status_code == 401, f"HTTP {r.status_code}")
     lst = s.get(f"http://127.0.0.1:{cport}/api/bot/list", timeout=20).json()
@@ -195,6 +211,7 @@ try:
     procs.append(launch("all", aport, sb, wport))
     check("all 로 다시 뜬다", wait_up(aport), f"127.0.0.1:{aport}")
     s2 = requests.Session()
+    s2.headers.update({"X-Requested-With": "alpha-console"})
     s2.post(f"http://127.0.0.1:{aport}/api/auth/login", json={"password": PASSWORD}, timeout=5)
     ids = sorted(b["botId"] for b in s2.get(f"http://127.0.0.1:{aport}/api/bot/list", timeout=20).json()["bots"])
     check("두 파일의 봇을 모두 복원한다", ids == ["SOXL-2-cccccc", "XRP-1-aaaaaa"], f"{ids}")
