@@ -185,9 +185,13 @@ def quote(acc: namuh.NamuhAccount, code: str) -> Dict[str, Any]:
     # 동시호가 예상체결 (Output_2). 장 전 08:30~09:00 에 ORB 자동 선정이 쓴다.
     # '데이터가 있을 때만' 오는 블록이라 없으면 0 으로 둔다.
     o2 = b.get("Output_2") or {}
+    exp_price, prev_close = _i(o2.get("antc_cnpr")), _i(o.get("stck_prdy_clpr"))
+    # 예상 등락률은 부호가 붙어 오는지 확인하지 못했다(실시간 등락률은 부호 없이 온다).
+    # 예상체결가와 전일 종가로 직접 낸다.
+    exp_pct = (exp_price / prev_close - 1) * 100 if exp_price > 0 and prev_close > 0 else _f(o2.get("antc_prdy_ctrt"))
     return {
-        "expPrice": _i(o2.get("antc_cnpr")),
-        "expChangePct": _f(o2.get("antc_prdy_ctrt")),
+        "expPrice": exp_price,
+        "expChangePct": round(exp_pct, 2),
         "expVolume": _i(o2.get("antc_vol")),
         "prevVolume": _i(o.get("prdy_vol")),
         "code": code,

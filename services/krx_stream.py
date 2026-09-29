@@ -49,11 +49,23 @@ def _f(v: Any) -> float:
         return 0.0
 
 
+# 전일 대비 부호 (sign). change · chrate 는 크기만 오고 방향은 이 칸에만 있다.
+# 2026-09-29 실측: 삼성전자 상승 sign 2 · chrate 0.83 / 한전기술 하락 sign 5 · chrate 2.61
+# (REST currentPrice 의 prdy_ctrt 는 부호가 붙어 온다 — 실시간만 다르다)
+_DOWN_SIGNS = ("4", "5")          # 4 하한 · 5 하락
+_FLAT_SIGN = "3"                  # 3 보합 (1 상한 · 2 상승)
+
+
 def parse_tick(body: Dict[str, Any]) -> Dict[str, Any]:
     """oc 체결 메시지 → krx.quote 와 같은 모양의 스냅샷."""
+    price, change, sign = _i(body.get("price")), _i(body.get("change")), str(body.get("sign") or "").strip()
+    signed = 0 if sign == _FLAT_SIGN else (-change if sign in _DOWN_SIGNS else change)
+    prev_close = price - signed if price > 0 and sign else 0
+    rate = abs(_f(body.get("chrate")))
     return {
         "code": str(body.get("code") or "").strip(),
-        "price": _i(body.get("price")),
+        "price": price,
+        "prevClose": prev_close if prev_close > 0 else 0,
         "high": _i(body.get("high")),
         "low": _i(body.get("low")),
         "open": _i(body.get("open")),
@@ -62,7 +74,7 @@ def parse_tick(body: Dict[str, Any]) -> Dict[str, Any]:
         "ask": _i(body.get("offer")),
         "bid": _i(body.get("bid")),
         "hogaTime": str(body.get("time") or "").strip(),
-        "changePct": _f(body.get("chrate")),
+        "changePct": -rate if sign in _DOWN_SIGNS else (0.0 if sign == _FLAT_SIGN else rate),
         "market": {"1": "kospi", "2": "kosdaq"}.get(str(body.get("kospigb") or ""), ""),
         "receivedAt": time.time(),
         "source": "stream",

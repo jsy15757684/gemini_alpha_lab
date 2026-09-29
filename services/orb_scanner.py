@@ -385,9 +385,11 @@ class OrbScanner:
                                  f"{' (시간이 모자라 일부만)' if res['truncated'] else ''} · 통과 {res['passed']} · "
                                  f"감시 {len(self.watch)}종목" + (f" — {top}" if top else " — 조건에 맞는 종목이 없어 오늘은 쉽니다"))
         # RVOL 분모 — 전 거래일 09:05 거래량 (기록이 없는 종목만)
+        # 시각은 넘겨받은 now 에서 흐른 만큼으로 잰다 — 실시간이면 같고, 시험에서는 날짜에 매이지 않는다.
+        t_ref = time.time()
         got = 0
         for code in list(self.watch):
-            if self._stop.is_set() or datetime.now(orb.KST) >= open_ - timedelta(seconds=30):
+            if self._stop.is_set() or n + timedelta(seconds=time.time() - t_ref) >= open_ - timedelta(seconds=30):
                 break
             if self._prev_or_vol(code, date):
                 continue

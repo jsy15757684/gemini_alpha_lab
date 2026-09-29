@@ -113,7 +113,8 @@ class OrbParams:
 
 
 def open_gap_pct(q: Dict[str, Any]) -> Optional[float]:
-    """실제 시가의 갭(%). 실시간 체결에는 전일 종가가 없어 등락률로 되돌려 낸다."""
+    """실제 시가의 갭(%). 전일 종가는 REST 는 그대로, 실시간 체결은 부호 붙은 전일 대비로
+    되돌려 낸 값(krx_stream.parse_tick)을 쓴다. 둘 다 없을 때만 부호 붙은 등락률로."""
     op, price = float(q.get("open") or 0), float(q.get("price") or 0)
     prev = float(q.get("prevClose") or 0)
     if not prev and price > 0 and q.get("changePct") is not None:

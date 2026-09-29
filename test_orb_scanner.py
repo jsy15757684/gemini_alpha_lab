@@ -71,6 +71,22 @@ t = krx_stream.parse_tick(raw["body"])
 check("가격 · 고저 · 시가 · 누적거래량 · VWAP · 호가", (t["price"], t["high"], t["low"], t["open"], t["volume"], t["vwap"], t["ask"], t["bid"])
       == (107800, 109900, 102900, 104500, 209347, 107823.0, 107900, 107800), "")
 check("kospigb 2 → 코스닥", t["market"] == "kosdaq" and t["hogaTime"] == "12:24:54", "")
+# 2026-09-29 서버 수신 원본 — chrate · change 는 부호 없이 오고 방향은 sign 에만 있다
+down = krx_stream.parse_tick({"code": "052690", "sign": "5", "change": "3300", "price": "122900", "chrate": "2.61",
+                              "open": "122700", "high": "123800", "low": "121200", "volume": "35173"})
+up = krx_stream.parse_tick({"code": "005930", "sign": "2", "change": "2250", "price": "272250", "chrate": "0.83",
+                            "open": "266000", "high": "272500", "low": "266000", "volume": "2264594"})
+flat = krx_stream.parse_tick({"code": "000001", "sign": "3", "change": "0", "price": "10000", "chrate": "0.00"})
+check("하락(sign 5): 전일 종가 = 가격 + 전일 대비 · 등락률은 음수 (한전기술 126,200 · −2.61%)",
+      down["prevClose"] == 126200 and down["changePct"] == -2.61, f"{down['prevClose']} · {down['changePct']}")
+check("상승(sign 2): 전일 종가 = 가격 − 전일 대비 · 등락률은 양수 (삼성전자 270,000 · +0.83%)",
+      up["prevClose"] == 270000 and up["changePct"] == 0.83, f"{up['prevClose']} · {up['changePct']}")
+check("보합(sign 3): 전일 종가 = 가격", flat["prevClose"] == 10000 and flat["changePct"] == 0.0, "")
+from services import orb as _orb
+check("갭하락 출발을 갭상승으로 읽지 않는다 (9/29 한전기술: 실제 −2.77% · 고치기 전 +2.77%)",
+      round(_orb.open_gap_pct(down), 2) == -2.77, f"{_orb.open_gap_pct(down):+.2f}%")
+check("부호 칸이 없는 메시지는 전일 종가를 모른다고 둔다 (갭을 지어내지 않는다)",
+      t["prevClose"] == 0, f"{t['prevClose']}")
 st = krx_stream.KrxStream()
 st._on_message(json.dumps(raw))
 st._on_message(json.dumps({"header": {"tr_type": "1", "tr_cd": "oc", "rsp_cd": "10001", "rsp_msg": "없는 종목"},
