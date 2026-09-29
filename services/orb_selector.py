@@ -33,7 +33,10 @@ class SelectParams:
     # 실제의 차이를 감안해 그보다 조금 넓게 고른다. ORB 는 매수만 하므로 위로 뜨는 종목.
     gapMinPct: float = 1.5
     gapMaxPct: float = 6.0
-    minExpTurnoverEok: float = 3.0  # 예상 거래대금 하한(억 원) — 호가가 얇으면 신호가 가짜다
+    # 예상 거래대금 하한(억 원) — 호가가 얇으면 신호가 가짜다. 08:48~08:54 의 예상체결량은
+    # 동시호가 주문이 09:00 직전에 몰려 전일 거래량의 1~7% 뿐이다(2026-09-29 실측). 처음 둔
+    # 3억은 09:01 실제 체결량으로 잡은 값이라 189종목 중 1종목만 남았다 → 0.5억.
+    minExpTurnoverEok: float = 0.5
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "SelectParams":

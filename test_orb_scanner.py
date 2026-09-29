@@ -553,10 +553,12 @@ J = lambda **k: orb_selector.judge({"expPrice": 34_500, "expChangePct": 2.0, "ex
                                    "prevVolume": 600_000, **k}, 1_000_000, SP)
 check("통과: 갭 +2% · 예상 거래대금 103억 · 장 전 RVOL 0.5배", J()["ok"] and J()["score"] == 0.5, f"{J()}")
 check("예상체결이 없으면 뺀다", "예상체결 없음" in J(expVolume=0)["why"], "")
-check("갭 +0.5% 는 하한(+1%) 밑", "갭" in J(expChangePct=0.5)["why"], "")
-check("갭 +20% 는 상한(+15%) 위 (과열)", "갭" in J(expChangePct=20)["why"], "")
+check("갭 +0.5% 는 하한(+1.5%) 밑", "갭" in J(expChangePct=0.5)["why"], "")
+check("갭 +7% 는 상한(+6%) 위 — 09:05 실제 갭 2~5% 로 다시 거르므로 조금만 넓게", "갭" in J(expChangePct=7)["why"], "")
 check("갭이 아래로(-3%)면 뺀다 (매수만 한다)", not J(expChangePct=-3)["ok"], "")
-check("예상 거래대금 2억은 하한(3억) 밑", "거래대금" in J(expVolume=5_000)["why"], J(expVolume=5_000)["why"])
+check("예상 거래대금 0.3억은 하한(0.5억) 밑", "거래대금" in J(expVolume=1_000)["why"], J(expVolume=1_000)["why"])
+check("08:5x 의 얇은 예상체결(2억)도 통과한다 — 9/29 첫 선정은 3억 하한에 189종목 중 1종목만 남았다",
+      J(expVolume=6_000)["ok"], J(expVolume=6_000)["why"])
 check("1주가 종목당 자본보다 비싸면 뺀다", "종목당" in J(expPrice=1_779_000)["why"], "")
 
 fakeq = {"005930": {"expPrice": 280_000, "expChangePct": 2.9, "expVolume": 400_000, "prevVolume": 12_000_000},
