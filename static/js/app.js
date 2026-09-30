@@ -1431,8 +1431,14 @@ async function loadNamuhAccount() {
         const usdFmt = Number(a.usdAvailable || 0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
         pill.className = "pill ok"; pill.textContent = `나무증권 연동 · $${usdFmt}`;
       } else {
-        pill.className = "pill bad"; pill.textContent = "나무증권 인증 실패";
+        // 잔고 조회가 실패한 이유는 대개 인증이 아니라 통신이다 (2026-09-30 22:19~22:27
+        // 나무증권 서버가 응답하지 않아 '인증 실패' 로 보였다). 이유를 가려서 적는다.
+        const err = String(a.error || "");
+        const comm = /통신 오류|timed out|Timeout|Connection|RemoteDisconnected|Max retries|HTTP 5\d\d|429/i.test(err);
+        pill.className = comm ? "pill warn" : "pill bad";
+        pill.textContent = comm ? "나무증권 응답 지연" : "나무증권 인증 실패";
       }
+      pill.title = a.balanceOk ? "" : String(a.error || "");
     }
 
     const stEl = $("namuhStatus");
