@@ -145,6 +145,36 @@ cd /opt/gemini_alpha_lab && git pull && bash deploy/fix-perms.sh && systemctl re
 가 서비스 계정이 읽을 수 있도록 소유권을 되돌립니다. 빠뜨리면 업데이트 후
 서비스가 뜨지 않을 수 있습니다.
 
+### 텔레그램 알림 — 매일 아침 점검 보고 (`deploy/daily-report.sh`)
+
+월~토 09:35(한국시간)에 서버가 혼자 점검해 텔레그램으로 보냅니다. 맥 · Claude 앱이
+꺼져 있어도 됩니다. 읽기만 합니다(주문 · 봇 변경 없음).
+
+- 해외 봇: **봇 장부 수량 = 계좌 수량** 인지 · 지난 24시간 체결
+- 국내 ORB: 오늘 선정(훑은 수 · 통과 · 잘림) · 09:05 판단을 사유별로 · 매매
+- 서버: 두 서비스 상태 · 지난 24시간 ERROR · 나무증권 토큰 남은 시간
+- 이상이 있으면 첫 줄이 `🚨 확인 필요: …` 로 시작합니다
+
+1. 텔레그램에서 **@BotFather** → `/newbot` → 이름을 정하면 봇 토큰을 줍니다.
+2. 서버 `.env` 에 한 줄 넣습니다 (토큰은 채팅 · 코드에 붙이지 마세요):
+   ```
+   TELEGRAM_BOT_TOKEN=<BotFather 가 준 토큰>
+   ```
+3. 텔레그램에서 방금 만든 봇에게 아무 말(`/start`)이나 보낸 뒤, 받을 대화의 번호를 찾습니다:
+   ```bash
+   sudo -u bithumb /opt/gemini_alpha_lab/venv/bin/python /opt/gemini_alpha_lab/scripts/daily_report.py --find-chat
+   ```
+   나온 `TELEGRAM_CHAT_ID=...` 줄을 `.env` 에 넣습니다.
+4. 연결 확인 → 타이머 걸기:
+   ```bash
+   sudo -u bithumb /opt/gemini_alpha_lab/venv/bin/python /opt/gemini_alpha_lab/scripts/daily_report.py --ping
+   sudo bash deploy/daily-report.sh            # 되돌리기: --undo
+   sudo systemctl start gal-daily-report.service   # 지금 한 번 보내 보기
+   ```
+
+보내지 않고 내용만 보려면 `--dry-run`. 봇 토큰이 새어 나갔다고 생각되면
+@BotFather 에서 `/revoke` 로 바꾸고 `.env` 를 고칩니다.
+
 ---
 
 ## 실전 전 최종 점검
