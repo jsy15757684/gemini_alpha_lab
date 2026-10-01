@@ -690,8 +690,36 @@ try:
     sc3._refine_day("2026-10-02", at("08:59:30", "2026-10-02"))
     check("08:59:20 이 지났으면 다시 조회하지 않는다 (09:00 전에 구독을 바꿔야 한다)",
           calls3 == [] and sc3.watch == ["000006"], f"{calls3} · {sc3.watch}")
-    check("다시 거르기 시각: 08:58 ~ 08:59:20 · 넓게 훑기는 08:40", (osc.REFINE_MIN, round(osc.REFINE_END_MIN * 60), osc.SELECT_MIN)
-          == (-2.0, -40, -20.0), "")
+    check("일정: 08:40 기준 미리 받기 · 08:50 넓게 훑기(예상체결이 나오는 시각) · 08:57:40 마감 · 08:57:50 ~ 08:59:20 다시 거르기",
+          (osc.PREFETCH_MIN, osc.SELECT_MIN, round(osc.SWEEP_END_MIN * 60), round(osc.REFINE_MIN * 60),
+           round(osc.REFINE_END_MIN * 60)) == (-20.0, -10.0, -140, -130, -40), "")
+    # 예상체결을 하나도 못 받은 날 (10/02: 08:40 에 훑어 338종목 모두 비었다)
+    r0 = orb_selector.select(None, C2, 1_000_000, SP2, _t.time() + 60, lambda: False, quote=lambda a, c: q2(0, 0))
+    check("예상체결이 하나도 없으면 시가총액 상위로 예비 목록을 둔다 (다시 거르기에서 살아날 기회)",
+          r0["prelistByCap"] and [c["code"] for c in r0["prelist"]][:3] == ["000001", "000002", "000003"], "")
+    sc4 = osc.OrbScanner("ORB-R4", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930"]}, None)
+    krx.quote = lambda a, c: q2(0, 0)
+    sc4._prepare_day("2026-10-02", at("08:50:00", "2026-10-02"))
+    check("그날 08:50 에는 직접 입력 목록으로 두고", sc4.watch == ["005930"] and len(sc4.prelist) == 6, f"{sc4.watch}")
+    krx.quote = lambda a, c: late.get(c, q2(0, 0))
+    sc4._refine_day("2026-10-02", at("08:57:50", "2026-10-02"))
+    check("다시 거르기에서 예상체결이 나오면 그 결과로 감시한다", sc4.watch == ["000001"], f"{sc4.watch}")
+
+    print("── 08:40 RVOL 기준 미리 받기 ──")
+    prev3 = []
+    krx.prev_or_volume = lambda acc, code, today, rng: prev3.append(code) or {"date": "2026-10-01", "volume": 9_000}
+    pf = osc.OrbScanner("ORB-P", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930"]}, None)
+    pf.or_vol_history = {"000001": {"2026-10-01": 1_234}, "000002": {"2026-09-25": 5_555}}
+    pf._prefetch_baselines("2026-10-02", at("08:40:00", "2026-10-02"))
+    check("살 수 있는 후보 전체를 받는다 · 직전 거래일 기록이 있는 종목은 건너뛴다",
+          sorted(prev3) == ["000002", "000003", "000004", "000005", "000006"] and pf.or_vol_history["000001"] == {"2026-10-01": 1_234},
+          f"{sorted(prev3)}")
+    check("며칠 지난 기록(9/25)은 직전 거래일 값이 아니라 다시 받는다", pf._prev_or_vol("000002", "2026-10-02") == 9_000,
+          f"{pf._prev_or_vol('000002', '2026-10-02')}")
+    prev3.clear()
+    pf2 = osc.OrbScanner("ORB-P2", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930"]}, None)
+    pf2._prefetch_baselines("2026-10-02", at("08:49:55", "2026-10-02"))
+    check("08:49:50 이 지나면 받지 않는다 (08:50 넓게 훑기를 늦추지 않는다)", prev3 == [], f"{prev3}")
 finally:
     krx_master.load, krx_master.candidates, krx.prev_or_volume, krx.quote = orig
 

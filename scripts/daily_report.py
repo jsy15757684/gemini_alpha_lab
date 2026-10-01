@@ -5,7 +5,7 @@
 
   해외 봇   봇 장부 수량 = 계좌 수량 인가 (라이브 전환 뒤 가장 중요한 확인)
             지난 24시간 체결
-  국내 ORB  오늘 08:48 선정 (훑은 수 · 통과 · 잘림) · 09:05 판단을 사유별로 묶어서
+  국내 ORB  오늘 08:50 선정 (훑은 수 · 통과 · 잘림) · 09:05 판단을 사유별로 묶어서
             매매 · 보유
   서버      두 서비스 상태 · 지난 24시간 ERROR · 나무증권 토큰 남은 시간
 
@@ -226,15 +226,15 @@ def build(data: Dict[str, Any], server_now: Optional[datetime] = None) -> str:
             if s:
                 sw = s.get("sweep") if s.get("refined") else s
                 cut = " ⚠️ 시간 부족으로 일부만" if sw.get("truncated") else ""
-                lines.append(f"  08:40 훑기 {sw.get('elapsedSec')}초 · 조회 {sw.get('scanned')}/{sw.get('affordable')}{cut} · "
+                lines.append(f"  08:50 훑기 {sw.get('elapsedSec')}초 · 조회 {sw.get('scanned')}/{sw.get('affordable')}{cut} · "
                              f"예상체결 {sw.get('withExpected')}"
                              + (f" · 예비 {sw.get('prelist')}종목" if s.get("refined") else f" · 통과 {sw.get('passed')}"))
                 if s.get("refined"):
-                    lines.append(f"  08:58 다시 거르기 · 조회 {s.get('scanned')}{' (일부)' if s.get('truncated') else ''} · "
+                    lines.append(f"  08:57:50 다시 거르기 · 조회 {s.get('scanned')}{' (일부)' if s.get('truncated') else ''} · "
                                  f"예상체결 {s.get('withExpected')} · 통과 {s.get('passed')}")
                 elif s.get("refine"):
-                    lines.append("  08:58 다시 거르기 실패 — 08:40 결과로 감시")
-                    alerts.append("ORB 08:58 다시 거르기 실패")
+                    lines.append("  다시 거르기 실패 — 08:50 결과로 감시")
+                    alerts.append("ORB 다시 거르기 실패")
                 if not sw.get("withExpected") and not holiday:
                     alerts.append("ORB 예상체결을 한 종목도 못 받음")
             else:

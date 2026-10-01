@@ -446,9 +446,10 @@
               <div><label class="label">감시 종목 수 (최대 28)</label>
                 <input class="input" type="number" id="sel_topN" value="28" min="1" max="28" step="1"></div>
             </div>
-            <div class="muted small" style="margin-top:.35rem"><b>08:40</b> 후보 약 346종목(위험 종목 제외)을 하나씩 훑어 갭을 ±3%p 넓게 본 예비 목록 50종목을 만들고,
-              <b>08:58</b> 그것만 다시 조회해 갭이 범위 안이고 예상 거래대금이 충분한 종목을 <b>예상체결량 ÷ 전일 거래량</b>(장 전 RVOL) 순으로 고릅니다.
-              동시호가 주문은 09:00 직전에 몰려 08:58 값이 실제 시가에 가깝습니다.
+            <div class="muted small" style="margin-top:.35rem"><b>08:40</b> 후보 전체의 전일 09:05 거래량(RVOL 기준)을 미리 받고, 예상체결이 나오는 <b>08:50</b>부터
+              후보 약 346종목(위험 종목 제외)을 하나씩 훑어 갭을 ±3%p 넓게 본 예비 목록 50종목을 만들고,
+              <b>08:57:50</b> 그것만 다시 조회해 갭이 범위 안이고 예상 거래대금이 충분한 종목을 <b>예상체결량 ÷ 전일 거래량</b>(장 전 RVOL) 순으로 고릅니다.
+              동시호가 주문은 09:00 직전에 몰려 이 값이 실제 시가에 가깝습니다.
               1주 값이 종목당 자본보다 비싼 종목은 처음부터 뺍니다. 예상체결을 받지 못한 날은 아래 직접 입력 목록으로 봅니다.</div>
           </div>
           <div id="orbManualBox" style="margin-top:.8rem">
@@ -520,7 +521,7 @@
               <div><label class="label">실제 시초가 갭 상한 (%) · 둘 다 0 = 끔</label>
                 <input class="input" type="number" id="orb_gapMaxPct" value="5.0" min="-30" max="30" step="0.5"></div>
             </div>
-            <div class="muted small" style="margin-top:.3rem">자동 선정은 08:58 예상체결로 고르지만 동시호가는 09:00 직전까지 바뀝니다.
+            <div class="muted small" style="margin-top:.3rem">자동 선정은 08:57:50 예상체결로 고르지만 동시호가는 09:00 직전까지 바뀝니다.
               실제 시가로 한 번 더 거릅니다. 선정 갭 범위는 이보다 조금 넓게 두세요.</div>
             <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
               <input type="checkbox" id="orb_openHold" checked> 시초가 지지 — 첫 5분의 1분 종가가 모두 시가 이상이고 5분 양봉인 종목만</label>
@@ -764,6 +765,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.13.0"></script>
+<script src="/static/js/app.js?v=5.13.1"></script>
 </body>
 </html>

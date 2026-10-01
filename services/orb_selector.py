@@ -13,10 +13,11 @@ ORB 는 갭과 거래가 몰리는 종목에서 잘 맞는다(Zarattini & Aziz �
 실시간 예상체결 채널(oa)은 연결당 30종목이라 350종목을 못 본다. 그래서 REST 로
 하나씩 훑는다(호출 간격 포함 종목당 약 1.35초 → 339종목 약 7.6분).
 
-두 번 본다 (2026-10-01 · 사흘 실측으로 바꿨다)
-  08:40  넓게 훑기   전 후보. 갭을 느슨하게(±looseGapPct) 보고 거래대금은 보지 않는다
-                     → 점수 상위 preN(50) 종목의 '예비 목록'
-  08:58  다시 거르기  예비 목록만 다시 조회해 원래 기준(갭 · 거래대금)으로 골라 topN
+두 번 본다 (2026-10-01 · 사흘 실측으로 바꿨다 · 10-02 시각을 고쳤다)
+  08:50     넓게 훑기   전 후보. 갭을 느슨하게(±looseGapPct) 보고 거래대금은 보지 않는다
+                        → 점수 상위 preN(50) 종목의 '예비 목록'
+  08:57:50  다시 거르기  예비 목록만 다시 조회해 원래 기준(갭 · 거래대금)으로 골라 topN
+  예상체결은 08:50 무렵부터 나온다 (10-02: 08:40~08:47 에 338종목 모두 비었다).
   08:48 하나로 고르던 때는 예상 갭이 실제 시가와 ±3%p 씩 어긋나(성호전자 +2.8 →
   +0.76% · NC +5.3 → +8.4% · 원익홀딩스 +3.0 → +0.56%) 감시 종목 대부분이 09:05
   실제 갭 조건에서 바로 떨어졌다. 동시호가 주문은 09:00 직전에 몰리므로 08:58 값이
@@ -48,8 +49,8 @@ class SelectParams:
     # 동시호가 주문이 09:00 직전에 몰려 전일 거래량의 1~7% 뿐이다(2026-09-29 실측). 처음 둔
     # 3억은 09:01 실제 체결량으로 잡은 값이라 189종목 중 1종목만 남았다 → 0.5억.
     minExpTurnoverEok: float = 0.5
-    preN: int = 50                  # 08:40 예비 목록 크기 — 08:58 에 이만큼 다시 조회한다(약 70초)
-    looseGapPct: float = 3.0        # 08:40 에는 갭을 이만큼 넓게 본다 (08:48 → 시가 어긋남 실측 ±3%p)
+    preN: int = 50                  # 예비 목록 크기 — 08:57:50 에 이만큼 다시 조회한다(약 70초)
+    looseGapPct: float = 3.0        # 넓게 훑기에서는 갭을 이만큼 넓게 본다 (08:48 → 시가 어긋남 실측 ±3%p)
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "SelectParams":
@@ -125,7 +126,7 @@ def _sweep(acc, rows: List[Dict[str, Any]], budget: float, p: SelectParams, dead
                                   key=lambda j: -j["score"])[:10]}
 
 
-def _affordable(cands: List[Dict[str, Any]], budget: float) -> List[Dict[str, Any]]:
+def affordable(cands: List[Dict[str, Any]], budget: float) -> List[Dict[str, Any]]:
     # 전일 종가로 먼저 거른다 — 살 수 없는 종목에 호출을 쓰지 않는다. 시가총액 큰 순.
     pool = [c for c in cands if not c.get("prevClose") or c["prevClose"] * 1.01 <= budget]
     return sorted(pool, key=lambda c: -int(c.get("capEok") or 0))
@@ -134,12 +135,14 @@ def _affordable(cands: List[Dict[str, Any]], budget: float) -> List[Dict[str, An
 def select(acc, cands: List[Dict[str, Any]], budget: float, p: SelectParams,
            deadline: float, should_stop: Callable[[], bool],
            quote: Callable = None) -> Dict[str, Any]:
-    """후보를 한 번 훑어 고른다(08:40 넓게 훑기의 '엄격한' 결과도 이것이다).
+    """후보를 한 번 훑어 고른다(08:50 넓게 훑기의 '엄격한' 결과도 이것이다).
 
-    반환에 prelist 가 붙는다 — 08:58 다시 거르기에 쓸 예비 목록. 갭은 ±looseGapPct
-    넓게, 거래대금은 보지 않고(08:40 의 예상 체결량은 아직 작다), 점수 순 preN 개.
+    반환에 prelist 가 붙는다 — 다시 거르기에 쓸 예비 목록. 갭은 ±looseGapPct
+    넓게, 거래대금은 보지 않고(이른 시각의 예상 체결량은 아직 작다), 점수 순 preN 개.
+    예상체결을 하나도 못 받았으면(예상체결이 늦게 나온 날) 시가총액 상위 preN 개를
+    예비 목록으로 둔다 — 다시 거르기에서 살아날 기회를 남긴다.
     """
-    pool = _affordable(cands, budget)
+    pool = affordable(cands, budget)
     res = _sweep(acc, pool, budget, p, deadline, should_stop, quote or krx.quote)
     loose = SelectParams(topN=p.topN, gapMinPct=p.gapMinPct - p.looseGapPct,
                          gapMaxPct=p.gapMaxPct + p.looseGapPct, minExpTurnoverEok=0.0,
@@ -148,9 +151,13 @@ def select(acc, cands: List[Dict[str, Any]], budget: float, p: SelectParams,
            if judge({"expPrice": j["expPrice"], "expChangePct": j["gap"], "expVolume": j["expVolume"],
                      "prevVolume": j["prevVolume"]}, budget, loose)["ok"]]
     pre.sort(key=lambda j: -j["score"])
-    res.update(candidates=len(cands), affordable=len(pool),
-               prelist=[{"code": j["code"], "name": j["name"], "index": j["index"], "score": j["score"],
-                         "gap": j["gap"]} for j in pre[:p.preN]])
+    prelist = [{"code": j["code"], "name": j["name"], "index": j["index"], "score": j["score"],
+                "gap": j["gap"]} for j in pre[:p.preN]]
+    if not res["withExpected"]:
+        prelist = [{"code": c["code"], "name": c["name"], "index": c.get("market"), "score": 0.0, "gap": None}
+                   for c in pool[:p.preN]]
+    res.update(candidates=len(cands), affordable=len(pool), prelist=prelist,
+               prelistByCap=not res["withExpected"])
     res.pop("judged")
     return res
 

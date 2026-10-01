@@ -71,11 +71,11 @@ def refined(d):
 
 
 r = rep(refined)
-check("08:40 훑기 → 08:58 다시 거르기 두 줄로 적는다",
-      "08:40 훑기 460초 · 조회 339/339 · 예상체결 230 · 예비 50종목" in r and "08:58 다시 거르기 · 조회 50 · 예상체결 48 · 통과 9" in r
+check("08:50 훑기 → 08:57:50 다시 거르기 두 줄로 적는다",
+      "08:50 훑기 460초 · 조회 339/339 · 예상체결 230 · 예비 50종목" in r and "08:57:50 다시 거르기 · 조회 50 · 예상체결 48 · 통과 9" in r
       and "시간 부족" not in r, "")
 r = rep(lambda d: d["bots"]["bots"][2]["orbScan"]["selection"].__setitem__("refine", {"scanned": 0, "withExpected": 0}))
-check("08:58 다시 거르기가 실패하면 경보", "ORB 08:58 다시 거르기 실패" in r.splitlines()[0], r.splitlines()[0])
+check("다시 거르기가 실패하면 경보", "ORB 다시 거르기 실패" in r.splitlines()[0], r.splitlines()[0])
 check("09:05 판단을 사유별로 묶는다", "시초가 갭 범위 밖 2 — 필옵틱스, 성호전자" in r and "돌파 없음 1 — 브이엠" in r, "")
 check("'돌파 대기' 문장 속 RVOL 숫자에 속지 않는다", "돌파 대기 1 — 와이씨" in r and "RVOL 부족" not in r, "")
 check("첫날 RVOL 기준 없음을 따로 묶는다 ('쉽니다' 가 없는 문장)", "RVOL 기준 없음(첫날) 1 — 새종목" in r, "")

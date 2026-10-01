@@ -508,8 +508,8 @@ function orbWatchTable(b) {
             → 감시 ${(sel.chosen || []).length}종목</div>`
         : `<div class="muma-note">🔎 ${escapeHtml(b.orbScan.preparedDate || "")} ${escapeHtml(sel.at || "")} 넓게 훑기 —
             후보 ${sel.candidates} · 살 수 있는 ${sel.affordable} · 조회 ${sel.scanned}${sel.truncated ? " (시간이 모자라 일부)" : ""} ·
-            예상체결 받음 ${sel.withExpected} · 지금 기준 통과 ${sel.passed}${sel.refine ? " · 08:58 다시 거르기 실패 → 이 결과로 감시" : " · 08:58 에 다시 거릅니다"}</div>`)
-           : `<div class="muma-note">🔎 다음 거래일 08:40 에 넓게 훑고 08:58 에 다시 걸러 감시 종목을 고릅니다.</div>`)
+            예상체결 받음 ${sel.withExpected} · 지금 기준 통과 ${sel.passed}${sel.refine ? " · 다시 거르기 실패 → 이 결과로 감시" : " · 08:57:50 에 다시 거릅니다"}</div>`)
+           : `<div class="muma-note">🔎 다음 거래일 08:50 에 넓게 훑고 08:57:50 에 다시 걸러 감시 종목을 고릅니다 (08:40 RVOL 기준을 미리 받습니다).</div>`)
     : "";
   return `<details class="muma-bot" ${b.orbScan?.watch?.some(w => w.held) ? "open" : ""}>
     <summary><b>종목별 감시</b> <span class="muted small">실시간 ${st.connected ? "연결됨" : "끊김 · 장 밖에는 닫아 둡니다"}
@@ -549,7 +549,7 @@ async function deployOrbBot() {
   const summary = [
     "이 설정으로 국내 ORB 스캐너를 만듭니다.", "",
     watchMode === "auto"
-      ? `감시 종목 : 매일 08:40 넓게 훑기 → 08:58 다시 거르기 — 갭 ${sel.gapMinPct}~${sel.gapMaxPct}% · 예상 거래대금 ≥ ${sel.minExpTurnoverEok}억 · 상위 ${sel.topN}`
+      ? `감시 종목 : 매일 08:50 넓게 훑기 → 08:57:50 다시 거르기 — 갭 ${sel.gapMinPct}~${sel.gapMaxPct}% · 예상 거래대금 ≥ ${sel.minExpTurnoverEok}억 · 상위 ${sel.topN}`
       : `감시 종목 : 직접 입력 ${watch.length}종목 (실시간)`,
     `동시 보유 : 최대 ${maxPos}종목 · 종목당 ${Math.floor(capital / maxPos).toLocaleString()}원`,
     `매매 모드 : ${mode === "LIVE" ? "실전 — 나무증권 국내 실주문 (원화)" : "모의투자 — 주문이 나가지 않습니다"}`,
