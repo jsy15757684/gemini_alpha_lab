@@ -1,8 +1,10 @@
 """국내주식 ORB 스캐너 — 감시 목록 전체를 실시간으로 보다가 신호가 뜬 종목을 산다.
 
-  목록   watchMode="auto"(기본): 매일 08:48 코스피200·코스닥150 을 동시호가 예상체결로
-         훑어 그날 움직일 종목을 고른다 (services/orb_selector). "manual": 화면에서 준 목록.
-         어느 쪽이든 08:55 전에 종목마다 전 거래일 09:05 거래량(RVOL 분모)을 받아 둔다.
+  목록   watchMode="auto"(기본): 08:40 코스피200·코스닥150 을 동시호가 예상체결로 넓게
+         훑어 예비 목록(50)을 만들고, 08:58 그것만 다시 조회해 그날 볼 종목을 고른다
+         (services/orb_selector). "manual": 화면에서 준 목록.
+         어느 쪽이든 장 전에 종목마다 전 거래일 09:05 거래량(RVOL 분모)을 받아 둔다
+         (auto 는 예비 목록 전부 — 08:58 에 무엇이 뽑혀도 기준이 있게).
 
   감시   실시간 체결 스트림(krx_stream · KRX 전용 oc) 으로 목록 전 종목을 동시에
          받는다. 폴링하지 않으므로 목록이 길어도 반응이 늦어지지 않는다 (최대 28종목
@@ -35,7 +37,10 @@ RETRY_SEC = 20.0
 STALE_HELD_SEC = 10.0       # 산 종목 시세가 이만큼 조용하면 REST 로 본다
 STALE_STREAM_SEC = 20.0     # 장 초반 스트림 전체가 이만큼 조용하면 다시 붙는다
 PREP_MIN = -5.0             # 08:55 부터 실시간 연결
-SELECT_MIN = -12.0          # 08:48 부터 자동 선정 (약 6분) · 전일 거래량 받기
+SELECT_MIN = -20.0          # 08:40 넓게 훑기 (약 8분) · 예비 목록 전일 거래량 받기
+SWEEP_END_MIN = -8.5        # 08:51:30 까지 훑는다
+REFINE_MIN = -2.0           # 08:58 예비 목록 다시 거르기 (약 70초)
+REFINE_END_MIN = -40 / 60   # 08:59:20 까지 — 09:00 전에 구독을 바꿔야 한다
 SESSION_MIN = 390.0         # 15:30 장 마감
 PENDING_CHECK_SEC = 10.0    # 미체결 주문을 다시 보는 간격
 
@@ -103,6 +108,8 @@ class OrbScanner:
         self.watch: List[str] = list(self.manual_watch) if self.watch_mode == "manual" else []
         self.selection: Optional[Dict[str, Any]] = None
         self.prepared_date = ""
+        self.refined_date = ""
+        self.prelist: List[Dict[str, Any]] = []         # 08:40 예비 목록 (08:58 에 다시 거른다)
         self.index_of: Dict[str, str] = {}
         self.max_positions = max(1, int(params.pop("maxPositions", 3) or 3))
         self.orb = orb.OrbParams.from_dict(params)
@@ -178,7 +185,8 @@ class OrbScanner:
         self._stop.clear()
         p = self.orb
         sp = self.select_params
-        watch_desc = (f"자동 선정 (매일 08:48 코스피200·코스닥150 · 갭 {sp.gapMinPct:+g}~{sp.gapMaxPct:+g}% · "
+        watch_desc = (f"자동 선정 (08:40 넓게 훑기 → 08:58 다시 거르기 · 코스피200·코스닥150 · "
+                      f"갭 {sp.gapMinPct:+g}~{sp.gapMaxPct:+g}% · "
                       f"예상 거래대금 ≥ {sp.minExpTurnoverEok:g}억 · 상위 {sp.topN})"
                       if self.watch_mode == "auto" else f"직접 입력 {len(self.manual_watch)}종목")
         self.log("INFO", f"{'실전(LIVE)' if self.mode == 'LIVE' else '모의투자(PAPER)'} [나무증권 국내주식] ORB 스캐너 시작 · "
@@ -298,6 +306,17 @@ class OrbScanner:
                 self.prepared_date = date
                 self._persist()
                 continue
+            # 1-1) 08:58 다시 거르기 — 한 번. 실패해도 08:40 결과로 본다.
+            if (weekday and self.watch_mode == "auto" and self.prepared_date == date
+                    and self.refined_date != date and REFINE_MIN <= m < REFINE_END_MIN):
+                try:
+                    self._refine_day(date, now)
+                except Exception as e:
+                    logger.exception(f"[{self.bot_id}] 다시 거르기 실패")
+                    self.log("ERROR", f"08:58 다시 거르기 실패 — 08:40 결과로 봅니다: {e}")
+                self.refined_date = date
+                self._persist()
+                continue
             if in_session and self.prepared_date != date:
                 if self.watch_mode == "auto":
                     self.watch = list(self.manual_watch)
@@ -311,7 +330,7 @@ class OrbScanner:
                 if stream.connected:
                     stream.release()
                 self.last_decision = ((f"장 전 준비 끝 · 오늘 감시 {len(self.watch)}종목 · 08:55 실시간 연결"
-                                       if self.prepared_date == date else "개장 전 대기 (08:48 종목 선정)")
+                                       if self.prepared_date == date else "개장 전 대기 (08:40 종목 선정)")
                                       + (f" · 보유 {len(self.positions)}종목 (장 시작에 청산 판단)" if self.positions else ""))
                 self._stop.wait(max(1.0, min(30.0, (SELECT_MIN - m) * 60 if m < SELECT_MIN else (PREP_MIN - m) * 60)))
                 continue
@@ -328,8 +347,8 @@ class OrbScanner:
             if not (self.positions or watching or self.pending_orders):
                 if stream.connected:
                     stream.release()
-                self.last_decision = ("오늘 ORB 끝 — 다음 거래일 08:48 에 종목을 고릅니다"
-                                      if weekday and m >= 0 else "개장 전 대기 (08:48 종목 선정)")
+                self.last_decision = ("오늘 ORB 끝 — 다음 거래일 08:40 에 종목을 고릅니다"
+                                      if weekday and m >= 0 else "개장 전 대기 (08:40 종목 선정)")
                 self._stop.wait(self._sleep_until_prep(now))
                 continue
             try:
@@ -348,48 +367,58 @@ class OrbScanner:
             self._stop.wait(1.0)
 
     def _sleep_until_prep(self, now: datetime) -> float:
-        """다음 08:47 까지 (보유 중이면 08:55). 10분씩 끊어 자서 정지 요청을 받는다."""
+        """다음 08:39 까지 (보유 중이면 08:55). 10분씩 끊어 자서 정지 요청을 받는다."""
         n = now.astimezone(orb.KST)
-        prep = n.replace(hour=8, minute=55 if self.positions else 47, second=0, microsecond=0)
+        prep = n.replace(hour=8, minute=55 if self.positions else 39, second=0, microsecond=0)
         if n >= prep:
             prep += timedelta(days=1)
         return max(1.0, min(600.0, (prep - n).total_seconds()))
 
     def _prepare_day(self, date: str, now: Optional[datetime] = None) -> None:
-        """장 전: (auto) 종목 선정 → 종목마다 전 거래일 09:05 거래량."""
+        """장 전: (auto) 08:40 넓게 훑기 → 예비 목록 · 감시 종목의 전 거래일 09:05 거래량."""
         acc = self.namuh_account
         n = (now or datetime.now(orb.KST)).astimezone(orb.KST)
         open_ = n.replace(hour=9, minute=0, second=0, microsecond=0)
+        self.prelist = []
         if self.watch_mode == "auto":
             cands = krx_master.candidates(krx_master.load())
-            # 08:55 에 실시간을 붙이려면 08:54:20 에는 끝내야 한다(기준 거래량 받을 40초).
-            # 그보다 늦게 띄웠으면 2분만 훑는다 — 조금이라도 골라 09:00 을 맞는다.
-            deadline = max((open_ + timedelta(minutes=PREP_MIN)).timestamp() - 40, time.time() + 120)
+            # 08:51:30 까지 훑는다. 그보다 늦게 띄웠으면 2분만(08:58 다시 거르기 전까지) 훑는다.
+            sweep_end = open_ + timedelta(minutes=SWEEP_END_MIN)
+            late_end = min(n + timedelta(seconds=120), open_ + timedelta(minutes=REFINE_MIN - 0.25))
+            end = sweep_end if n < sweep_end - timedelta(minutes=2) else late_end
+            deadline = time.time() + max(30.0, (end - n).total_seconds())     # 넘겨받은 now 기준
             self.log("INFO", f"🔎 자동 선정 시작 — 후보 {len(cands)}종목 (코스피200·코스닥150, 위험 종목 제외)")
             res = orb_selector.select(acc, cands, self.slot_budget(), self.select_params,
                                       deadline, self._stop.is_set)
             self.selection = res
+            self.prelist = list(res.get("prelist") or [])
+            for c in self.prelist:
+                self.names[c["code"]] = c["name"]
+                self.index_of[c["code"]] = c["index"]
             if not res["withExpected"]:
                 self.watch = list(self.manual_watch)
                 self.log("WARNING", f"동시호가 예상체결을 한 종목도 받지 못했습니다 ({res['scanned']}종목 조회 · "
                                     f"실패 {res['errors']}) — "
                                     f"직접 입력 목록 {len(self.watch)}종목으로 봅니다")
             else:
+                # 08:58 다시 거르기가 실패하면 이 목록으로 본다
                 chosen = res["chosen"]
                 self.watch = [c["code"] for c in chosen]
                 for c in chosen:
                     self.names[c["code"]] = c["name"]
                     self.index_of[c["code"]] = c["index"]
-                top = ", ".join(f"{c['name']}({c['gap']:+.1f}% · {c['score']:.2f}배)" for c in chosen[:5])
-                self.log("INFO", f"🔎 선정 끝 {res['elapsedSec']}초 · 조회 {res['scanned']}/{res['affordable']}"
-                                 f"{' (시간이 모자라 일부만)' if res['truncated'] else ''} · 통과 {res['passed']} · "
-                                 f"감시 {len(self.watch)}종목" + (f" — {top}" if top else " — 조건에 맞는 종목이 없어 오늘은 쉽니다"))
-        # RVOL 분모 — 전 거래일 09:05 거래량 (기록이 없는 종목만)
+                self.log("INFO", f"🔎 넓게 훑기 끝 {res['elapsedSec']}초 · 조회 {res['scanned']}/{res['affordable']}"
+                                 f"{' (시간이 모자라 일부만)' if res['truncated'] else ''} · "
+                                 f"지금 기준 통과 {res['passed']} · 예비 목록 {len(self.prelist)}종목 "
+                                 f"(08:58 에 다시 거릅니다)")
+        # RVOL 분모 — 전 거래일 09:05 거래량 (기록이 없는 종목만). auto 는 예비 목록 전부.
         # 시각은 넘겨받은 now 에서 흐른 만큼으로 잰다 — 실시간이면 같고, 시험에서는 날짜에 매이지 않는다.
+        codes = list(dict.fromkeys([c["code"] for c in self.prelist] + list(self.watch)))
+        stop_at = open_ + (timedelta(minutes=REFINE_MIN - 0.25) if self.watch_mode == "auto" else -timedelta(seconds=30))
         t_ref = time.time()
         got = 0
-        for code in list(self.watch):
-            if self._stop.is_set() or n + timedelta(seconds=time.time() - t_ref) >= open_ - timedelta(seconds=30):
+        for code in codes:
+            if self._stop.is_set() or n + timedelta(seconds=time.time() - t_ref) >= stop_at:
                 break
             if self._prev_or_vol(code, date):
                 continue
@@ -403,6 +432,40 @@ class OrbScanner:
                 got += 1
         if self.orb.rvolMin > 0:
             self.log("INFO", f"📒 전 거래일 {orb.hm(self.orb.rangeMin)} 거래량 {got}종목 받음 (RVOL 기준)")
+
+    def _refine_day(self, date: str, now: Optional[datetime] = None) -> None:
+        """08:58 — 예비 목록만 다시 조회해 원래 기준으로 오늘 볼 종목을 정한다."""
+        if not self.prelist:
+            return
+        n = (now or datetime.now(orb.KST)).astimezone(orb.KST)
+        open_ = n.replace(hour=9, minute=0, second=0, microsecond=0)
+        # 시각은 넘겨받은 now 기준 (시험이 날짜에 매이지 않게)
+        deadline = time.time() + max(0.0, (open_ + timedelta(minutes=REFINE_END_MIN) - n).total_seconds())
+        res = orb_selector.refine(self.namuh_account, self.prelist, self.slot_budget(), self.select_params,
+                                  deadline, self._stop.is_set)
+        early = {k: (self.selection or {}).get(k) for k in
+                 ("at", "elapsedSec", "candidates", "affordable", "scanned", "withExpected", "passed", "errors",
+                  "truncated")}
+        early["prelist"] = len(self.prelist)
+        if not res["withExpected"]:
+            self.log("WARNING", f"08:58 다시 거르기에서 예상체결을 받지 못했습니다 ({res['scanned']}종목 · "
+                                f"실패 {res['errors']}) — 08:40 결과 {len(self.watch)}종목으로 봅니다")
+            if self.selection is not None:
+                self.selection["refine"] = {k: res.get(k) for k in ("at", "scanned", "withExpected", "errors")}
+            return
+        chosen = res["chosen"]
+        before = set(self.watch)
+        self.watch = [c["code"] for c in chosen]
+        for c in chosen:
+            self.names[c["code"]] = c["name"]
+            self.index_of[c["code"]] = c["index"]
+        self.selection = {**res, "sweep": early}
+        top = ", ".join(f"{c['name']}({c['gap']:+.1f}% · {c['turnoverEok']:g}억)" for c in chosen[:5])
+        self.log("INFO", f"🔎 08:58 다시 거르기 {res['elapsedSec']}초 · 예비 {len(self.prelist)}종목 중 "
+                         f"조회 {res['scanned']}{' (시간이 모자라 일부만)' if res['truncated'] else ''} · "
+                         f"통과 {res['passed']} · 감시 {len(self.watch)}종목 "
+                         f"(08:40 목록과 겹침 {len(before & set(self.watch))})"
+                         + (f" — {top}" if top else " — 조건에 맞는 종목이 없어 오늘은 쉽니다"))
 
     def _tick(self, now: datetime, date: str, m: float):
         if self.pending_orders and self.mode == "LIVE" and time.time() - self._pending_checked >= PENDING_CHECK_SEC:
@@ -734,9 +797,10 @@ class OrbScanner:
                 "tradeHistory": self.trade_history, "createdAt": self.created_at, "wasRunning": self.is_running,
                 "orVolHistory": {c: h.copy() for c, h in self.or_vol_history.copy().items()},
                 # 오늘 고른 목록. 선정 뒤 재시작하면 6분 걸리는 선정을 다시 하지 않는다.
-                "preparedDate": self.prepared_date, "todayWatch": list(self.watch),
+                "preparedDate": self.prepared_date, "refinedDate": self.refined_date,
+                "prelist": list(self.prelist), "todayWatch": list(self.watch),
                 "indexOf": dict(self.index_of),
-                "selection": ({k: v for k, v in self.selection.items() if k != "rejectedTop"}
+                "selection": ({k: v for k, v in self.selection.items() if k not in ("rejectedTop", "prelist")}
                               if self.selection else None),
                 # 오늘 진입한 종목은 저장한다. 재시작으로 같은 종목을 하루 두 번 사지 않게.
                 "dayDate": self.day_date,
@@ -760,6 +824,8 @@ class OrbScanner:
                               for c, h in (d.get("orVolHistory") or {}).items()}
         bot.day_date = d.get("dayDate") or ""
         bot.prepared_date = d.get("preparedDate") or ""
+        bot.refined_date = d.get("refinedDate") or ""
+        bot.prelist = [dict(c) for c in (d.get("prelist") or [])]
         if bot.prepared_date and d.get("todayWatch") is not None:
             bot.watch = [str(c) for c in d["todayWatch"]]
         bot.index_of = {str(k): str(v) for k, v in (d.get("indexOf") or {}).items()}

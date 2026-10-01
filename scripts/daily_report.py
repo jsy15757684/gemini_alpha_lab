@@ -224,10 +224,18 @@ def build(data: Dict[str, Any], server_now: Optional[datetime] = None) -> str:
             if holiday:
                 lines.append("  한국 휴장일로 보입니다 (모든 종목의 호가가 멈춰 있음) — 매매 없음")
             if s:
-                cut = " ⚠️ 시간 부족으로 일부만" if s.get("truncated") else ""
-                lines.append(f"  선정 {s.get('elapsedSec')}초 · 조회 {s.get('scanned')}/{s.get('affordable')}{cut} · "
-                             f"예상체결 {s.get('withExpected')} · 통과 {s.get('passed')}")
-                if not s.get("withExpected") and not holiday:
+                sw = s.get("sweep") if s.get("refined") else s
+                cut = " ⚠️ 시간 부족으로 일부만" if sw.get("truncated") else ""
+                lines.append(f"  08:40 훑기 {sw.get('elapsedSec')}초 · 조회 {sw.get('scanned')}/{sw.get('affordable')}{cut} · "
+                             f"예상체결 {sw.get('withExpected')}"
+                             + (f" · 예비 {sw.get('prelist')}종목" if s.get("refined") else f" · 통과 {sw.get('passed')}"))
+                if s.get("refined"):
+                    lines.append(f"  08:58 다시 거르기 · 조회 {s.get('scanned')}{' (일부)' if s.get('truncated') else ''} · "
+                                 f"예상체결 {s.get('withExpected')} · 통과 {s.get('passed')}")
+                elif s.get("refine"):
+                    lines.append("  08:58 다시 거르기 실패 — 08:40 결과로 감시")
+                    alerts.append("ORB 08:58 다시 거르기 실패")
+                if not sw.get("withExpected") and not holiday:
                     alerts.append("ORB 예상체결을 한 종목도 못 받음")
             else:
                 lines.append("  선정 없음 — 직접 입력 목록으로 감시")

@@ -618,6 +618,83 @@ try:
 finally:
     krx_master.load, krx.prev_or_volume, krx.quote = orig_load, orig_prev, orig_q2
 
+print("── 08:40 넓게 훑기 → 08:58 다시 거르기 ──")
+C2 = [{"code": c, "name": n, "market": m, "prevClose": 10_000, "capEok": cap}
+      for c, n, m, cap in (("000001", "가", "kospi", 900), ("000002", "나", "kosdaq", 800), ("000003", "다", "kospi", 700),
+                           ("000004", "라", "kospi", 600), ("000005", "마", "kospi", 500), ("000006", "바", "kosdaq", 400))]
+def q2(gap, vol, prev=1_000_000, px=10_000):
+    return {"expPrice": px if vol else 0, "expChangePct": gap, "expVolume": vol, "prevVolume": prev}
+early = {"000001": q2(1.0, 3_000),        # 갭이 하한 밑 · 거래 얇음 → 지금 기준 탈락, 예비 목록에는 든다
+         "000002": q2(8.0, 20_000),       # 갭 +8% → 상한 밖, 느슨한 범위(+9%) 안 → 예비
+         "000003": q2(10.0, 50_000),      # 갭 +10% → 느슨한 범위 밖
+         "000004": q2(-2.0, 40_000),      # 갭 -2% → 느슨한 하한(-1.5%) 밖
+         "000005": q2(0, 0),              # 예상체결 없음
+         "000006": q2(3.0, 10_000)}       # 지금 기준 통과 (갭 3% · 1억)
+SP2 = orb_selector.SelectParams()
+r40 = orb_selector.select(None, C2, 1_000_000, SP2, _t.time() + 60, lambda: False, quote=lambda a, c: early[c])
+check("08:40 엄격한 기준 통과는 따로 낸다 (다시 거르기가 실패할 때 쓴다)", [c["code"] for c in r40["chosen"]] == ["000006"],
+      f"{[c['code'] for c in r40['chosen']]}")
+check("예비 목록: 갭은 ±3%p 넓게 · 거래대금은 보지 않고 · 점수 순",
+      [c["code"] for c in r40["prelist"]] == ["000002", "000006", "000001"], f"{[c['code'] for c in r40['prelist']]}")
+r40b = orb_selector.select(None, C2, 1_000_000, orb_selector.SelectParams(topN=1, preN=2), _t.time() + 60,
+                           lambda: False, quote=lambda a, c: early[c])
+check("예비 목록은 preN 개까지", len(r40b["prelist"]) == 2, f"{len(r40b['prelist'])}")
+bad2 = 0
+for b_ in ({"preN": 20}, {"preN": 61}, {"looseGapPct": 11}):
+    try:
+        orb_selector.SelectParams.from_dict(b_)
+    except ValueError:
+        bad2 += 1
+check("예비 목록이 감시 수보다 작거나 60 을 넘으면 거부한다 (08:58 재조회 시간)", bad2 == 3, f"{bad2}/3")
+
+late = {"000001": q2(3.2, 60_000),        # 08:58: 갭 3.2% · 6억 → 통과 (08:40 에는 떨어졌던 종목)
+        "000002": q2(8.5, 80_000),        # 여전히 상한 밖
+        "000006": q2(0.4, 30_000)}        # 08:58 에 갭이 꺼졌다 → 탈락
+orig = (krx_master.load, krx_master.candidates, krx.prev_or_volume, krx.quote)
+krx_master.load, krx_master.candidates = (lambda: C2), (lambda rows: rows)
+prev2 = []
+krx.prev_or_volume = lambda acc, code, today, rng: prev2.append(code) or {"date": "2026-09-30", "volume": 7_000}
+try:
+    krx.quote = lambda a, c: early[c]
+    sc = osc.OrbScanner("ORB-R", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930"]}, None)
+    sc._prepare_day("2026-10-02", at("08:40:00", "2026-10-02"))
+    check("08:40 뒤: 감시는 엄격한 통과 · 예비 목록은 따로", sc.watch == ["000006"]
+          and [c["code"] for c in sc.prelist] == ["000002", "000006", "000001"], f"{sc.watch} · {[c['code'] for c in sc.prelist]}")
+    check("RVOL 기준은 예비 목록 전부를 받는다 (08:58 에 무엇이 뽑혀도 첫날부터 RVOL)",
+          sorted(prev2) == ["000001", "000002", "000006"], f"{sorted(prev2)}")
+    sc.prepared_date = "2026-10-02"
+    sr = osc.OrbScanner.restore(json.loads(json.dumps(sc.snapshot())), None)
+    check("08:40 ~ 08:58 사이에 재시작해도 예비 목록이 남는다", [c["code"] for c in sr.prelist] == ["000002", "000006", "000001"]
+          and sr.refined_date == "", "")
+    krx.quote = lambda a, c: late[c]
+    sc._refine_day("2026-10-02", at("08:58:00", "2026-10-02"))
+    check("08:58: 예비 목록만 다시 조회해 원래 기준으로 고른다 (08:40 탈락 종목이 들어오고 꺼진 종목은 빠진다)",
+          sc.watch == ["000001"], f"{sc.watch}")
+    check("선정 기록에 08:40 훑기 요약을 같이 남긴다", sc.selection.get("refined") and sc.selection["sweep"]["prelist"] == 3
+          and sc.selection["sweep"]["scanned"] == 6, f"{sc.selection.get('sweep')}")
+    sc.refined_date = "2026-10-02"
+    sr2 = osc.OrbScanner.restore(json.loads(json.dumps(sc.snapshot())), None)
+    check("다시 거른 뒤 재시작해도 다시 하지 않는다", sr2.refined_date == "2026-10-02" and sr2.watch == ["000001"], "")
+    # 다시 거르기에서 예상체결을 못 받으면 08:40 결과
+    sc2 = osc.OrbScanner("ORB-R2", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930"]}, None)
+    krx.quote = lambda a, c: early[c]
+    sc2._prepare_day("2026-10-02", at("08:40:00", "2026-10-02"))
+    krx.quote = lambda a, c: q2(0, 0)
+    sc2._refine_day("2026-10-02", at("08:58:00", "2026-10-02"))
+    check("08:58 에 예상체결을 하나도 못 받으면 08:40 결과로 본다", sc2.watch == ["000006"], f"{sc2.watch}")
+    sc3 = osc.OrbScanner("ORB-R3", "PAPER", 3_000_000, {"marketFilter": False, "watchlist": ["005930"]}, None)
+    krx.quote = lambda a, c: early[c]
+    sc3._prepare_day("2026-10-02", at("08:40:00", "2026-10-02"))
+    calls3 = []
+    krx.quote = lambda a, c: calls3.append(c) or late[c]
+    sc3._refine_day("2026-10-02", at("08:59:30", "2026-10-02"))
+    check("08:59:20 이 지났으면 다시 조회하지 않는다 (09:00 전에 구독을 바꿔야 한다)",
+          calls3 == [] and sc3.watch == ["000006"], f"{calls3} · {sc3.watch}")
+    check("다시 거르기 시각: 08:58 ~ 08:59:20 · 넓게 훑기는 08:40", (osc.REFINE_MIN, round(osc.REFINE_END_MIN * 60), osc.SELECT_MIN)
+          == (-2.0, -40, -20.0), "")
+finally:
+    krx_master.load, krx_master.candidates, krx.prev_or_volume, krx.quote = orig
+
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")
 sys.exit(1 if FAIL else 0)
