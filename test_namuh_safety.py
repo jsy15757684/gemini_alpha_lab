@@ -275,6 +275,10 @@ def _route(url, *a_, **k):
     u = url if isinstance(url, str) else ""
     if "/balance" in u:
         return _Resp(200, payload)                       # 보유 12주 고정
+    if "/inquiry/v1/unexecuted" in u:                    # 체결가 조회 (주문 뒤) — 주문으로 세지 않는다
+        return _Resp(200, {"rsp_cd": "00000", "Output_0": [
+            {"orr_no": 548597, "cns_qty": 5, "cns_pr": 75.41, "ny_cns_orr_qty": 0, "can_qty": 0,
+             "fc_orr_uit_pr": 75.88, "orr_dt": "20261002"}]})
     # 공식 문서의 주문 응답: Output_0.orr_no · rsp_cd 00171
     _ORDERS.append((u, k.get("json")))
     return _Resp(200, {"rsp_cd": "00171", "rsp_msg": "주문이 완료되었습니다.",

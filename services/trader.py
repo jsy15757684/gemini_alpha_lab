@@ -129,6 +129,8 @@ class TradingBot:
         # 결과를 모르는 주문(namuh.OrderUnknown) — 있으면 새 주문을 내지 않는다.
         # 계좌 수량 = 장부이고 그 주문이 살아 있을 수 없게 된 뒤(정규장 마감)에 풀린다.
         self.order_hold: Optional[Dict[str, Any]] = None
+        # 이번 판단에서 체결된 나무증권 주문들 [(수량, 실제 체결가 또는 None)] — 장부 가격을 정한다
+        self._fills: List[Tuple[float, Optional[float]]] = []
         self._hold_checked_at = 0.0
         self._hold_warned_at = 0.0
 
@@ -546,6 +548,7 @@ class TradingBot:
         except namuh.OrderUnknown as e:
             self._hold_unknown(e.to_dict())
             raise                                   # 호출부는 NamuhError 로 받아 '이번엔 실패' 로 끝낸다
+        self._fills.append((float(res.get("units") or 0), res.get("fillPrice")))
         if res.get("remainderUnknown"):
             self._hold_unknown({"side": "buy", "ticker": self.coin, "qty": res.get("requestedUnits"),
                                 "filled": res.get("units"), "orderId": res.get("orderId"),
@@ -559,6 +562,7 @@ class TradingBot:
         except namuh.OrderUnknown as e:
             self._hold_unknown(e.to_dict())
             raise
+        self._fills.append((float(res.get("units") or 0), res.get("fillPrice")))
         if res.get("remainderUnknown"):
             self._hold_unknown({"side": "sell", "ticker": self.coin, "qty": res.get("requestedUnits"),
                                 "filled": res.get("units"), "orderId": res.get("orderId"),
@@ -572,6 +576,23 @@ class TradingBot:
                            "etDate": et_now.strftime("%Y-%m-%d")}
         self.log("ERROR", f"🛑 결과를 모르는 주문 — 이 봇은 새 주문을 멈춥니다. {info.get('message', '')}")
         self._persist()
+
+    def _fill_avg(self, default: float) -> float:
+        """이번 판단에서 체결된 주문들의 실제 체결가 평균. 모르는 것은 판단 시점 시세(default)로 친다.
+
+        장부 · 손익 · 양도세 기록은 실제 체결가여야 한다. 지정가는 한도보다 싸게(매도는 비싸게)
+        붙는다 — 2026-10-01 TQQQ 한도 $82.22 → 체결 $77.68.
+        """
+        fills, self._fills = self._fills, []
+        q = sum(u for u, _ in fills)
+        if q <= 0:
+            return default
+        px = sum(u * (p if p and p > 0 else default) for u, p in fills) / q
+        if any(p for _, p in fills):
+            known = sum(u for u, p in fills if p)
+            self.log("INFO", f"실제 체결가 ${px:,.4f} 로 장부에 적습니다 (판단 시세 ${default:,.2f} · "
+                             f"체결내역 확인 {known:g}/{q:g}주)")
+        return px
 
     def _order_hold_active(self) -> bool:
         """보류 중이면 True. 1분에 한 번 계좌를 보고 풀 수 있으면 푼다.
@@ -633,6 +654,7 @@ class TradingBot:
                 if not (self.namuh_account and self.namuh_account.configured):
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
+                self._fills = []
                 try:
                     res = self._nh_buy(self.coin, amount_usd=invest, units=units)
                     units = float(res.get("units") or units)
@@ -640,6 +662,8 @@ class TradingBot:
                 except namuh.NamuhError as e:
                     self.log("ERROR", f"나무증권 실주문 매수 실패: {e.message}")
                     return
+                price = self._fill_avg(price)
+                invest = units * price
             else:
                 if not (self.account and self.account.configured):
                     self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")
@@ -1040,6 +1064,7 @@ class TradingBot:
                         # 그 차이가 사라지고, 예전처럼 지정가를 안 실으면
                         # 시장가가 되어 평단 위로도 사버린다. 각자 낸다.
                         filled = 0
+                        self._fills = []
                         for _leg_name, _leg_units, _leg_limit in (
                                 ("평단", units_a, loc_a_price),
                                 ("평단+5%", units_b, loc_b_price)):
@@ -1065,9 +1090,10 @@ class TradingBot:
                                             where="전반전 반반 지정가", limit_desc="",
                                             note="체결 수량 0주")
                             return
-                        # 요청과 체결이 다르면 **체결분으로** 정산한다.
+                        # 요청과 체결이 다르면 **체결분으로** 정산한다. 가격은 실제 체결가.
                         total_units_to_buy = filled
-                        actual_spent = total_units_to_buy * cost_per_share
+                        price = self._fill_avg(price)
+                        actual_spent = total_units_to_buy * price * (1 + fee)
 
                     # 장부는 주문이 확정된 뒤에 움직인다. 이 두 줄이 주문보다
                     # 앞에 있으면, 주문이 거부돼 return 하는 순간 현금만 줄고
@@ -1099,6 +1125,7 @@ class TradingBot:
                         if not (self.namuh_account and self.namuh_account.configured):
                             self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                             return
+                        self._fills = []
                         try:
                             res = self._nh_buy(
                                 self.coin, amount_usd=new_units * cost_per_share,
@@ -1110,6 +1137,7 @@ class TradingBot:
                         except namuh.NamuhError as e:
                             self.log("ERROR", f"나무증권 실주문 후반전 평단 지정가 매수 실패: {e.message}")
                             return
+                        price = self._fill_avg(price)
                         if new_units < 1:
                             self._skip_turn(price, total_budget, chased=True,
                                             where="후반전 평단 상한", limit_desc="",
@@ -1117,7 +1145,7 @@ class TradingBot:
                             return
 
                     # 장부는 주문이 확정된 뒤에, 실제 체결 수량으로 움직인다.
-                    spent_total = new_units * cost_per_share
+                    spent_total = new_units * price * (1 + fee)
                     invest = new_units * price
                     self.budget_carryover = max(0.0, total_budget - spent_total)
                     self.cash = max(0.0, self.cash - spent_total)
@@ -1136,6 +1164,7 @@ class TradingBot:
                     if not (self.namuh_account and self.namuh_account.configured):
                         self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                         return
+                    self._fills = []
                     try:
                         res = self._nh_buy(self.coin, amount_usd=new_units * cost_per_share, units=units_to_buy)
                         _ru = res.get("units")
@@ -1144,6 +1173,7 @@ class TradingBot:
                     except namuh.NamuhError as e:
                         self.log("ERROR", f"나무증권 실주문 분할 매수 실패: {e.message}")
                         return
+                    price = self._fill_avg(price)
                     if new_units < 1:
                         self._skip_turn(price, total_budget, chased=True,
                                         where="분할 매수", limit_desc="",
@@ -1151,7 +1181,7 @@ class TradingBot:
                         return
 
                 # 장부는 주문이 확정된 뒤에, 실제 체결 수량으로 움직인다.
-                spent_total = new_units * cost_per_share
+                spent_total = new_units * price * (1 + fee)
                 invest = new_units * price
                 self.budget_carryover = max(0.0, total_budget - spent_total)
                 self.cash = max(0.0, self.cash - spent_total)
@@ -1230,11 +1260,19 @@ class TradingBot:
                 if not (self.namuh_account and self.namuh_account.configured):
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
+                self._fills = []
                 try:
                     res = self._nh_sell(self.coin, units)
                     self.log("ORDER", f"나무증권 실주문 매도 접수 (주문번호 {res.get('orderId')})")
                 except namuh.NamuhError as e:
                     self.log("ERROR", f"나무증권 실주문 매도 실패: {e.message}")
+                    return
+                price = self._fill_avg(price)
+                sold = float(res.get("units") or units)
+                if sold < units - 1e-9:
+                    # 일부만 팔렸다(계좌가 장부보다 적었거나 부분 체결). 판 만큼만 장부에서 덜고,
+                    # 남은 것은 다음 판단에서 다시 판다. 예전에는 전부 판 것으로 적었다.
+                    self._book_partial_sell(sold, price, reason)
                     return
             else:
                 if not (self.account and self.account.configured):
@@ -1289,6 +1327,30 @@ class TradingBot:
                          f"손익 {pnl_str} ({pnl_pct:+.2f}%) | 사유: {reason}")
         self._persist()
 
+    def _book_partial_sell(self, sold: float, price: float, reason: str) -> None:
+        """전량 매도가 일부만 체결됐을 때 — 판 만큼만 장부에서 덜어낸다 (회차는 그대로)."""
+        fee = self.params.feePct / 100.0
+        proceeds = sold * price * (1 - fee)
+        ratio = (sold / self.pos.units) if self.pos.units > 0 else 1.0
+        cost = (self.pos.totalInvested * ratio) if self.pos.totalInvested > 0 else sold * self.pos.entryPrice
+        self.pos.totalInvested = max(0.0, self.pos.totalInvested - cost)
+        pnl = proceeds - cost
+        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
+        self.pos.units = max(0.0, self.pos.units - sold)
+        self.cash += proceeds
+        self.realized_pnl += pnl
+        self.total_trades += 1
+        if pnl > 0:
+            self.winning_trades += 1
+        self._record_trade("SELL_PARTIAL", price, sold, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
+        self.log("WARNING", f"전량 매도 중 {sold:g}주만 팔렸습니다 @ ${price:,.2f} · 손익 {pnl:+,.2f}$ — "
+                            f"남은 {self.pos.units:g}주는 다음 판단에서 다시 팝니다 | 사유: {reason}")
+        if self.pos.units <= 1e-9:
+            self.pos = Position()
+            self.budget_carryover = 0.0
+            self.loc_session = None
+        self._persist()
+
     def _exit_quarter(self, price: float, reason: str):
         """라오어 무한매수 소진 시 25% 쿼터 매도 방어 (미국 주식은 정수 1주 단위)."""
         cut_ratio = self.params.quarterCutPct / 100.0
@@ -1308,12 +1370,15 @@ class TradingBot:
                 if not (self.namuh_account and self.namuh_account.configured):
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
+                self._fills = []
                 try:
                     res = self._nh_sell(self.coin, units_to_sell)
                     self.log("ORDER", f"나무증권 실주문 쿼터 매도 접수 (주문번호 {res.get('orderId')})")
                 except namuh.NamuhError as e:
                     self.log("ERROR", f"나무증권 실주문 쿼터 매도 실패: {e.message}")
                     return
+                price = self._fill_avg(price)
+                units_to_sell = min(units_to_sell, float(res.get("units") or units_to_sell))
             else:
                 if not (self.account and self.account.configured):
                     self.log("WARNING", "실주문 보류 — 빗썸 API 키가 등록되지 않았습니다.")

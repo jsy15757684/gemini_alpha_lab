@@ -216,6 +216,9 @@ class OrderUnknown(NamuhError):
 # 결과를 모르는 주문을 잔고로 확인하는 시간 — 지정가는 현재가 ±0.5% 라 대개 바로 붙는다
 UNKNOWN_RESOLVE_SEC = float(os.getenv("NAMUH_UNKNOWN_RESOLVE_SEC") or "60")
 UNKNOWN_POLL_SEC = 6.0
+# 체결 직후 주문체결내역에 실제 체결가가 오르기까지 기다리는 시간 (조회 3번)
+FILL_LOOKUP_TRIES = 3
+FILL_LOOKUP_WAIT = 1.0
 
 
 def maybe_sent(e: Exception) -> bool:
@@ -747,6 +750,64 @@ class NamuhAccount:
                 f"미국 정규장이 열려 있지 않아 {what}를 보류합니다 — {ses['reason']}. "
                 f"닫힌 장에 낸 주문은 체결되지 않는데 장부에는 남을 수 있습니다.")
 
+    def _order_dates(self) -> List[str]:
+        """주문체결내역의 주문일자 후보. 미국 날짜와 한국 날짜가 갈리는 시간(한국 0~5시)이 있다.
+
+        2026-10-02 모의계좌 실측: 한국 23시대 주문은 그날 날짜(미국 날짜와 같다)로 나온다.
+        자정 뒤 주문이 어느 쪽으로 잡히는지는 확인하지 못해 둘 다 본다.
+        """
+        et, _ = _us_eastern_now()
+        kst = datetime.now(timezone.utc) + timedelta(hours=9)
+        return list(dict.fromkeys([et.strftime("%Y%m%d"), kst.strftime("%Y%m%d")]))
+
+    def order_fill(self, order_id: Any) -> Optional[Dict[str, Any]]:
+        """주문번호 하나의 실제 체결 (POST /gbstock/inquiry/v1/unexecuted — 이름과 달리 체결 · 미체결 모두).
+
+        종목 칸(iem_cd)에는 티커가 아니라 ISIN 이 온다(TQQQ = US74347X8314) — 주문번호로 찾는다.
+        반환 {qty 체결수량, price 체결가, unfilled 미체결, canceled 취소, limit 주문단가, date} · 없으면 None.
+        """
+        try:
+            want = int(str(order_id))
+        except (TypeError, ValueError):
+            return None
+        for dt in self._order_dates():
+            res = _nh_post(f"{trade_base_url()}/gbstock/inquiry/v1/unexecuted", read=True, headers=self._headers(),
+                           json={"Input_0": {"orr_dt": dt, "act_no": self.account_no, "oss_sby_dit_cd": "0",
+                                             "sot_dit": "1", "ost_cns_dit": "0"}}, timeout=10)
+            try:
+                body = res.json()
+            except Exception:
+                raise NamuhError(f"주문체결내역 응답을 읽지 못했습니다 (HTTP {res.status_code})")
+            if res.status_code != 200:
+                raise NamuhError(f"주문체결내역 조회 실패 ({body.get('rsp_cd')}): {body.get('rsp_msg')}", body)
+            for r in body.get("Output_0") or []:
+                try:
+                    if int(r.get("orr_no")) != want:
+                        continue
+                except (TypeError, ValueError):
+                    continue
+                return {"qty": float(r.get("cns_qty") or 0), "price": float(r.get("cns_pr") or 0),
+                        "unfilled": float(r.get("ny_cns_orr_qty") or 0), "canceled": float(r.get("can_qty") or 0),
+                        "limit": float(r.get("fc_orr_uit_pr") or 0), "date": str(r.get("orr_dt") or dt)}
+        return None
+
+    def _fill_price(self, order_id: Any, filled: float) -> Optional[float]:
+        """체결된 주문의 실제 체결가. 못 찾으면 None (호출부는 주문 판단 시세로 적는다)."""
+        if not order_id or str(order_id).startswith(("UNKNOWN", "MOCK")):
+            return None
+        for i in range(FILL_LOOKUP_TRIES):
+            try:
+                f = self.order_fill(order_id)
+            except Exception as e:                # 체결가는 덤이다 — 조회가 어떻게 실패해도 주문 결과를 망치지 않는다
+                logger.warning(f"체결가 조회 실패 ({order_id} · {i + 1}/{FILL_LOOKUP_TRIES}): {e}")
+                f = None
+            if f and f["price"] > 0 and f["qty"] >= filled - 1e-9:
+                return f["price"]
+            if i < FILL_LOOKUP_TRIES - 1:
+                time.sleep(FILL_LOOKUP_WAIT)
+        logger.warning(f"주문 {order_id} 의 실제 체결가를 찾지 못했습니다 — 판단 시점 시세로 적습니다.")
+        return None
+
     def _cancel_rest(self, order_id: Any, sym: str, order_type: str) -> Tuple[bool, str]:
         """남은 미체결을 거둔다. (거뒀거나 거둘 필요 없음, 안내 문구)."""
         if order_type == ORD_LOC:
@@ -785,10 +846,11 @@ class NamuhAccount:
             time.sleep(UNKNOWN_POLL_SEC)
         if reads and moved >= qty - 1e-9:
             logger.warning(f"{sym} {what} 주문 응답을 못 받았지만({why}) 잔고로 {qty}주 체결을 확인했습니다.")
+            fp = self._fill_price(order_id, qty) if order_id else None
             out = {"orderId": order_id or f"UNKNOWN-{int(time.time())}", "ticker": sym, "units": float(qty),
-                   "price": price, "status": "FILLED", "requestedUnits": float(qty), "orderType": order_type,
-                   "resolvedFromUnknown": True}
-            out["amountUsd" if side == "buy" else "proceedsUsd"] = qty * price
+                   "price": price, "fillPrice": fp, "status": "FILLED", "requestedUnits": float(qty),
+                   "orderType": order_type, "resolvedFromUnknown": True}
+            out["amountUsd" if side == "buy" else "proceedsUsd"] = qty * (fp or price)
             return out
         cancelled, note = self._cancel_rest(order_id, sym, order_type)
         seen = (f"잔고로 본 체결 {moved:.0f}/{qty}주" if reads else "잔고도 읽지 못했습니다")
@@ -937,13 +999,16 @@ class NamuhAccount:
             cancelled, note = self._cancel_rest(order_id, sym, order_type)
             rest_unknown = not cancelled
             logger.warning(f"{sym} 매수 부분 체결 {filled:.0f}/{qty}주.{note}")
+        # 실제 체결가 — 지정가는 한도보다 싸게 붙는다. 장부 · 손익 · 양도세 기록에 쓴다.
+        fp = self._fill_price(order_id, filled)
         return {
             "remainderUnknown": rest_unknown,
             "orderId": order_id,
             "ticker": sym,
             "units": float(filled),
             "price": price,
-            "amountUsd": filled * price,
+            "fillPrice": fp,
+            "amountUsd": filled * (fp or price),
             "status": "FILLED" if filled >= qty else "PARTIAL",
             "requestedUnits": float(qty),
             "orderType": order_type,
@@ -1132,13 +1197,15 @@ class NamuhAccount:
             cancelled, note = self._cancel_rest(order_id, sym, order_type)
             rest_unknown = not cancelled
             logger.warning(f"{sym} 매도 부분 체결 {filled:.0f}/{qty}주.{note}")
+        fp = self._fill_price(order_id, filled)
         return {
             "remainderUnknown": rest_unknown,
             "orderId": order_id,
             "ticker": sym,
             "units": float(filled),
             "price": price,
-            "proceedsUsd": filled * price,
+            "fillPrice": fp,
+            "proceedsUsd": filled * (fp or price),
             "status": "FILLED" if filled >= qty else "PARTIAL",
             "requestedUnits": float(qty),
             "orderType": order_type,
