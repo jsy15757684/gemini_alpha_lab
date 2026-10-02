@@ -83,6 +83,9 @@ check("첫날 RVOL 기준 없음을 따로 묶는다 ('쉽니다' 가 없는 문
 print("── 경보 ──")
 r = rep(lambda d: d["account"]["holdings"].__setitem__(0, {"symbol": "TQQQ", "quantity": 5.0}))
 check("장부 ≠ 계좌면 첫 줄 경보 + ⚠️", r.startswith("🚨 확인 필요: TQQQ 장부 6주 ≠ 계좌 5주") and "⚠️ TQQQ" in r, r.splitlines()[0])
+r = rep(lambda d: d["bots"]["bots"][0].__setitem__("orderHold", {"at": "2026-10-02 23:31:05", "side": "buy"}))
+check("결과를 모르는 주문으로 멈춘 봇은 경보", "TQQQ 결과를 모르는 주문으로 멈춤" in r.splitlines()[0]
+      and "🛑 결과 모르는 주문으로 멈춤 (2026-10-02 23:31:05)" in r, r.splitlines()[0])
 r = rep(lambda d: d["account"].__setitem__("mock", False))
 check("실계좌면 눈에 띄게 적는다", "⚠️ 실계좌" in r, "")
 r = rep(lambda d: d["services"].__setitem__("bithumb-namuh", "failed"))

@@ -190,6 +190,51 @@ class NamuhError(Exception):
         self.raw = raw
 
 
+class OrderUnknown(NamuhError):
+    """주문을 보냈는데 결과를 모른다 — 다시 내면 두 번 사거나 판다.
+
+    응답이 끊겼거나(2026-09-30 22:19~22:50 서버 → 나무증권 경로 장애처럼),
+    접수 뒤 체결을 확인할 잔고를 한 번도 읽지 못했거나, 미체결 주문을 취소하지
+    못한 경우다. 이전에는 이것을 '실패' 로 처리해, 봇이 다음 판단에서 같은 회차를
+    다시 주문할 수 있었다(실제로 체결됐다면 두 번 산다 · 앞 물량은 장부 밖 고아).
+
+    호출부(봇)는 새 주문을 멈추고, 계좌 수량이 장부와 맞고 그 주문이 살아 있을 수
+    없게 된 뒤(정규장 마감 — 데이 주문이 사라진다)에야 다시 움직인다.
+    """
+    def __init__(self, message: str, *, side: str, ticker: str, qty: float, price: float,
+                 qty_before: float, order_id: str = "", filled: float = 0.0, order_type: str = ""):
+        super().__init__(message)
+        self.side, self.ticker, self.qty, self.price = side, ticker, float(qty), float(price)
+        self.qty_before, self.order_id, self.filled, self.order_type = float(qty_before), str(order_id or ""), float(filled), order_type
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"side": self.side, "ticker": self.ticker, "qty": self.qty, "price": self.price,
+                "qtyBefore": self.qty_before, "orderId": self.order_id, "filled": self.filled,
+                "orderType": self.order_type, "message": self.message}
+
+
+# 결과를 모르는 주문을 잔고로 확인하는 시간 — 지정가는 현재가 ±0.5% 라 대개 바로 붙는다
+UNKNOWN_RESOLVE_SEC = float(os.getenv("NAMUH_UNKNOWN_RESOLVE_SEC") or "60")
+UNKNOWN_POLL_SEC = 6.0
+
+
+def maybe_sent(e: Exception) -> bool:
+    """주문 POST 중 난 예외가 '보낸 뒤' 일 수 있는가. 확실히 보내기 전인 것만 False.
+
+    연결 자체를 못 맺은 경우(연결 시간 초과 · 주소 풀이 실패 · 연결 거부)만 주문이
+    나가지 않았다고 확신할 수 있다. 읽기 시간 초과 · 연결 끊김(RemoteDisconnected)은
+    서버가 이미 받았을 수 있다.
+    """
+    if isinstance(e, requests.exceptions.ConnectTimeout):
+        return False
+    if isinstance(e, requests.exceptions.ConnectionError):
+        s = repr(e)
+        if any(k in s for k in ("NewConnectionError", "NameResolutionError", "Failed to resolve",
+                                "Name or service not known", "nodename nor servname", "Connection refused")):
+            return False
+    return True
+
+
 # ───────────────────────── 시세 캐시 ─────────────────────────
 _price_cache: Dict[str, tuple] = {}
 # ── NH 호출 통로 ─────────────────────────────────────────────
@@ -702,6 +747,57 @@ class NamuhAccount:
                 f"미국 정규장이 열려 있지 않아 {what}를 보류합니다 — {ses['reason']}. "
                 f"닫힌 장에 낸 주문은 체결되지 않는데 장부에는 남을 수 있습니다.")
 
+    def _cancel_rest(self, order_id: Any, sym: str, order_type: str) -> Tuple[bool, str]:
+        """남은 미체결을 거둔다. (거뒀거나 거둘 필요 없음, 안내 문구)."""
+        if order_type == ORD_LOC:
+            return True, ""                      # LOC 는 마감에 붙는 것이라 거두지 않는다
+        if not order_id:
+            return False, " 주문번호를 몰라 남은 주문을 거둘 수 없습니다 — 나무증권 앱에서 확인하세요."
+        try:
+            self.cancel_order(order_id, sym)
+            return True, " 남은 미체결 주문은 취소했습니다."
+        except Exception as e:
+            return False, f" 남은 미체결 주문 취소도 실패했습니다({e})."
+
+    def _resolve_unknown(self, side: str, sym: str, qty: int, price: float, qty_before: float,
+                         order_id: str, order_type: str, why: str) -> Dict[str, Any]:
+        """결과를 모르는 주문을 잔고 변화로 확인한다.
+
+        전량 체결이 잔고로 확인되면 정상 체결로 돌려준다(호출부가 평소대로 장부에 적는다).
+        그 밖에는 — 안 붙음 · 일부만 · 잔고를 못 읽음 — 주문이 살아 있을 수 있으므로
+        OrderUnknown 을 던진다. 주문번호를 알면 남은 것을 거둔다.
+        """
+        what = "매수" if side == "buy" else "매도"
+        sign = 1.0 if side == "buy" else -1.0
+        deadline = time.time() + UNKNOWN_RESOLVE_SEC
+        moved, reads = 0.0, 0
+        while True:
+            try:
+                now_qty = self.held_qty(sym)
+                reads += 1
+                moved = max(0.0, (now_qty - qty_before) * sign)
+                if moved >= qty - 1e-9:
+                    break
+            except NamuhError as e:
+                logger.warning(f"{sym} {what} 결과 확인용 잔고 조회 실패: {e}")
+            if time.time() >= deadline:
+                break
+            time.sleep(UNKNOWN_POLL_SEC)
+        if reads and moved >= qty - 1e-9:
+            logger.warning(f"{sym} {what} 주문 응답을 못 받았지만({why}) 잔고로 {qty}주 체결을 확인했습니다.")
+            out = {"orderId": order_id or f"UNKNOWN-{int(time.time())}", "ticker": sym, "units": float(qty),
+                   "price": price, "status": "FILLED", "requestedUnits": float(qty), "orderType": order_type,
+                   "resolvedFromUnknown": True}
+            out["amountUsd" if side == "buy" else "proceedsUsd"] = qty * price
+            return out
+        cancelled, note = self._cancel_rest(order_id, sym, order_type)
+        seen = (f"잔고로 본 체결 {moved:.0f}/{qty}주" if reads else "잔고도 읽지 못했습니다")
+        raise OrderUnknown(
+            f"{sym} {what} 주문 결과를 확인하지 못했습니다 — {why}. {seen}.{note} "
+            f"다시 주문하지 않습니다. 장부와 계좌가 맞고 정규장이 끝나면 봇이 다시 움직입니다.",
+            side=side, ticker=sym, qty=qty, price=price, qty_before=qty_before,
+            order_id=order_id, filled=moved, order_type=order_type)
+
     def market_buy(self, ticker: str, amount_usd: float = 0.0,
                    order_type: str = "", units: float = 0.0,
                    limit_price: float = 0.0,
@@ -773,11 +869,29 @@ class NamuhAccount:
             # 주문은 재시도하지 않는다 (read=False)
             res = _nh_post(f"{trade_base_url()}/gbstock/order/v1/buy", read=False,
                            headers=self._headers(), json={"Input_0": inp}, timeout=10)
-            res_data = res.json()
         except NamuhError:
             raise
         except Exception as e:
-            raise NamuhError(f"나무증권 매수 주문 통신 오류: {e}")
+            if not maybe_sent(e):
+                raise NamuhError(f"나무증권 매수 주문 통신 오류 (주문이 나가기 전): {e}")
+            if not await_fill:
+                raise OrderUnknown(
+                    f"{sym} LOC 매수 접수 응답이 끊겼습니다 ({type(e).__name__}) — 접수됐을 수 있어 다시 내지 "
+                    f"않습니다. 마감 뒤 잔고로 확인합니다.", side="buy", ticker=sym, qty=qty, price=price,
+                    qty_before=qty_before, order_type=order_type)
+            return self._resolve_unknown("buy", sym, qty, price, qty_before, "", order_type,
+                                         f"주문 응답이 끊겼습니다 ({type(e).__name__})")
+        try:
+            res_data = res.json()
+        except Exception:
+            if 400 <= res.status_code < 500:
+                raise NamuhError(f"나무증권 매수 주문 거부 (HTTP {res.status_code}): {(res.text or '')[:160]}")
+            if not await_fill:
+                raise OrderUnknown(f"{sym} LOC 매수 응답을 읽지 못했습니다 (HTTP {res.status_code}) — 다시 내지 않습니다.",
+                                   side="buy", ticker=sym, qty=qty, price=price, qty_before=qty_before,
+                                   order_type=order_type)
+            return self._resolve_unknown("buy", sym, qty, price, qty_before, "", order_type,
+                                         f"주문 응답을 읽지 못했습니다 (HTTP {res.status_code})")
 
         # 주문 완료 코드는 00171 이다 (rt_cd 가 아니다).
         rsp_cd = str(res_data.get("rsp_cd", ""))
@@ -802,13 +916,29 @@ class NamuhAccount:
             }
 
         # 접수됐다고 체결된 것이 아니다. 실제 보유 수량 변화로 확인한다.
+        self._fill_unreadable = False
         filled = self._await_fill(sym, qty_before, qty, "매수")
+        if filled <= 0 and self._fill_unreadable:
+            return self._resolve_unknown("buy", sym, qty, price, qty_before, order_id, order_type,
+                                         f"접수(주문번호 {order_id}) 뒤 체결을 확인할 잔고를 읽지 못했습니다")
         if filled <= 0:
-            note = self._withdraw_unfilled(order_id, sym, order_type)
+            cancelled, note = self._cancel_rest(order_id, sym, order_type)
+            if not cancelled:
+                raise OrderUnknown(
+                    f"매수 주문({order_id})이 체결되지 않았는데 취소도 되지 않았습니다 — 주문이 살아 있을 수 "
+                    f"있습니다.{note}", side="buy", ticker=sym, qty=qty, price=price, qty_before=qty_before,
+                    order_id=order_id, order_type=order_type)
             raise NamuhError(
                 f"매수 주문({order_id})이 체결되지 않았습니다 — {ORDER_TYPE_NAMES.get(order_type, order_type)} "
                 f"${price:,.2f}. 장부를 바꾸지 않습니다.{note}")
+        rest_unknown = False
+        if filled < qty:
+            # 일부만 붙었다 — 남은 주문이 거래소에 살아 있으면 나중에 붙어 장부 밖 물량이 된다
+            cancelled, note = self._cancel_rest(order_id, sym, order_type)
+            rest_unknown = not cancelled
+            logger.warning(f"{sym} 매수 부분 체결 {filled:.0f}/{qty}주.{note}")
         return {
+            "remainderUnknown": rest_unknown,
             "orderId": order_id,
             "ticker": sym,
             "units": float(filled),
@@ -882,16 +1012,21 @@ class NamuhAccount:
         """
         sign = 1.0 if what == "매수" else -1.0
         moved = 0.0
+        reads = 0
+        self._fill_unreadable = False
         for i in range(tries):
             time.sleep(wait)
             try:
                 now_qty = self.held_qty(sym)
+                reads += 1
             except NamuhError as e:
                 logger.warning(f"체결 확인용 잔고 조회 실패({i + 1}/{tries}): {e}")
                 continue
             moved = (now_qty - qty_before) * sign
             if moved >= want - 1e-9:
                 return moved
+        # 한 번도 못 읽었으면 '안 붙었다' 가 아니라 '모른다' 다 (호출부가 OrderUnknown 으로 다룬다)
+        self._fill_unreadable = reads == 0
         if moved > 0:
             logger.warning(f"{sym} {what} 부분 체결: {moved:.0f}/{want:.0f}주")
         return max(0.0, moved)
@@ -954,11 +1089,20 @@ class NamuhAccount:
         try:
             res = _nh_post(f"{trade_base_url()}/gbstock/order/v1/sell", read=False,
                            headers=self._headers(), json={"Input_0": inp}, timeout=10)
-            res_data = res.json()
         except NamuhError:
             raise
         except Exception as e:
-            raise NamuhError(f"나무증권 매도 주문 통신 오류: {e}")
+            if not maybe_sent(e):
+                raise NamuhError(f"나무증권 매도 주문 통신 오류 (주문이 나가기 전): {e}")
+            return self._resolve_unknown("sell", sym, qty, price, qty_before, "", order_type,
+                                         f"주문 응답이 끊겼습니다 ({type(e).__name__})")
+        try:
+            res_data = res.json()
+        except Exception:
+            if 400 <= res.status_code < 500:
+                raise NamuhError(f"나무증권 매도 주문 거부 (HTTP {res.status_code}): {(res.text or '')[:160]}")
+            return self._resolve_unknown("sell", sym, qty, price, qty_before, "", order_type,
+                                         f"주문 응답을 읽지 못했습니다 (HTTP {res.status_code})")
 
         rsp_cd = str(res_data.get("rsp_cd", ""))
         order_id = str((res_data.get("Output_0") or {}).get("orr_no") or "")
@@ -967,14 +1111,29 @@ class NamuhAccount:
                 f"나무증권 매도 주문 실패 ({rsp_cd}): "
                 f"{res_data.get('rsp_msg') or (res.text or '')[:160]}", res_data)
 
+        self._fill_unreadable = False
         filled = self._await_fill(sym, qty_before, qty, "매도")
+        if filled <= 0 and self._fill_unreadable:
+            return self._resolve_unknown("sell", sym, qty, price, qty_before, order_id, order_type,
+                                         f"접수(주문번호 {order_id}) 뒤 체결을 확인할 잔고를 읽지 못했습니다")
         if filled <= 0:
-            note = self._withdraw_unfilled(order_id, sym, order_type)
+            cancelled, note = self._cancel_rest(order_id, sym, order_type)
+            if not cancelled:
+                raise OrderUnknown(
+                    f"매도 주문({order_id})이 체결되지 않았는데 취소도 되지 않았습니다 — 주문이 살아 있을 수 "
+                    f"있습니다.{note}", side="sell", ticker=sym, qty=qty, price=price, qty_before=qty_before,
+                    order_id=order_id, order_type=order_type)
             raise NamuhError(
                 f"매도 주문({order_id})이 체결되지 않았습니다 — "
                 f"{ORDER_TYPE_NAMES.get(order_type, order_type)} ${price:,.2f}. "
                 f"장부를 바꾸지 않습니다.{note}")
+        rest_unknown = False
+        if filled < qty:
+            cancelled, note = self._cancel_rest(order_id, sym, order_type)
+            rest_unknown = not cancelled
+            logger.warning(f"{sym} 매도 부분 체결 {filled:.0f}/{qty}주.{note}")
         return {
+            "remainderUnknown": rest_unknown,
             "orderId": order_id,
             "ticker": sym,
             "units": float(filled),

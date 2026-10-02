@@ -183,6 +183,9 @@ def build(data: Dict[str, Any], server_now: Optional[datetime] = None) -> str:
         if not ok:
             alerts.append(f"{b['coin']} 장부 {led:g}주 ≠ 계좌 {real:g}주")
         run = "" if b.get("isRunning") else " · ⏸ 정지"
+        if b.get("orderHold"):
+            alerts.append(f"{b['coin']} 결과를 모르는 주문으로 멈춤")
+            run += f" · 🛑 결과 모르는 주문으로 멈춤 ({(b['orderHold'] or {}).get('at', '')})"
         lines.append(f"  {'✅' if ok else '⚠️'} {b['coin']} 장부 {led:g} = 계좌 {real:g}주 · "
                      f"{b.get('turn')}/{(b.get('params') or {}).get('splitCount')}회차 · "
                      f"평가 {float(b.get('unrealizedPnlPct') or 0):+.2f}%{run}")

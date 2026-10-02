@@ -17,6 +17,7 @@ import logging
 import threading
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Tuple
+from zoneinfo import ZoneInfo
 
 from services import backtest, bithumb, jsonfile, botstore, tradelog
 from services import gemini_service, namuh, macro_regime
@@ -125,6 +126,11 @@ class TradingBot:
         self.loc_session: Optional[str] = None
         # 잔고 조회 실패 뒤 이 시각 전에는 LOC 접수를 다시 시도하지 않는다.
         self._loc_retry_after = 0.0
+        # 결과를 모르는 주문(namuh.OrderUnknown) — 있으면 새 주문을 내지 않는다.
+        # 계좌 수량 = 장부이고 그 주문이 살아 있을 수 없게 된 뒤(정규장 마감)에 풀린다.
+        self.order_hold: Optional[Dict[str, Any]] = None
+        self._hold_checked_at = 0.0
+        self._hold_warned_at = 0.0
 
     def _fetch_price(self) -> float:
         if self.broker == "namuh":
@@ -323,6 +329,10 @@ class TradingBot:
                             self._settle_pending_loc()
                         except Exception as e:
                             logger.warning(f"[{self.bot_id}] LOC 정산 실패: {e}")
+                    # 결과를 모르는 주문이 있으면 아무 주문도 내지 않는다 (두 번 사지 않게)
+                    if self.mode == "LIVE" and self.order_hold and self._order_hold_active():
+                        time.sleep(poll)
+                        continue
                     try:
                         from services.market_schedule import get_us_market_status
                         m_stat = get_us_market_status()
@@ -529,6 +539,79 @@ class TradingBot:
             time.sleep(poll)
 
     # ── 체결 ──
+    # ── 나무증권 주문 통로 — 결과를 모르는 주문은 봇을 멈춰 세운다 ──
+    def _nh_buy(self, *a, **k) -> Dict[str, Any]:
+        try:
+            res = self.namuh_account.market_buy(*a, **k)
+        except namuh.OrderUnknown as e:
+            self._hold_unknown(e.to_dict())
+            raise                                   # 호출부는 NamuhError 로 받아 '이번엔 실패' 로 끝낸다
+        if res.get("remainderUnknown"):
+            self._hold_unknown({"side": "buy", "ticker": self.coin, "qty": res.get("requestedUnits"),
+                                "filled": res.get("units"), "orderId": res.get("orderId"),
+                                "message": f"일부만 체결({res.get('units'):g}/{res.get('requestedUnits'):g}주)됐는데 "
+                                           f"남은 주문을 취소하지 못했습니다 — 나중에 붙을 수 있습니다."})
+        return res
+
+    def _nh_sell(self, *a, **k) -> Dict[str, Any]:
+        try:
+            res = self.namuh_account.market_sell(*a, **k)
+        except namuh.OrderUnknown as e:
+            self._hold_unknown(e.to_dict())
+            raise
+        if res.get("remainderUnknown"):
+            self._hold_unknown({"side": "sell", "ticker": self.coin, "qty": res.get("requestedUnits"),
+                                "filled": res.get("units"), "orderId": res.get("orderId"),
+                                "message": f"일부만 체결({res.get('units'):g}/{res.get('requestedUnits'):g}주)됐는데 "
+                                           f"남은 주문을 취소하지 못했습니다 — 나중에 붙을 수 있습니다."})
+        return res
+
+    def _hold_unknown(self, info: Dict[str, Any]) -> None:
+        et_now = datetime.now(ZoneInfo("America/New_York"))
+        self.order_hold = {**info, "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                           "etDate": et_now.strftime("%Y-%m-%d")}
+        self.log("ERROR", f"🛑 결과를 모르는 주문 — 이 봇은 새 주문을 멈춥니다. {info.get('message', '')}")
+        self._persist()
+
+    def _order_hold_active(self) -> bool:
+        """보류 중이면 True. 1분에 한 번 계좌를 보고 풀 수 있으면 푼다.
+
+        풀리는 조건 (둘 다):
+          · 계좌 보유 수량 = 봇 장부 수량  (결과를 모르던 주문이 실제로 붙지 않았거나,
+            붙은 것이 장부와 맞는다)
+          · 그 주문이 더 살아 있을 수 없다 — 보류가 걸린 정규장이 끝났다(데이 주문 소멸)
+        맞지 않으면 계속 멈춰 있다. 장부를 지어내 맞추지 않는다 — 사람이 확인한다.
+        """
+        h = self.order_hold
+        if not h:
+            return False
+        if time.time() - self._hold_checked_at < 60:
+            return True
+        self._hold_checked_at = time.time()
+        try:
+            from services.market_schedule import get_us_market_status
+            is_open = bool(get_us_market_status()["isOpen"])
+            actual = float(self.namuh_account.held_qty(self.coin))
+        except Exception as e:
+            self.last_decision = f"🛑 결과를 모르는 주문 확인 중 — 잔고를 읽지 못했습니다 ({e})"
+            return True
+        et_today = datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+        session_over = (not is_open) or et_today > str(h.get("etDate") or "")
+        match = abs(actual - float(self.pos.units)) < 1e-6
+        if match and session_over:
+            self.log("INFO", f"✅ 결과를 모르던 주문 정리됨 — 계좌 {actual:g}주 = 장부 {self.pos.units:g}주 · "
+                             f"그 정규장이 끝나 주문이 남아 있을 수 없습니다. 다시 움직입니다.")
+            self.order_hold = None
+            self._persist()
+            return False
+        why = ("그 주문이 아직 살아 있을 수 있어 정규장이 끝날 때까지 기다립니다" if match else
+               f"계좌 {actual:g}주 ≠ 장부 {self.pos.units:g}주 — 나무증권 앱에서 체결 내역을 확인하세요")
+        self.last_decision = f"🛑 결과를 모르는 주문으로 멈춤 ({h.get('at')}) · {why}"
+        if not match and time.time() - self._hold_warned_at > 3600:
+            self._hold_warned_at = time.time()
+            self.log("WARNING", self.last_decision)
+        return True
+
     def _enter(self, price: float, reason: str):
         invest = self.cash
         min_invest = 10.0 if self.currency == "USD" else 5000.0
@@ -551,7 +634,7 @@ class TradingBot:
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
                 try:
-                    res = self.namuh_account.market_buy(self.coin, amount_usd=invest, units=units)
+                    res = self._nh_buy(self.coin, amount_usd=invest, units=units)
                     units = float(res.get("units") or units)
                     self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
                 except namuh.NamuhError as e:
@@ -686,7 +769,7 @@ class TradingBot:
         rejected = []
         for t in targets:
             try:
-                res = self.namuh_account.market_buy(
+                res = self._nh_buy(
                     self.coin, units=t["units"], order_type=namuh.ORD_LOC,
                     limit_price=t["limit"], await_fill=False)
                 placed.append({
@@ -963,7 +1046,7 @@ class TradingBot:
                             if _leg_units < 1:
                                 continue
                             try:
-                                res = self.namuh_account.market_buy(
+                                res = self._nh_buy(
                                     self.coin, amount_usd=_leg_units * cost_per_share,
                                     units=_leg_units, order_type=namuh.ORD_LIMIT,
                                     limit_price=_leg_limit)
@@ -1017,7 +1100,7 @@ class TradingBot:
                             self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                             return
                         try:
-                            res = self.namuh_account.market_buy(
+                            res = self._nh_buy(
                                 self.coin, amount_usd=new_units * cost_per_share,
                                 units=units_to_buy, order_type=namuh.ORD_LIMIT,
                                 limit_price=loc_price)
@@ -1054,7 +1137,7 @@ class TradingBot:
                         self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                         return
                     try:
-                        res = self.namuh_account.market_buy(self.coin, amount_usd=new_units * cost_per_share, units=units_to_buy)
+                        res = self._nh_buy(self.coin, amount_usd=new_units * cost_per_share, units=units_to_buy)
                         _ru = res.get("units")
                         new_units = float(_ru) if _ru is not None else new_units
                         self.log("ORDER", f"나무증권 실주문 매수 접수 (주문번호 {res.get('orderId')})")
@@ -1148,7 +1231,7 @@ class TradingBot:
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
                 try:
-                    res = self.namuh_account.market_sell(self.coin, units)
+                    res = self._nh_sell(self.coin, units)
                     self.log("ORDER", f"나무증권 실주문 매도 접수 (주문번호 {res.get('orderId')})")
                 except namuh.NamuhError as e:
                     self.log("ERROR", f"나무증권 실주문 매도 실패: {e.message}")
@@ -1226,7 +1309,7 @@ class TradingBot:
                     self.log("WARNING", "나무증권 실주문 보류 — 나무증권 API 키가 등록되지 않았습니다.")
                     return
                 try:
-                    res = self.namuh_account.market_sell(self.coin, units_to_sell)
+                    res = self._nh_sell(self.coin, units_to_sell)
                     self.log("ORDER", f"나무증권 실주문 쿼터 매도 접수 (주문번호 {res.get('orderId')})")
                 except namuh.NamuhError as e:
                     self.log("ERROR", f"나무증권 실주문 쿼터 매도 실패: {e.message}")
@@ -1288,6 +1371,7 @@ class TradingBot:
             "budgetCarryover": round(self.budget_carryover, 2),
             "pendingOrders": list(self.pending_orders),
             "locSession": self.loc_session,
+            "orderHold": self.order_hold,
             "units": self.pos.units, "entryPrice": self.pos.entryPrice,
             "peakPrice": self.pos.peakPrice,
             "turn": self.pos.turn,
@@ -1317,6 +1401,7 @@ class TradingBot:
         # 이미 체결된 것을 영영 정산하지 못한다.
         bot.pending_orders = list(d.get("pendingOrders") or [])
         bot.loc_session = d.get("locSession")
+        bot.order_hold = d.get("orderHold")
         lbt = d.get("lastBarTime")
         bot._last_bar_time = int(lbt) if lbt else None
         # 이 값이 없던 시절에 저장된 봇: 이미 포지션을 들고 있다면 어느 봉에서
@@ -1385,6 +1470,7 @@ class TradingBot:
             "budgetCarryover": round(self.budget_carryover, 2),
             "pendingLocOrders": len(self.pending_orders),
             "locSession": self.loc_session,
+            "orderHold": self.order_hold,
             "fxRate": round(fx_rate, 2),
             "equityKrwConverted": equity_krw_conv,
             "cashKrwConverted": cash_krw_conv,
