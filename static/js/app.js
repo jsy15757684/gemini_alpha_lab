@@ -716,8 +716,10 @@ let restoreNoticeShown = false;
 
 async function loadBots() {
   try {
-    const { bots, activeCount, maxActive, restoreSummary, workerError } = await api("/api/bot/list");
-    $("botCount").textContent = `(${activeCount}/${maxActive} 가동)`;
+    const { bots, maxActive, restoreSummary, workerError } = await api("/api/bot/list");
+    // 이 탭은 무한매수 봇만 센다 — ORB 스캐너는 자기 탭에 따로 센다 (예전에는 합쳐 4개가 5개로 보였다)
+    const infRunning = bots.filter(b => b.strategyType !== "orb" && b.isRunning).length;
+    $("botCount").textContent = `(${infRunning}/${maxActive} 가동)`;
     // 나무증권 워커에 닿지 못하면 그 봇들이 목록에서 빠진다. '없다' 로 보이면
     // 안 되므로 목록 위에 사실을 띄운다. 워커가 돌아오면 저절로 사라진다.
     ["workerNotice", "orbWorkerNotice"].forEach(id => setAlertHtml($(id), workerError
