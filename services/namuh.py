@@ -113,6 +113,10 @@ def buying_power_usd(balance: Dict[str, Any], fx_rate: Optional[float]) -> Dict[
     krw_as_usd = (krw / fx_rate) if (krw_usable and fx_rate and fx_rate > 0) else 0.0
     if MARGIN_PREF == "krw" and not use_mock():
         total = krw_as_usd
+    elif balance.get("orderableKnown"):
+        # 매수가능금액 조회 값이다. 원화 증거금 주문가능금액에는 달러도 원화로 쳐서 들어가
+        # 있을 수 있어 둘을 더하면 부풀 수 있다 — 큰 쪽만 센다(모자라게 셀지언정 부풀리지 않는다).
+        total = max(usd, krw_as_usd)
     else:
         total = usd + krw_as_usd
     return {
@@ -304,6 +308,8 @@ def _nh_post(url: str, *, read: bool, **kwargs):
 _BALANCE_CACHE: Dict[str, tuple] = {}
 _BALANCE_TTL_SEC = float(os.getenv("NAMUH_BALANCE_TTL_SEC") or "8")
 _BALANCE_LOCK = threading.Lock()
+_ORDERABLE_CACHE: Dict[str, tuple] = {}
+_ORDERABLE_TTL_SEC = 15.0
 _price_lock = threading.Lock()
 _PRICE_TTL = 3.0  # 초
 
@@ -738,6 +744,47 @@ class NamuhAccount:
                 f"지표를 계산하지 않습니다.")
         return candles[-limit:] if limit else candles
 
+    def orderable(self, ticker: str = "TQQQ") -> Dict[str, Optional[float]]:
+        """실제 주문 가능 금액 (POST /gbstock/inquiry/v1/buyableAmount · 처리구분 1 매수가능금액).
+
+        잔고의 외화예수금(fc_dca)에는 결제 전 매도 대금이 없다. 2026-10-06 실계좌: BMNR 10주를
+        팔아 예수금 $0 · 주문가능 $269.74 였다. 원화 증거금(통합증거금) 주문가능금액도 따로 온다
+        (원화 예수금 0 · 주문가능 2,945,222원). 반환 {usd, krw} — 못 받으면 None. 15초 캐시.
+        """
+        key = f"{self.account_no}:{ticker}"
+        hit = _ORDERABLE_CACHE.get(key)
+        if hit and time.time() - hit[0] < _ORDERABLE_TTL_SEC:
+            return dict(hit[1])
+        out: Dict[str, Optional[float]] = {"usd": None, "krw": None}
+        for cur, name in ((MARGIN_USD, "usd"), (MARGIN_KRW, "krw")):
+            try:
+                res = _nh_post(f"{trade_base_url()}/gbstock/inquiry/v1/buyableAmount", read=True,
+                               headers=self._headers(), timeout=10,
+                               json={"Input_0": {"act_no": self.account_no, "pcs_dit": "1", "fc_sec_trd_nat_cd": NAT_US,
+                                                 "iem_cd": ticker, "wtm_cur_knd_cd": cur, "oss_orr_knd_cd": "1",
+                                                 "ahi_nmn_pr_tp_cd": ORD_LIMIT}})
+                o = (res.json() or {}).get("Output_0") or {}
+                if res.status_code == 200 and o.get("orr_pbl_amt") is not None:
+                    out[name] = float(o.get("orr_pbl_amt") or 0.0)
+            except Exception as e:
+                logger.warning(f"매수가능금액 조회 실패({name}): {e}")
+        if out["usd"] is not None or out["krw"] is not None:
+            _ORDERABLE_CACHE[key] = (time.time(), dict(out))
+        return out
+
+    def with_orderable(self, balance: Dict[str, Any], ticker: str = "TQQQ") -> Dict[str, Any]:
+        """잔고에 실제 주문 가능 금액을 얹는다. 예수금은 usdDeposit · krwDepositRaw 로 남긴다."""
+        if use_mock():
+            return balance                       # 모의계좌는 예수금 = 주문가능 (달러만)
+        ob = self.orderable(ticker)
+        out = {**balance, "usdDeposit": balance.get("usdAvailable"), "krwDepositRaw": balance.get("krwDeposit")}
+        if ob["usd"] is not None:
+            out["usdAvailable"] = ob["usd"]
+        if ob["krw"] is not None:
+            out["krwDeposit"] = ob["krw"]
+        out["orderableKnown"] = ob["usd"] is not None or ob["krw"] is not None
+        return out
+
     def held_qty(self, ticker: str) -> float:
         """계좌의 실제 보유 주수. 체결 확인에 쓴다."""
         return float(self.get_balance(fresh=True)
@@ -921,7 +968,7 @@ class NamuhAccount:
             "iem_cd": sym,                      # 예: AAPL (순수 티커)
             "orr_qty": int(qty),
             "ahi_nmn_pr_tp_cd": order_type,
-            "wtm_cur_knd_cd": margin_code(qty * price, bal_before),
+            "wtm_cur_knd_cd": margin_code(qty * price, self.with_orderable(bal_before, sym)),
         }
         # 단가는 지정가 계열에서만 필수다 (00/11/12/61/62/63). 소수점 2자리.
         if order_type != ORD_MARKET:

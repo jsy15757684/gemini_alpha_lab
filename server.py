@@ -392,7 +392,7 @@ def deploy_bot(req: DeployRequest):
             # 원화 증거금을 쓸 수 있는 설정이면 원화도 공시환율로 환산해 센다.
             from services.fx import get_official_fx
             fx = (get_official_fx() or {}).get("rate")
-            bp = namuh.buying_power_usd(test.get("balance") or {}, fx)
+            bp = namuh.buying_power_usd(namuh_keystore.account.with_orderable(test.get("balance") or {}), fx)
             if bp["total"] < req.capitalKrw:
                 parts = [f"달러 ${bp['usd']:,.2f}"]
                 if bp["krwCounted"]:
@@ -706,6 +706,8 @@ def namuh_account_status():
                 for t, v in (bal.get("holdings") or {}).items()
             ]
             from services.fx import get_official_fx
+            # 예수금이 아니라 실제 주문 가능 금액(결제 전 매도 대금 · 원화 증거금 포함)으로 보여 준다
+            bal = namuh_keystore.account.with_orderable(bal)
             bp = namuh.buying_power_usd(bal, (get_official_fx() or {}).get("rate"))
             st.update({
                 "balanceOk": True,

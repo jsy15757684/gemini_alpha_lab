@@ -159,7 +159,10 @@ def preflight(order_step: bool):
 
 
 def balance(acc):
+    """잔고 + 실제 주문 가능 금액(결제 전 매도 대금 · 원화 증거금 포함 — 예수금이 아니다)."""
     b = acc.get_balance(fresh=True)
+    if hasattr(acc, "with_orderable"):
+        b = acc.with_orderable(b, TICKER)
     return b, float(b.get("qtyByTicker", {}).get(TICKER, 0.0))
 
 
@@ -185,8 +188,8 @@ def unknown(step, e):
 def step_check():
     acc, ses = preflight(order_step=False)
     b, q = balance(acc)
-    say(f"잔고: 주문 가능 ${float(b.get('usdAvailable') or 0):,.2f} · 원화 예수금 "
-        f"{float(b.get('krwDeposit') or 0):,.0f}원 · {TICKER} {q:g}주")
+    say(f"잔고: 주문 가능 ${float(b.get('usdAvailable') or 0):,.2f} (달러 예수금 ${float(b.get('usdDeposit') or 0):,.2f}) · "
+        f"원화 증거금 주문 가능 {float(b.get('krwDeposit') or 0):,.0f}원 · {TICKER} {q:g}주")
     held = {k: v for k, v in (b.get("qtyByTicker") or {}).items() if v}
     say(f"보유 종목: {held or '없음'}")
     try:
@@ -332,8 +335,8 @@ def step_krw():
     need_krw = px * rate * 1.05
     krw = float(b0.get("krwDeposit") or 0)
     if krw < need_krw:
-        stop(f"원화 예수금 {krw:,.0f}원이 1주 값(약 {need_krw:,.0f}원)보다 적습니다 — 원화를 넣은 뒤 시험하세요.")
-    confirm([f"{TICKER} 1주 지정가 매수 · 증거금 통화 = 원화(통합증거금) · 원화 예수금 {krw:,.0f}원",
+        stop(f"원화 증거금 주문 가능 금액 {krw:,.0f}원이 1주 값(약 {need_krw:,.0f}원)보다 적습니다 — 원화를 넣은 뒤 시험하세요.")
+    confirm([f"{TICKER} 1주 지정가 매수 · 증거금 통화 = 원화(통합증거금) · 원화 주문 가능 {krw:,.0f}원",
              f"현재가 ${px:,.2f} · 체결되면 바로 1주 매도",
              "통합증거금(원화 주문) 신청이 안 돼 있으면 나무증권이 거부한다 — 그것도 확인 결과다"])
     namuh.MARGIN_PREF = "krw"
