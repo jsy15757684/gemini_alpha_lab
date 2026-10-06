@@ -97,16 +97,14 @@ def block_live_calls() -> None:
     gemini_service.GEMINI_KEY_FILE = os.path.join(keys_dir, "gemini_key.json")
 
     # 나무증권: 키 파일 · 토큰 파일을 빈 폴더로 돌리고, 이미 올라온 키도 비운다.
-    # 그다음 토큰 발급 · 주문 · 국내 시세/실시간 통로를 예외로 바꾼다.
-    from services import namuh, krx, krx_stream
+    # 그다음 토큰 발급 · 주문 통로를 예외로 바꾼다.
+    from services import namuh
     keystore.NAMUH_KEYS_FILE = os.path.join(keys_dir, "namuh_key.json")
     namuh.TOKEN_FILE = os.path.join(keys_dir, "namuh_token.json")
     keystore.namuh_keystore.account = namuh.NamuhAccount()
     keystore.namuh_keystore.source = "none"
     for name in ("get_token", "market_buy", "market_sell", "cancel_order", "get_balance", "test_connection"):
         setattr(namuh.NamuhAccount, name, refuse(f"나무증권 API({name})"))
-    krx._post = refuse("나무증권 국내 API")
-    krx_stream.KrxStream.ensure = refuse("나무증권 실시간 시세")
 
     # Gemini: 할당량을 쓰는 호출 전부
     for name in ("analyze_coin", "scan_all_coins", "analyze_raoer_context"):
@@ -127,11 +125,10 @@ def verify() -> None:
         _fail(f"환경변수에 키가 남아 있습니다: {', '.join(leaked)} "
               "— .env 가 다시 주입됐을 수 있습니다 (APP_SKIP_DOTENV 확인)")
 
-    from services import namuh, krx
+    from services import namuh
     if keystore.namuh_keystore.account.configured:
         _fail(f"나무증권 키스토어가 키를 들고 있습니다 (출처 {keystore.namuh_keystore.source})")
-    for call, label in ((lambda: namuh.NamuhAccount("k", "s", "1").get_token(), "나무증권 토큰"),
-                        (lambda: krx._post(None, "", "/x", {}, read=True), "나무증권 국내")):
+    for call, label in ((lambda: namuh.NamuhAccount("k", "s", "1").get_token(), "나무증권 토큰"),):
         try:
             call()
         except Blocked:

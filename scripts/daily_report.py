@@ -5,8 +5,6 @@
 
   해외 봇   봇 장부 수량 = 계좌 수량 인가 (라이브 전환 뒤 가장 중요한 확인)
             지난 24시간 체결
-  국내 ORB  오늘 08:50 선정 (훑은 수 · 통과 · 잘림) · 09:05 판단을 사유별로 묶어서
-            매매 · 보유
   서버      두 서비스 상태 · 지난 24시간 ERROR · 나무증권 토큰 남은 시간
 
 데이터는 나무증권 워커(127.0.0.1:8889)에 내부 토큰으로 묻는다. 나무증권 API 를
@@ -42,7 +40,6 @@ ENV_FILE = os.path.join(ROOT, ".env")
 TOKEN_FILE = os.path.join(ROOT, "data", "namuh_token.json")
 SERVICES = ("bithumb-bot", "bithumb-namuh")
 TG_LIMIT = 3900                      # 텔레그램 한 메시지 4,096자 — 여유를 둔다
-HOLIDAY_LABEL = "OR 측정 실패(휴장·지연 개장)"
 
 
 # ── 설정 ──
@@ -129,20 +126,6 @@ def gather() -> Dict[str, Any]:
 
 
 # ── 보고서 (순수 함수 — 시험은 여기만 본다) ──
-def _reason_group(row: Dict[str, Any]) -> str:
-    if row.get("held"):
-        return "보유 중"
-    r = str(row.get("reason") or "")
-    # 순서가 중요하다 — '돌파 대기' 문장에도 'RVOL 473%' 가 들어 있다.
-    for key, label in (("돌파 대기", "돌파 대기"), ("진입을 이미", "매수함"), ("시초가 갭", "시초가 갭 범위 밖"),
-                       ("시초가 지지", "시초가 지지 실패"), ("음봉", "시초가 지지 실패"), ("시가를 몰라", "시가 모름"),
-                       ("기록이 없어", "RVOL 기준 없음(첫날)"), ("RVOL", "RVOL 부족"), ("돌파가 없어", "돌파 없음"),
-                       ("OR 을 재지 못해", HOLIDAY_LABEL)):
-        if key in r:
-            return label
-    return (r[:28] + "…") if len(r) > 28 else (r or "판단 없음")
-
-
 def _recent(trades: List[Dict[str, Any]], now_local: datetime, hours: float = 24) -> List[Dict[str, Any]]:
     """체결 시각은 서버 시계(UTC) 기준 문자열이다."""
     out = []
@@ -159,8 +142,6 @@ def _recent(trades: List[Dict[str, Any]], now_local: datetime, hours: float = 24
 def build(data: Dict[str, Any], server_now: Optional[datetime] = None) -> str:
     now = datetime.fromisoformat(data["now"]).astimezone(KST)
     server_now = server_now or datetime.now()
-    today = now.strftime("%Y-%m-%d")
-    weekday = now.weekday() < 5
     alerts: List[str] = list(data.get("problems") or [])
     lines: List[str] = []
 
@@ -172,7 +153,7 @@ def build(data: Dict[str, Any], server_now: Optional[datetime] = None) -> str:
     bots = ((data.get("bots") or {}).get("bots")) or []
     trades = ((data.get("trades") or {}).get("trades")) or []
     held = {h.get("symbol"): float(h.get("quantity") or 0) for h in (acc.get("holdings") or [])}
-    us = [b for b in bots if b.get("broker") == "namuh" and b.get("coin") != "ORB"]
+    us = [b for b in bots if b.get("broker") == "namuh"]
     lines.append("")
     lines.append("🇺🇸 해외 봇")
     if not us:
@@ -200,59 +181,6 @@ def build(data: Dict[str, Any], server_now: Optional[datetime] = None) -> str:
         lines.append("  지난 24시간 체결 없음")
     if acc.get("buyingPower"):
         lines.append(f"  주문 가능 ${float(acc['buyingPower'].get('usd') or 0):,.0f}")
-
-    # ── 국내 ORB ──
-    lines.append("")
-    lines.append("🇰🇷 국내 ORB")
-    orbs = [b for b in bots if b.get("coin") == "ORB"]
-    if not orbs:
-        lines.append("  (스캐너 없음)")
-    for b in orbs:
-        o = b.get("orbScan") or {}
-        lines.append(f"  {'모의' if b.get('mode') == 'PAPER' else '⚠️ 실전'} · "
-                     f"{'가동' if b.get('isRunning') else '⏸ 정지'} · {b.get('lastDecision', '')[:60]}")
-        if not weekday:
-            lines.append("  주말 — 매매 없음")
-        elif o.get("preparedDate") != today:
-            lines.append("  오늘 선정 기록 없음 (휴장일이거나 장 전에 떠 있지 않았음)")
-            alerts.append("ORB 오늘 선정 없음")
-        else:
-            s = o.get("selection") or {}
-            rows = o.get("watch") or []
-            groups: Dict[str, List[str]] = {}
-            for r in rows:
-                groups.setdefault(_reason_group(r), []).append(str(r.get("name") or r.get("code")))
-            # 한국 휴장일(평일)에는 동시호가도 호가도 없다 — 모든 종목이 OR 을 못 잰다. 경보가 아니다.
-            holiday = bool(rows) and set(groups) == {HOLIDAY_LABEL}
-            if holiday:
-                lines.append("  한국 휴장일로 보입니다 (모든 종목의 호가가 멈춰 있음) — 매매 없음")
-            if s:
-                sw = s.get("sweep") if s.get("refined") else s
-                cut = " ⚠️ 시간 부족으로 일부만" if sw.get("truncated") else ""
-                lines.append(f"  08:50 훑기 {sw.get('elapsedSec')}초 · 조회 {sw.get('scanned')}/{sw.get('affordable')}{cut} · "
-                             f"예상체결 {sw.get('withExpected')}"
-                             + (f" · 예비 {sw.get('prelist')}종목" if s.get("refined") else f" · 통과 {sw.get('passed')}"))
-                if s.get("refined"):
-                    lines.append(f"  08:57:50 다시 거르기 · 조회 {s.get('scanned')}{' (일부)' if s.get('truncated') else ''} · "
-                                 f"예상체결 {s.get('withExpected')} · 통과 {s.get('passed')}")
-                elif s.get("refine"):
-                    lines.append("  다시 거르기 실패 — 08:50 결과로 감시")
-                    alerts.append("ORB 다시 거르기 실패")
-                if not sw.get("withExpected") and not holiday:
-                    alerts.append("ORB 예상체결을 한 종목도 못 받음")
-            else:
-                lines.append("  선정 없음 — 직접 입력 목록으로 감시")
-            for label, names in sorted(groups.items(), key=lambda kv: -len(kv[1])):
-                shown = ", ".join(names[:4]) + (f" 외 {len(names) - 4}" if len(names) > 4 else "")
-                lines.append(f"   · {label} {len(names)} — {shown}")
-        orb_recent = [t for t in _recent(trades, server_now) if t.get("botId") == b.get("botId")]
-        for t in orb_recent[:6]:
-            pnl = float(t.get("pnlKrw") or 0)
-            lines.append(f"   🔸 {t.get('coinName') or t.get('coin')} {t.get('action')} "
-                         f"{float(t.get('units') or 0):g}주 @ {float(t.get('price') or 0):,.0f}원"
-                         + (f" · {pnl:+,.0f}원" if pnl else ""))
-        lines.append(f"  보유 {float(b.get('units') or 0):g}주 · 누적 {int(b.get('totalTrades') or 0)}건 · "
-                     f"실현 {float(b.get('realizedPnlKrw') or 0):+,.0f}원")
 
     # ── 서버 ──
     lines.append("")

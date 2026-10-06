@@ -118,7 +118,7 @@ sudo journalctl -u bithumb-bot -f     # 실시간 로그
 | 서비스 | 역할 | 주소 |
 |---|---|---|
 | `bithumb-bot` | 화면 · 로그인 · 빗썸 봇 (`APP_ROLE=crypto`) | 127.0.0.1:8888 |
-| `bithumb-namuh` | 나무증권 봇 — 해외 무한매수 · 국내 ORB (`APP_ROLE=namuh`) | 127.0.0.1:8889 (내부 전용) |
+| `bithumb-namuh` | 나무증권 봇 — 해외 무한매수 (`APP_ROLE=namuh`) | 127.0.0.1:8889 (내부 전용) |
 
 ```bash
 sudo systemctl restart bithumb-bot bithumb-namuh      # 둘 다 재시작
@@ -151,7 +151,6 @@ cd /opt/gemini_alpha_lab && git pull && bash deploy/fix-perms.sh && systemctl re
 꺼져 있어도 됩니다. 읽기만 합니다(주문 · 봇 변경 없음).
 
 - 해외 봇: **봇 장부 수량 = 계좌 수량** 인지 · 지난 24시간 체결
-- 국내 ORB: 오늘 선정(훑은 수 · 통과 · 잘림) · 09:05 판단을 사유별로 · 매매
 - 서버: 두 서비스 상태 · 지난 24시간 ERROR · 나무증권 토큰 남은 시간
 - 이상이 있으면 첫 줄이 `🚨 확인 필요: …` 로 시작합니다
 

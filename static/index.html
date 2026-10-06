@@ -51,7 +51,6 @@
   <nav class="tabs" id="tabs">
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
     <button class="tab" data-panel="panel-bots">🔄 무한매수 봇</button>
-    <button class="tab" data-panel="panel-orb">📐 국내 ORB 봇</button>
     <button class="tab" data-panel="panel-muma">📋 무매법 표</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
@@ -421,148 +420,6 @@
       </div>
     </section>
 
-    <!-- 국내 ORB 봇 — 무한매수와 설정·주기·시장이 전혀 달라 탭을 따로 둔다 -->
-    <section id="panel-orb" class="panel hidden">
-      <div class="grid-2">
-        <div class="card">
-          <h2 class="card-title">📐 국내 ORB 스캐너 가동</h2>
-          <p class="muted small" style="margin:.2rem 0 .8rem">감시 목록 전 종목을 <b>실시간 체결 스트림</b>으로 동시에 보다가,
-            신호가 먼저 뜬 종목부터 최대 N종목을 삽니다. 매 거래일 09:00 장 초반에만 매매합니다.</p>
-          <div>
-            <label class="label">감시 방식</label>
-            <select class="input" id="orbWatchMode">
-              <option value="auto" selected>매일 자동 선정 — 코스피200·코스닥150 동시호가 예상체결 (추천)</option>
-              <option value="manual">직접 입력한 목록</option>
-            </select>
-          </div>
-          <div id="orbAutoBox" style="margin-top:.8rem">
-            <div class="form-grid">
-              <div><label class="label">예상 갭 하한 (%)</label>
-                <input class="input" type="number" id="sel_gapMinPct" value="2.0" min="-30" max="30" step="0.5"></div>
-              <div><label class="label">예상 갭 상한 (%)</label>
-                <input class="input" type="number" id="sel_gapMaxPct" value="5.0" min="-30" max="30" step="0.5"></div>
-              <div><label class="label">예상 거래대금 하한 (억 원)</label>
-                <input class="input" type="number" id="sel_minExpTurnoverEok" value="0.5" min="0" step="0.5"></div>
-              <div><label class="label">감시 종목 수 (최대 28)</label>
-                <input class="input" type="number" id="sel_topN" value="28" min="1" max="28" step="1"></div>
-            </div>
-            <div class="muted small" style="margin-top:.35rem"><b>08:40</b> 후보 전체의 전일 09:05 거래량(RVOL 기준)을 미리 받고, 예상체결이 나오는 <b>08:50</b>부터
-              후보 약 346종목(위험 종목 제외)을 하나씩 훑어 갭을 ±3%p 넓게 본 예비 목록 50종목을 만들고,
-              <b>08:57:50</b> 그것만 다시 조회해 갭이 범위 안이고 예상 거래대금이 충분한 종목을 <b>예상체결량 ÷ 전일 거래량</b>(장 전 RVOL) 순으로 고릅니다.
-              동시호가 주문은 09:00 직전에 몰려 이 값이 실제 시가에 가깝습니다.
-              1주 값이 종목당 자본보다 비싼 종목은 처음부터 뺍니다. 예상체결을 받지 못한 날은 아래 직접 입력 목록으로 봅니다.</div>
-          </div>
-          <div id="orbManualBox" style="margin-top:.8rem">
-            <label class="label">감시 종목 <span class="muted" id="orbWatchCount"></span>
-              <span class="muted small" id="orbManualNote">— 자동 선정이 실패한 날 쓰는 대체 목록</span></label>
-            <textarea class="input" id="orbWatch" rows="6" spellcheck="false"
-              style="font-family:var(--mono); font-size:.8rem; resize:vertical"></textarea>
-            <div class="muted small" style="margin-top:.35rem">한 줄에 한 종목 — 앞의 <b>6자리 코드</b>만 읽고 뒤 이름은 무시합니다.
-              최대 28종목 (실시간 구독 한도 30 − 지수 ETF 2). <a href="#" id="orbWatchReset">기본 목록으로</a></div>
-          </div>
-          <div class="form-grid" style="margin-top:.8rem">
-            <div>
-              <label class="label">최대 동시 보유 (종목)</label>
-              <input class="input" type="number" id="orbMaxPos" value="3" min="1" max="10" step="1">
-            </div>
-            <div>
-              <label class="label">매매 모드</label>
-              <select class="input" id="orbMode">
-                <option value="PAPER" selected>모의투자 (주문 안 나감)</option>
-                <option value="LIVE">실전 (나무증권 국내 실주문)</option>
-              </select>
-            </div>
-            <div class="span-2">
-              <label class="label">운용 자본 (원)</label>
-              <input class="input" type="number" id="orbCapital" value="3000000" min="300000" step="100000">
-              <div class="muted small" id="orbCapitalHint" style="margin-top:.35rem">잔고 확인 중…</div>
-            </div>
-          </div>
-          <!-- 국내주식 ORB (09:00~09:30 장 초반 돌파) — 무한매수와 설정이 전혀 다르다 -->
-          <div id="orbBotOptions" style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
-            <label class="label" style="font-weight: 600; margin-bottom: 8px;">📐 ORB · 오프닝 레인지 돌파 + VWAP 필터</label>
-            <p class="muted small" style="margin: 0 0 10px;">
-              09:00부터 <b>레인지 분</b> 동안 고가·저가를 재고, 그 고가를 <b>VWAP 위</b>에서 <b>거래량을 동반해</b> 넘으면 삽니다.
-              익절·손절·OR 저가 이탈·타임컷 중 먼저 오는 것으로 팔고, <b>하루 한 번만</b> 들어갑니다.
-            </p>
-            <div class="form-grid">
-              <div><label class="label">레인지 (분)</label>
-                <input class="input" type="number" id="orb_rangeMin" value="5" min="1" max="30" step="1"></div>
-              <div><label class="label">진입 마감 (09:MM)</label>
-                <input class="input" type="number" id="orb_entryEndMin" value="25" min="2" max="59" step="1"></div>
-              <div><label class="label">타임컷 (09:MM)</label>
-                <input class="input" type="number" id="orb_cutoffMin" value="30" min="3" max="60" step="1"></div>
-              <div><label class="label">익절 (%)</label>
-                <input class="input" type="number" id="orb_takeProfitPct" value="2.0" min="0.1" max="20" step="0.1"></div>
-              <div><label class="label">손절 (%)</label>
-                <input class="input" type="number" id="orb_stopLossPct" value="1.0" min="0.1" max="20" step="0.1"></div>
-              <div><label class="label">거래량 배수 (0 = 끔)</label>
-                <input class="input" type="number" id="orb_volSurge" value="1.5" min="0" max="10" step="0.1"></div>
-            </div>
-            <div class="label" style="margin-top:12px; font-weight:600">🧰 가짜 돌파 필터</div>
-            <div class="form-grid">
-              <div><label class="label">RVOL 최소 (배 · 0 = 끔)</label>
-                <input class="input" type="number" id="orb_rvolMin" value="2.0" min="0" max="20" step="0.1">
-                <div class="muted small" style="margin-top:.3rem">09:05 누적 거래량 ÷ 전 거래일 같은 시각</div></div>
-              <div><label class="label">청산 방식</label>
-                <select class="input" id="orb_exitMode">
-                  <option value="timecut" selected>타임컷 + 고정 익절</option>
-                  <option value="trailing">트레일링 스탑 (추세 추종)</option>
-                </select></div>
-              <div class="orb-trail hidden"><label class="label">트레일링 폭 (%)</label>
-                <input class="input" type="number" id="orb_trailPct" value="1.0" min="0.1" max="20" step="0.1"></div>
-              <div class="orb-trail hidden"><label class="label">최종 청산 시각</label>
-                <input class="input" type="time" id="orb_finalCut" value="15:15" min="09:30" max="15:20"></div>
-            </div>
-            <div class="label" style="margin-top:12px; font-weight:600">📈 갭 앤 고 조건 (09:05 에 한 번 봅니다)</div>
-            <div class="form-grid">
-              <div><label class="label">실제 시초가 갭 하한 (%)</label>
-                <input class="input" type="number" id="orb_gapMinPct" value="2.0" min="-30" max="30" step="0.5"></div>
-              <div><label class="label">실제 시초가 갭 상한 (%) · 둘 다 0 = 끔</label>
-                <input class="input" type="number" id="orb_gapMaxPct" value="5.0" min="-30" max="30" step="0.5"></div>
-            </div>
-            <div class="muted small" style="margin-top:.3rem">자동 선정은 08:57:50 예상체결로 고르지만 동시호가는 09:00 직전까지 바뀝니다.
-              실제 시가로 한 번 더 거릅니다. 08:57:50 예상 갭은 실제와 ±0.4%p 안으로 맞아, 선정 갭 범위를 이 조건과 같게 두면 됩니다.</div>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
-              <input type="checkbox" id="orb_openHold" checked> 시초가 지지 — 첫 5분의 1분 종가가 모두 시가 이상이고 5분 양봉인 종목만</label>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
-              <input type="checkbox" id="orb_marketFilter" checked> 지수가 당일 시가 아래면 사지 않음 (코스피 = KODEX 200 · 코스닥 = KODEX 코스닥150 로 판단)</label>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
-              <input type="checkbox" id="orb_useVwap" checked> 당일 VWAP 위에서만 매수</label>
-            <label style="display:flex; align-items:center; gap:8px; margin-top:4px; font-size:.86rem; cursor:pointer">
-              <input type="checkbox" id="orb_useOrLowStop" checked> OR 저가를 깨면 손절</label>
-            <details class="note note-warn" style="margin-top:10px">
-              <summary>알고 쓰셔야 할 것</summary>
-              · 나무증권 <b>실시간 체결 스트림(KRX 전용)</b>으로 목록 전 종목을 동시에 받습니다. NXT 프리마켓 체결은 섞지 않습니다.
-                거래량 급증은 <b>누적 거래량이 늘어나는 속도</b>(최근 60초 vs OR 평균)로 봅니다.<br>
-              · 종목당 자본 = 운용자본 ÷ 최대 동시 보유. <b>1주 값이 그보다 비싼 종목(예: SK하이닉스 약 178만원)은 신호가 떠도 건너뜁니다.</b><br>
-              · 산 종목은 실시간 시세가 10초 넘게 멈추면 REST 시세로 따로 보고 청산합니다.<br>
-              · 주문은 <b>시장성 지정가</b>(매수 = 매도호가 +2호가, 매도 = 매수호가 −2호가)입니다. 모의계좌가 지정가만 받습니다.<br>
-              · 매도 체결가는 잔고로 알 수 없어 <b>최우선 매수호가로 추정</b>해 장부에 적습니다. 매수 평단은 잔고로 정확히 역산합니다.<br>
-              · 호가가 멈춰 있는 날(휴장·수능일 지연 개장)은 OR 을 못 재므로 그날은 쉽니다.<br>
-              · RVOL 의 분모(전 거래일 09:00~09:05 거래량)는 장 전에 <b>나무증권 5분봉</b>으로 종목마다 받습니다.
-                목록이 매일 바뀌어도 첫날부터 RVOL 을 봅니다 (2026-09-23 카카오 60,622주 — 공개 1분봉 60,575주와 일치).<br>
-              · 지수 필터는 지수 대신 지수 추종 ETF 의 시가를 봅니다 (나무증권 지수 시세 경로를 찾지 못했습니다).<br>
-              · 트레일링은 고정 익절을 쓰지 않고, 손절 · OR 저가 · 최종 청산 시각(기본 15:15, 종가 동시호가 전)은 그대로 지킵니다.<br>
-              · 2026-08-24 ~ 09-28 (23거래일 · 346종목) 1분봉 백테스트에서 <b>수익이 확인되지 않았습니다</b> (①+② 14건 · 거래당 −0.32% · 비용 포함). 표본이 작아 결론은 못 냅니다 — 모의투자로 더 쌓아 보세요. (<code>scripts/orb_backtest.py</code>)
-            </details>
-          </div>
-
-          <div class="deploy-actions">
-            <button class="btn btn-primary btn-block" id="orbDeployBtn">ORB 스캐너 가동</button>
-          </div>
-          <div class="alert alert-error hidden" id="orbDeployError"></div>
-        </div>
-
-        <div class="card">
-          <div class="card-head">
-            <h2 class="card-title">ORB 스캐너 <span class="muted" id="orbBotCount"></span></h2>
-          </div>
-          <div class="alert alert-danger hidden" id="orbWorkerNotice"></div>
-          <div id="orbBotList" class="bot-list"><div class="empty">가동 중인 ORB 스캐너가 없습니다.</div></div>
-        </div>
-      </div>
-    </section>
 
     <!-- 무매법 표 (무매법.xlsx 를 봇 장부로) -->
     <section id="panel-muma" class="panel hidden">
@@ -765,6 +622,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.13.2"></script>
+<script src="/static/js/app.js?v=5.14.0"></script>
 </body>
 </html>

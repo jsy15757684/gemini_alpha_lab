@@ -257,7 +257,6 @@ async function loadPrices() {
 // ───────── 봇 ─────────
 
 let currentMarket = "crypto"; // "crypto" | "stock"
-let KR_STOCKS = [];            // 국내주식 ORB 종목 (/api/namuh/kr_stocks)
 // 취급 종목은 서버(/api/namuh/stocks)가 유일한 출처다. 화면에 목록을 박아두면
 // 서버와 어긋난다 — 실제로 화면 3종 / 서버 5종으로 갈라져 있었다. 서버가 그
 // 목록으로 배포를 검증하므로, 화면이 다른 것을 보여주면 고를 수 없는 종목이
@@ -294,7 +293,6 @@ function renderCapitalHint() {
   const el = $("capitalHint");
   if (!el) return;
   const isStock = currentMarket === "stock";
-  renderOrbCapitalHint();
   const a = isStock ? lastNamuhAccount : lastBithumbAccount;
 
   if (!a) { el.textContent = "잔고 확인 중…"; el.className = "muted small"; return; }
@@ -331,19 +329,6 @@ function renderCapitalHint() {
     el.innerHTML = `투자가능 원화 <b style="color:var(--accent)">${won(a.krwAvailable)}원</b>`
       + ` · 총 보유 ${won(a.krwTotal)}원`;
   }
-}
-
-// ORB 탭의 자본 힌트 — 나무증권 국내 예수금
-function renderOrbCapitalHint() {
-  const el = $("orbCapitalHint");
-  const a = lastNamuhAccount;
-  if (!el) return;
-  if (!a) { el.textContent = "잔고 확인 중…"; return; }
-  if (!a.connected) { el.textContent = "나무증권 미연동 — 계정 탭에서 API 키를 등록하세요. (ORB 는 모의투자도 나무증권 시세가 필요합니다)"; return; }
-  const per = Math.floor(Number($("orbCapital")?.value || 0) / Math.max(1, parseInt($("orbMaxPos")?.value || "3", 10)));
-  el.innerHTML = a.krCash != null
-    ? `국내 주문가능 <b style="color:var(--accent)">${won(a.krCash)}원</b> · 종목당 ${won(per)}원${a.mock ? " · 🧪 모의계좌" : ""}`
-    : `국내 잔고를 받지 못했습니다${a.krError ? ": " + escapeHtml(a.krError) : ""}`;
 }
 
 function setMarket(market) {
@@ -443,145 +428,6 @@ async function deployBot() {
   }
 }
 
-function readOrbParams() {
-  const n = (id) => parseFloat($(id).value);
-  return {
-    strategyType: "orb",
-    rangeMin: n("orb_rangeMin"), entryEndMin: n("orb_entryEndMin"), cutoffMin: n("orb_cutoffMin"),
-    takeProfitPct: n("orb_takeProfitPct"), stopLossPct: n("orb_stopLossPct"), volSurge: n("orb_volSurge"),
-    useVwap: $("orb_useVwap").checked, useOrLowStop: $("orb_useOrLowStop").checked,
-    rvolMin: n("orb_rvolMin"), exitMode: $("orb_exitMode").value, trailPct: n("orb_trailPct"),
-    // "15:15" → 09:00 부터 분
-    finalCutMin: (([h, m]) => (h - 9) * 60 + m)(($("orb_finalCut").value || "15:15").split(":").map(Number)),
-    marketFilter: $("orb_marketFilter").checked,
-    gapMinPct: n("orb_gapMinPct") || 0, gapMaxPct: n("orb_gapMaxPct") || 0, openHold: $("orb_openHold").checked,
-  };
-}
-
-// 감시 목록 textarea — 줄마다 앞의 6자리 코드만 읽는다
-function readOrbWatch() {
-  const codes = ($("orbWatch")?.value || "").split(/[\n,]+/)
-    .map(l => (l.trim().toUpperCase().match(/^([0-9][0-9A-Z]{5})(?![0-9A-Z])/) || [])[1]).filter(Boolean);
-  return [...new Set(codes)];
-}
-
-function renderOrbWatchMode() {
-  const auto = $("orbWatchMode")?.value === "auto";
-  $("orbAutoBox")?.classList.toggle("hidden", !auto);
-  $("orbManualNote")?.classList.toggle("hidden", !auto);
-}
-
-function renderOrbWatchCount() {
-  const n = readOrbWatch().length, max = window.ORB_MAX_WATCH || 28;
-  if ($("orbWatchCount")) {
-    $("orbWatchCount").textContent = `(${n}/${max})`;
-    $("orbWatchCount").style.color = n > max ? "var(--down)" : "";
-  }
-}
-
-function fillOrbWatchDefault() {
-  if (!$("orbWatch")) return;
-  $("orbWatch").value = KR_STOCKS.map(c => `${c.code} ${c.name}`).join("\n");
-  renderOrbWatchCount();
-}
-
-// 스캐너 카드 밑 종목별 실시간 감시표
-function orbWatchTable(b) {
-  const rows = (b.orbScan?.watch || []).map(w => {
-    const held = w.held;
-    const state = held ? `<span class="up">보유 ${held.units}주 @ ${won(held.entryPrice)}</span>`
-      : (w.done ? `<span class="muted">${escapeHtml((w.reason || "오늘 끝").slice(0, 40))}</span>`
-                : `<span>${escapeHtml((w.reason || "대기").slice(0, 40))}</span>`);
-    return `<tr><td>${escapeHtml(w.name)}<span class="muted"> ${w.code}</span></td>
-      <td>${w.price ? won(w.price) : "-"}</td><td>${w.orHigh ? won(w.orHigh) : "-"}</td><td>${w.orLow ? won(w.orLow) : "-"}</td>
-      <td>${w.vwap ? won(w.vwap) : "-"}</td><td>${w.rvol != null ? Math.round(w.rvol * 100) + "%" : (w.prevOrVol ? "-" : "기준 없음")}</td>
-      <td>${w.gap != null ? `${w.gap >= 0 ? "+" : ""}${w.gap.toFixed(1)}% · ${w.score.toFixed(2)}배` : "-"}</td>
-      <td class="reason" style="min-width:160px" title="${escapeHtml(w.reason || "")}">${state}</td></tr>`;
-  }).join("");
-  const st = b.orbScan?.stream || {};
-  const sel = b.orbScan?.selection;
-  const selLine = b.orbScan?.watchMode === "auto"
-    ? (sel ? (sel.refined && sel.sweep
-        ? `<div class="muma-note">🔎 ${escapeHtml(b.orbScan.preparedDate || "")} 자동 선정 —
-            ${escapeHtml(sel.sweep.at || "")} 넓게 훑기: 후보 ${sel.sweep.candidates} · 조회 ${sel.sweep.scanned}/${sel.sweep.affordable}${sel.sweep.truncated ? " (시간이 모자라 일부)" : ""} → 예비 ${sel.sweep.prelist}종목
-            · ${escapeHtml(sel.at || "")} 다시 거르기: 조회 ${sel.scanned}${sel.truncated ? " (일부)" : ""} · 예상체결 ${sel.withExpected} · 통과 ${sel.passed}
-            → 감시 ${(sel.chosen || []).length}종목</div>`
-        : `<div class="muma-note">🔎 ${escapeHtml(b.orbScan.preparedDate || "")} ${escapeHtml(sel.at || "")} 넓게 훑기 —
-            후보 ${sel.candidates} · 살 수 있는 ${sel.affordable} · 조회 ${sel.scanned}${sel.truncated ? " (시간이 모자라 일부)" : ""} ·
-            예상체결 받음 ${sel.withExpected} · 지금 기준 통과 ${sel.passed}${sel.refine ? " · 다시 거르기 실패 → 이 결과로 감시" : " · 08:57:50 에 다시 거릅니다"}</div>`)
-           : `<div class="muma-note">🔎 다음 거래일 08:50 에 넓게 훑고 08:57:50 에 다시 걸러 감시 종목을 고릅니다 (08:40 RVOL 기준을 미리 받습니다).</div>`)
-    : "";
-  return `<details class="muma-bot" ${b.orbScan?.watch?.some(w => w.held) ? "open" : ""}>
-    <summary><b>종목별 감시</b> <span class="muted small">실시간 ${st.connected ? "연결됨" : "끊김 · 장 밖에는 닫아 둡니다"}
-      · 종목당 ${won(b.orbScan?.slotBudget)}원 · 최대 ${b.orbScan?.maxPositions}종목</span></summary>
-    <div class="muma-body"><div class="tbl-wrap"><table>
-      <thead><tr><th>종목</th><th>현재가</th><th>OR 고</th><th>OR 저</th><th>VWAP</th><th>RVOL</th>
-        <th title="동시호가 예상 갭 · 예상체결량÷전일 거래량">선정 근거</th><th>상태</th></tr></thead>
-      <tbody>${rows || `<tr><td colspan="8" class="muted">아직 감시 종목이 없습니다</td></tr>`}</tbody></table></div>${selLine}</div></details>`;
-}
-
-function renderOrbExitMode() {
-  const trailing = $("orb_exitMode")?.value === "trailing";
-  document.querySelectorAll(".orb-trail").forEach(el => el.classList.toggle("hidden", !trailing));
-  // 트레일링에서는 고정 익절과 09:30 타임컷을 쓰지 않는다. 칸이 보이면 쓰이는 줄 안다.
-  ["orb_takeProfitPct", "orb_cutoffMin"].forEach(id => $(id)?.closest("div")?.classList.toggle("hidden", trailing));
-}
-
-async function deployOrbBot() {
-  const btn = $("orbDeployBtn");
-  setAlert($("orbDeployError"), null);
-  const mode = $("orbMode").value;
-  const p = readOrbParams();
-  const watch = readOrbWatch();
-  const maxPos = parseInt($("orbMaxPos").value || "3", 10);
-  const capital = Number($("orbCapital").value || 0);
-  const watchMode = $("orbWatchMode").value;
-  const sel = {
-    gapMinPct: parseFloat($("sel_gapMinPct").value), gapMaxPct: parseFloat($("sel_gapMaxPct").value),
-    minExpTurnoverEok: parseFloat($("sel_minExpTurnoverEok").value), topN: parseInt($("sel_topN").value, 10),
-  };
-  if (!watch.length) return setAlert($("orbDeployError"),
-    watchMode === "auto" ? "자동 선정이 실패한 날 쓸 대체 목록이 비어 있습니다. [기본 목록으로]를 누르세요."
-                         : "감시할 종목코드(6자리)를 한 줄에 하나씩 넣으세요.");
-  if (watch.length > (window.ORB_MAX_WATCH || 28))
-    return setAlert($("orbDeployError"), `감시 종목은 ${window.ORB_MAX_WATCH || 28}개까지입니다 (지금 ${watch.length}개).`);
-  const hm = (m) => `${String(9 + Math.floor(m / 60)).padStart(2, "0")}:${String(m % 60).padStart(2, "0")}`;
-  const summary = [
-    "이 설정으로 국내 ORB 스캐너를 만듭니다.", "",
-    watchMode === "auto"
-      ? `감시 종목 : 매일 08:50 넓게 훑기 → 08:57:50 다시 거르기 — 갭 ${sel.gapMinPct}~${sel.gapMaxPct}% · 예상 거래대금 ≥ ${sel.minExpTurnoverEok}억 · 상위 ${sel.topN}`
-      : `감시 종목 : 직접 입력 ${watch.length}종목 (실시간)`,
-    `동시 보유 : 최대 ${maxPos}종목 · 종목당 ${Math.floor(capital / maxPos).toLocaleString()}원`,
-    `매매 모드 : ${mode === "LIVE" ? "실전 — 나무증권 국내 실주문 (원화)" : "모의투자 — 주문이 나가지 않습니다"}`,
-    `운용 자본 : ${capital.toLocaleString()}원`,
-    `레인지    : 09:00 ~ ${hm(p.rangeMin)} 고가·저가`,
-    `진입      : ${hm(p.rangeMin)} ~ ${hm(p.entryEndMin)} · OR 고가 돌파${p.useVwap ? " · VWAP 위" : ""}${p.volSurge > 0 ? ` · 거래속도 ×${p.volSurge}` : ""}`,
-    p.exitMode === "trailing"
-      ? `청산      : 트레일링 고점 -${p.trailPct}% · 손절 -${p.stopLossPct}%${p.useOrLowStop ? " · OR 저가 이탈" : ""} · ${hm(p.finalCutMin)} 최종 청산`
-      : `청산      : 익절 +${p.takeProfitPct}% · 손절 -${p.stopLossPct}%${p.useOrLowStop ? " · OR 저가 이탈" : ""} · ${hm(p.cutoffMin)} 타임컷`,
-    `갭 앤 고  : ${p.gapMinPct || p.gapMaxPct ? `실제 시초가 갭 ${p.gapMinPct}~${p.gapMaxPct}%` : "시초가 갭 끔"} · ${p.openHold ? "시초가 지지 + 5분 양봉" : "시초가 지지 끔"}`,
-    `필터      : ${p.rvolMin > 0 ? `RVOL ≥ ${Math.round(p.rvolMin * 100)}% (첫 거래일은 기록만 하고 사지 않음)` : "RVOL 끔"} · ${p.marketFilter ? "지수 시가 위" : "지수 필터 끔"}`,
-    "", mode === "LIVE"
-      ? "⚠️ 실제 주문이 나가며 손실이 발생할 수 있습니다. 6주 백테스트에서 수익이 확인되지 않았습니다(표본 작음). 계속하시겠습니까?"
-      : "위 설정이 맞습니까? (틀리면 취소하고 화면에서 고치세요)",
-  ];
-  if (!confirm(summary.join("\n"))) return;
-  btn.disabled = true; btn.textContent = "가동 중…";
-  try {
-    await api("/api/bot/deploy", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ coin: "ORB", broker: "namuh", interval: "ORB", mode, capitalKrw: capital,
-                             params: { ...p, watchMode, select: sel, watchlist: watch, maxPositions: maxPos } }),
-    });
-    await loadBots();
-    document.querySelector('.tab[data-panel="panel-orb"]')?.click();
-  } catch (e) {
-    setAlert($("orbDeployError"), e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = "ORB 스캐너 가동";
-  }
-}
-
 // 배정자본 중 실제로 시장에 들어간 비율. 이 값이 클수록 '배정 대비' 와
 // '평단 대비' 수익률이 가까워진다 — 두 숫자가 다른 이유가 이것이다.
 function investedPct(b) {
@@ -597,21 +443,19 @@ const expandedLogs = new Set();
 function botCard(b) {
   const live = b.mode === "LIVE";
   const isNamuh = b.broker === "namuh";
-  const isOrb = b.strategyType === "orb";
-  // 나무증권이라도 국내주식(ORB)은 원화다. 브로커로 통화를 가리면 원화를 $ 로 적는다.
   const isUsd = b.currency === "USD";
   const fmtCurr = (v) => isUsd
     ? `$${Number(v||0).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`
     : won(v);
   const fmtPnl = (v) => `${Number(v||0) >= 0 ? '+' : ''}${fmtCurr(v)}${isUsd ? '' : '원'}`;
-  const fmtUnits = (u) => (isUsd || isOrb) ? `${Math.round(u||0)}주` : Number(u||0).toFixed(4);
+  const fmtUnits = (u) => isUsd ? `${Math.round(u||0)}주` : Number(u||0).toFixed(4);
 
   // 정체성 줄. 예전에는 거래소·모드·전략·회차·기어·이월을 전부 색 배지로
   // 달아 제목보다 배지가 눈에 먼저 들어왔다. 위험과 직결되는 '실전' 만
   // 색을 쓰고 나머지는 회색 글씨로 내린다.
   const meta = [
-    isNamuh ? (isOrb ? "나무증권 국내" : "나무증권") : "빗썸",
-    isOrb ? "ORB 09:00~09:30" : b.interval,
+    isNamuh ? "나무증권" : "빗썸",
+    b.interval,
     b.strategyType === "raoer_infinite"
       ? `무한매수 ${(b.raoerVersion || b.params?.raoerVersion || "v4").toUpperCase()}${b.params?.raoerUseAi ? " · AI" : ""}`
       : "",
@@ -667,18 +511,13 @@ function botCard(b) {
                : "-",
              b.units > 0 && isUsd ? `약 ${won(b.unrealizedPnlKrwConverted)}원` : "",
              "산 물량만 놓고 본 손익. 익절·손절 판정이 쓰는 값이 이쪽이다.")}
-      ${isOrb ? cell("감시", `${b.orbScan?.watch?.length || 0}종목`,
-             b.orbScan?.stream?.connected ? "실시간 연결됨" : "실시간 대기") : ""}
-      ${isOrb ? "" : cell("보유 · 평단", b.units > 0 ? fmtUnits(b.units) : "-",
+      ${cell("보유 · 평단", b.units > 0 ? fmtUnits(b.units) : "-",
              b.units > 0 ? fmtCurr(b.entryPrice) : "")}
-      ${isOrb ? "" : cell("현재가", fmtCurr(b.currentPrice),
+      ${cell("현재가", fmtCurr(b.currentPrice),
              b.priceAgeSec != null
                ? `<span class="${b.priceAgeSec > (b.pricePollSec||10)*3 ? 'down' : ''}">${Math.round(b.priceAgeSec)}초 전</span>`
                : "")}
-      ${isOrb
-        ? cell("보유 종목", `${b.turn||0}<span class="s-of"> / ${b.splitCount||3}</span>`,
-               `<span class="s-bar"><i style="width:${Math.min(100, (b.turn||0) / (b.splitCount||3) * 100)}%"></i></span>`)
-        : cell("회차", `${b.turn||0}<span class="s-of"> / ${b.splitCount||40}</span>`,
+      ${cell("회차", `${b.turn||0}<span class="s-of"> / ${b.splitCount||40}</span>`,
              `<span class="s-bar"><i style="width:${Math.min(100, turnPct)}%"></i></span>`)}
       ${cell("거래 · 승률", `${b.totalTrades||0}회`,
              b.totalTrades ? `${b.winRatePct}%` : "")}
@@ -717,13 +556,11 @@ let restoreNoticeShown = false;
 async function loadBots() {
   try {
     const { bots, maxActive, restoreSummary, workerError } = await api("/api/bot/list");
-    // 이 탭은 무한매수 봇만 센다 — ORB 스캐너는 자기 탭에 따로 센다 (예전에는 합쳐 4개가 5개로 보였다)
-    const infRunning = bots.filter(b => b.strategyType !== "orb" && b.isRunning).length;
-    $("botCount").textContent = `(${infRunning}/${maxActive} 가동)`;
+    $("botCount").textContent = `(${bots.filter(b => b.isRunning).length}/${maxActive} 가동)`;
     // 나무증권 워커에 닿지 못하면 그 봇들이 목록에서 빠진다. '없다' 로 보이면
     // 안 되므로 목록 위에 사실을 띄운다. 워커가 돌아오면 저절로 사라진다.
-    ["workerNotice", "orbWorkerNotice"].forEach(id => setAlertHtml($(id), workerError
-      ? `<b>⚠️ 나무증권 봇을 불러오지 못했습니다.</b> ${escapeHtml(workerError)}` : "", "danger"));
+    setAlertHtml($("workerNotice"), workerError
+      ? `<b>⚠️ 나무증권 봇을 불러오지 못했습니다.</b> ${escapeHtml(workerError)}` : "", "danger");
 
     // 재시작 후 대조에 걸려 보류된 봇이 있으면 알림 표시, 없으면 숨김
     const el = $("globalNotice");
@@ -765,35 +602,16 @@ async function loadBots() {
         el.innerHTML = "";
       }
     }
-    // 무한매수와 ORB 는 탭이 다르다. 각자 자기 목록에만 그린다.
-    const infBots = bots.filter(b => b.strategyType !== "orb");
-    const orbBots = bots.filter(b => b.strategyType === "orb");
-    $("botList").innerHTML = infBots.length
-      ? infBots.map(botCard).join("")
+    $("botList").innerHTML = bots.length
+      ? bots.map(botCard).join("")
       : `<div class="empty">가동 중인 무한매수 봇이 없습니다.</div>`;
-    if ($("orbBotList")) {
-      $("orbBotList").innerHTML = orbBots.length
-        ? orbBots.map(b => botCard(b) + orbWatchTable(b)).join("")
-        : `<div class="empty">가동 중인 ORB 스캐너가 없습니다.</div>`;
-      $("orbBotCount").textContent = orbBots.length ? `(${orbBots.filter(b => b.isRunning).length}개 가동)` : "";
-    }
-    const byId = Object.fromEntries(bots.map(b => [b.botId, b]));
-    ["botList", "orbBotList"].forEach(listId => bindBotList($(listId), byId));
+    bindBotList($("botList"), Object.fromEntries(bots.map(b => [b.botId, b])));
   } catch (e) { console.error("봇 목록 실패:", e); }
 }
 
 // 정지·삭제는 되돌릴 수 없다. 무엇이 얼마나 팔리는지 숫자로 보여준다.
 // "청산합니다" 만으로는 그냥 넘기기 쉽다.
 function liquidationNotice(b, action) {
-  if (b.strategyType === "orb") {
-    // 스캐너는 종목이 여럿이라 한 줄 평단·현재가가 없다. 종목별로 보여 준다.
-    const held = (b.orbScan?.watch || []).filter(w => w.held);
-    const head = `국내 ORB 스캐너 (나무증권 국내주식 · ${b.mode === "LIVE" ? "실전" : "모의투자"})`;
-    if (!held.length) return `${head}\n\n보유 종목이 없습니다. 주문은 나가지 않습니다.\n\n${action}하시겠습니까?`;
-    return [head, "", ...held.map(w => `· ${w.name} ${w.held.units}주 · 평단 ${won(w.held.entryPrice)}원 · 현재가 ${w.price ? won(w.price) + "원" : "-"}`), "",
-      b.mode === "LIVE" ? `⚠️ 위 ${held.length}종목을 나무증권에 매도 주문으로 냅니다. 되돌릴 수 없습니다.` : "모의투자라 실제 주문은 나가지 않습니다.",
-      "", `${action}하시겠습니까?`].join("\n");
-  }
   const isNamuh = b.broker === "namuh";
   const isUsd = b.currency === "USD" || isNamuh;
   const brokerTitle = isNamuh ? "나무증권 (해외주식)" : "빗썸";
@@ -1866,9 +1684,6 @@ async function boot() {
   // 나무증권 UI 및 키 바인딩
   if ($("btnMarketCrypto")) $("btnMarketCrypto").onclick = () => setMarket("crypto");
   if ($("btnMarketStock")) $("btnMarketStock").onclick = () => setMarket("stock");
-  if ($("orbDeployBtn")) $("orbDeployBtn").onclick = deployOrbBot;
-  ["orbCapital", "orbMaxPos"].forEach(id => { if ($(id)) $(id).oninput = renderOrbCapitalHint; });
-  if ($("orb_exitMode")) { $("orb_exitMode").onchange = renderOrbExitMode; renderOrbExitMode(); }
   if ($("testNamuhKeyBtn")) $("testNamuhKeyBtn").onclick = () => namuhKeyAction(false);
   if ($("saveNamuhKeyBtn")) $("saveNamuhKeyBtn").onclick = () => namuhKeyAction(true);
   if ($("clearNamuhKeyBtn")) $("clearNamuhKeyBtn").onclick = clearNamuhKey;
@@ -1885,19 +1700,6 @@ async function boot() {
     console.warn("나무증권 종목 조회 실패:", e);
   }
   if (currentMarket === "stock") setMarket("stock");
-  try {
-    const k = await api("/api/namuh/kr_stocks");
-    KR_STOCKS = (k?.stocks || []).map(s => ({ code: s.code, name: s.name }));
-    window.ORB_MAX_WATCH = k?.maxWatch || 28;
-  } catch (e) {
-    KR_STOCKS = [];            // 못 받으면 비운다 — 서버가 거부할 종목을 보여 주지 않는다
-    console.warn("국내 종목 조회 실패:", e);
-  }
-  fillOrbWatchDefault();
-  if ($("orbWatch")) $("orbWatch").oninput = renderOrbWatchCount;
-  if ($("orbWatchMode")) { $("orbWatchMode").onchange = renderOrbWatchMode; renderOrbWatchMode(); }
-  if ($("orbWatchReset")) $("orbWatchReset").onclick = (e) => { e.preventDefault(); fillOrbWatchDefault(); };
-
   $("tabs").querySelectorAll(".tab").forEach(tab => tab.onclick = () => {
     $("tabs").querySelectorAll(".tab").forEach(t => t.classList.remove("active"));
     tab.classList.add("active");
@@ -1906,7 +1708,6 @@ async function boot() {
     if (tab.dataset.panel === "panel-gemini") loadGeminiScan();
     if (tab.dataset.panel === "panel-trades") loadTradeHistory();
     if (tab.dataset.panel === "panel-muma") loadMuma();
-    if (tab.dataset.panel === "panel-orb") { loadBots(); renderOrbCapitalHint(); }
     if (tab.dataset.panel === "panel-chart") loadChart();
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadGeminiStatus(); loadEgressIp(); }
   });
