@@ -438,9 +438,9 @@
           <div id="orbAutoBox" style="margin-top:.8rem">
             <div class="form-grid">
               <div><label class="label">예상 갭 하한 (%)</label>
-                <input class="input" type="number" id="sel_gapMinPct" value="1.5" min="-30" max="30" step="0.5"></div>
+                <input class="input" type="number" id="sel_gapMinPct" value="2.0" min="-30" max="30" step="0.5"></div>
               <div><label class="label">예상 갭 상한 (%)</label>
-                <input class="input" type="number" id="sel_gapMaxPct" value="6.0" min="-30" max="30" step="0.5"></div>
+                <input class="input" type="number" id="sel_gapMaxPct" value="5.0" min="-30" max="30" step="0.5"></div>
               <div><label class="label">예상 거래대금 하한 (억 원)</label>
                 <input class="input" type="number" id="sel_minExpTurnoverEok" value="0.5" min="0" step="0.5"></div>
               <div><label class="label">감시 종목 수 (최대 28)</label>
@@ -522,7 +522,7 @@
                 <input class="input" type="number" id="orb_gapMaxPct" value="5.0" min="-30" max="30" step="0.5"></div>
             </div>
             <div class="muted small" style="margin-top:.3rem">자동 선정은 08:57:50 예상체결로 고르지만 동시호가는 09:00 직전까지 바뀝니다.
-              실제 시가로 한 번 더 거릅니다. 선정 갭 범위는 이보다 조금 넓게 두세요.</div>
+              실제 시가로 한 번 더 거릅니다. 08:57:50 예상 갭은 실제와 ±0.4%p 안으로 맞아, 선정 갭 범위를 이 조건과 같게 두면 됩니다.</div>
             <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
               <input type="checkbox" id="orb_openHold" checked> 시초가 지지 — 첫 5분의 1분 종가가 모두 시가 이상이고 5분 양봉인 종목만</label>
             <label style="display:flex; align-items:center; gap:8px; margin-top:8px; font-size:.86rem; cursor:pointer">
