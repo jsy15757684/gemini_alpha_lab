@@ -40,3 +40,29 @@ def env_int(name: str, default: int) -> int:
         logger.warning(
             f"{name} 값 '{raw}' 을 정수로 읽을 수 없어 기본값 {default} 을 씁니다.")
         return int(default)
+
+
+def load_dotenv_keys(path: str, prefixes: tuple) -> int:
+    """.env 에서 이 접두어로 시작하는 줄만 환경변수로 올린다 (server.py 와 같은 규칙).
+
+    점검 스크립트용이다. 예전에는 `sudo -u bithumb env $(grep NAMUH_ .env | xargs) python …`
+    로 넘겼는데, sudo 가 명령줄 전체를 /var/log/auth.log 와 저널에 남겨 나무증권 키 ·
+    시크릿 · 계좌번호가 로그에 적혔다(2026-10-08 점검: auth.log 52줄 · 저널 48줄).
+    스크립트가 직접 읽으면 명령줄에 값이 없다. 이미 있는 변수와 빈 값은 건드리지 않는다.
+    """
+    n = 0
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, v = (x.strip() for x in line.split("=", 1))
+                if (v.startswith('"') and v.endswith('"')) or (v.startswith("'") and v.endswith("'")):
+                    v = v[1:-1]
+                if k.startswith(prefixes) and v and k not in os.environ:
+                    os.environ[k] = v
+                    n += 1
+    except OSError:
+        pass
+    return n

@@ -70,6 +70,13 @@ from services.envconf import env_int
 app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
+# Host 헤더 검사 — DNS 리바인딩 막기. 아무 웹사이트나 자기 이름을 127.0.0.1 로 바꿔
+# SSH 터널로 열린 콘솔에 같은 출처로 붙어 로그인을 두드릴 수 있다(2026-10-08 보안 점검).
+# 콘솔은 터널(localhost)로만 연다. 다른 이름으로 열어야 하면 APP_ALLOWED_HOSTS 에 더한다.
+from starlette.middleware.trustedhost import TrustedHostMiddleware   # noqa: E402
+_hosts = [h.strip() for h in os.getenv("APP_ALLOWED_HOSTS", "127.0.0.1,localhost,testserver").split(",") if h.strip()]
+app.add_middleware(TrustedHostMiddleware, allowed_hosts=_hosts)
+
 _origins = [o.strip() for o in os.getenv("APP_ALLOWED_ORIGINS", "").split(",") if o.strip()]
 app.add_middleware(CORSMiddleware, allow_origins=_origins, allow_credentials=True,
                    allow_methods=["GET", "POST"], allow_headers=["Content-Type"])

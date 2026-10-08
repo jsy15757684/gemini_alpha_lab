@@ -25,7 +25,8 @@
 서버에서 서비스 계정으로, 터미널을 붙여서(ssh -t) 실행한다:
   ssh -t <서버>
   cd /opt/gemini_alpha_lab
-  sudo -u bithumb env $(grep -E '^NAMUH_' .env | xargs) venv/bin/python scripts/namuh_live_smoke.py check
+  sudo -u bithumb venv/bin/python scripts/namuh_live_smoke.py check
+  (키는 스크립트가 .env 에서 읽는다. `env $(grep …)` 로 넘기면 sudo 가 키를 시스템 로그에 남긴다)
 
 결과는 화면과 data/live_smoke_log.jsonl 에 남는다. loc 단계의 기준 수량은
 data/live_smoke_state.json 에 둔다 (다음 날 loc-check 가 읽는다).
@@ -40,6 +41,10 @@ from zoneinfo import ZoneInfo
 
 ROOT = os.getenv("GAL_ROOT") or os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, ROOT)
+
+# 키는 .env 에서 직접 읽는다 — 명령줄로 넘기면 sudo 가 값을 시스템 로그에 남긴다.
+from services.envconf import load_dotenv_keys        # noqa: E402
+load_dotenv_keys(os.path.join(ROOT, ".env"), ("NAMUH_",))
 
 from services import namuh                          # noqa: E402
 from services.keystore import namuh_keystore        # noqa: E402

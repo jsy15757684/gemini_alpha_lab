@@ -895,7 +895,7 @@ def _acct_rows(*pairs):
 _saved_mock2 = os.environ.get("NAMUH_MOCK")
 _a5 = _nh_acct()
 _mine = _a5.account_no
-_other = "20101794704"
+_other = "20199999999"       # 가짜 실전(01) 계좌번호 — 실제 번호를 쓰지 않는다
 
 os.environ["NAMUH_MOCK"] = "1"
 requests.post = lambda *a_, **k: _Resp(200, _acct_rows((_mine, "03"), (_other, "01")))

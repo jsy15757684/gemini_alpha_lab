@@ -183,12 +183,13 @@ UPRO 1주로 태워 봅니다. **실제 돈이 나갑니다** (1주 왕복마다
 봇을 실계좌로 만들기 **전에**, `.env` 를 `NAMUH_MOCK=0` 으로 바꾸고 서비스를 재시작한 뒤에 합니다.
 모의 봇은 그 전에 지워 둡니다(모의 장부를 실계좌로 들고 가지 않게).
 
-단계마다 따로, 터미널을 붙여(`ssh -t`) 실행합니다. 주문 직전에 `UPRO` 를 직접 쳐야 진행됩니다.
+단계마다 따로, 터미널을 붙여(`ssh -t`) 실행합니다. 키는 스크립트가 `.env` 에서 직접 읽습니다
+(명령줄의 `env` 로 넘기면 sudo 가 키를 시스템 로그에 남깁니다). 주문 직전에 `UPRO` 를 직접 쳐야 진행됩니다.
 
 ```bash
 ssh -t <서버>
 cd /opt/gemini_alpha_lab
-sudo -u bithumb env $(grep -E '^NAMUH_' .env | xargs) venv/bin/python scripts/namuh_live_smoke.py check
+sudo -u bithumb venv/bin/python scripts/namuh_live_smoke.py check
 ```
 
 | 언제 (한국시간 · 서머타임 중) | 단계 | 확인하는 것 |

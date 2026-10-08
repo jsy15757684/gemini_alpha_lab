@@ -489,7 +489,7 @@ function botCard(b) {
   return `<div class="bot">
     <div class="bot-head">
       <div class="bot-id">
-        <span class="bot-title">${escapeHtml(b.coinName)} <span class="muted">(${b.coin})</span></span>
+        <span class="bot-title">${escapeHtml(b.coinName)} <span class="muted">(${escapeHtml(b.coin)})</span></span>
         ${state}
         <span class="bot-meta">${escapeHtml(meta)}</span>
       </div>
@@ -730,7 +730,7 @@ function renderBacktest(r) {
       <td>${won(t.entryPrice)}</td><td>${won(t.exitPrice)}</td>
       <td class="${cls(t.returnPct)}">${pct(t.returnPct)}</td>
       <td class="${cls(t.pnlKrw)}">${won(t.pnlKrw)}</td>
-      <td class="reason">${t.exitReason}</td>
+      <td class="reason">${escapeHtml(t.exitReason || "")}</td>
     </tr>`).join("");
 
   $("btResult").innerHTML = `<div class="card">
@@ -1025,7 +1025,7 @@ async function loadGeminiStatus() {
     const s = await api("/api/gemini/status");
     $("geminiStatus").innerHTML = [
       ["연동 상태", s.configured ? "등록됨" : "미등록"],
-      ["API 키", s.maskedKey || "-"],
+      ["API 키", escapeHtml(s.maskedKey || "-")],
       ["보관 위치", s.source === "env" ? "환경변수 (.env)" : s.source === "disk" ? "서버 파일 (data/gemini_key.json)" : "-"],
       ["기본 모델", `<code>${escapeHtml(s.model)}</code>`],
     ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("");
@@ -1129,11 +1129,11 @@ async function loadAccount() {
 
     $("accountStatus").innerHTML = [
       ["연동 상태", a.connected ? "등록됨" : "미등록"],
-      ["키", a.maskedKey || "-"],
+      ["키", escapeHtml(a.maskedKey || "-")],
       ["보관 위치", a.source === "env" ? "환경변수" : a.source === "disk" ? "서버 파일(평문)" : "-"],
       ["인증 확인", a.connected ? (a.balanceOk ? `성공 (API ${a.apiVersion})` : "실패") : "-"],
     ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("")
-      + `<div class="muted small" style="margin-top:.5rem">${a.storageNote}</div>`;
+      + `<div class="muted small" style="margin-top:.5rem">${escapeHtml(a.storageNote || "")}</div>`;
 
     if (a.connected && !a.editable) $("keyForm").classList.add("hidden");
     else $("keyForm").classList.remove("hidden");
@@ -1146,7 +1146,7 @@ async function loadAccount() {
              <div class="kv-row"><span class="kv-k">주문가능 원화</span><span class="kv-v">${won(a.krwAvailable)}원</span></div>
              <div class="kv-row"><span class="kv-k">총 보유 원화</span><span class="kv-v">${won(a.krwTotal)}원</span></div>
              ${Object.entries(a.coins || {}).map(([c, v]) =>
-               `<div class="kv-row"><span class="kv-k">${c}</span><span class="kv-v">${Number(v).toFixed(8)}</span></div>`).join("")}
+               `<div class="kv-row"><span class="kv-k">${escapeHtml(c)}</span><span class="kv-v">${Number(v).toFixed(8)}</span></div>`).join("")}
            </div>`;
   } catch (e) { console.error("계정 조회 실패:", e); }
 }
@@ -1270,13 +1270,13 @@ async function loadNamuhAccount() {
     if (stEl) {
       stEl.innerHTML = [
         ["연동 상태", a.connected ? "등록됨" : "미등록"],
-        ["앱 키", a.maskedKey || "-"],
-        ["계좌번호", a.maskedAccount || "-"],
+        ["앱 키", escapeHtml(a.maskedKey || "-")],
+        ["계좌번호", escapeHtml(a.maskedAccount || "-")],
         ["계좌 구분", a.connected ? (a.mock ? "🧪 모의투자" : "💰 실계좌") : "-"],
         ["보관 위치", a.source === "env" ? "환경변수" : a.source === "disk" ? "서버 파일(평문)" : "-"],
         ["인증 확인", a.connected ? (a.balanceOk ? "성공 (OAuth2 토큰 정상)" : "실패") : "-"],
       ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("")
-        + `<div class="muted small" style="margin-top:.5rem">${a.storageNote || ''}</div>`;
+        + `<div class="muted small" style="margin-top:.5rem">${escapeHtml(a.storageNote || "")}</div>`;
     }
 
     if (a.connected && a.editable) {
@@ -1511,7 +1511,7 @@ function renderTradeRecords() {
     const isBuy = t.action.includes("BUY");
     const isSell = t.action.includes("SELL");
 
-    let actBadge = `<span class="badge">${t.action}</span>`;
+    let actBadge = `<span class="badge">${escapeHtml(t.action || "")}</span>`;
     if (t.action === "BUY") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">일반매수</span>`;
     else if (t.action === "BUY_CHUNK") actBadge = `<span class="badge" style="background:rgba(34,197,94,0.18); color:var(--up);">분할매수 (T=${t.turn || 1})</span>`;
     // VR 전략은 제거했지만 옛 장부에 기록이 남아 있을 수 있다.
@@ -1530,8 +1530,8 @@ function renderTradeRecords() {
 
     return `
       <tr>
-        <td class="muted small">${t.time}</td>
-        <td><b>${t.coinName || t.coin}</b> <span class="muted small">(${t.coin})</span></td>
+        <td class="muted small">${escapeHtml(t.time || "")}</td>
+        <td><b>${escapeHtml(t.coinName || t.coin || "")}</b> <span class="muted small">(${escapeHtml(t.coin || "")})</span></td>
         <td><span class="badge ${t.mode === 'LIVE' ? 'badge-live' : 'badge-paper'}">${t.mode}</span></td>
         <td>${actBadge}</td>
         <td>${fmtPrice}</td>

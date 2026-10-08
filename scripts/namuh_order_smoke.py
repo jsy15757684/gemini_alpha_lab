@@ -17,8 +17,8 @@
   - 미국 정규장이 열려 있지 않으면 주문 없이 멈춘다.
 
 서버에서 서비스 계정으로 돌린다 (키는 .env 에서 읽는다):
-  ssh <서버> "cd /opt/gemini_alpha_lab && sudo -u bithumb env \\$(grep -E '^NAMUH_' .env | xargs) \\
-             ./venv/bin/python -" < scripts/namuh_order_smoke.py
+  ssh <서버> "cd /opt/gemini_alpha_lab && sudo -u bithumb ./venv/bin/python -" < scripts/namuh_order_smoke.py
+  (키는 스크립트가 .env 에서 읽는다 — 명령줄로 넘기면 sudo 가 키를 시스템 로그에 남긴다)
 """
 
 import json
@@ -26,6 +26,10 @@ import sys
 import time
 
 sys.path.insert(0, "/opt/gemini_alpha_lab")
+
+# 키는 .env 에서 직접 읽는다 — 명령줄로 넘기면 sudo 가 값을 시스템 로그에 남긴다.
+from services.envconf import load_dotenv_keys      # noqa: E402
+load_dotenv_keys("/opt/gemini_alpha_lab/.env", ("NAMUH_",))
 
 from services import namuh                         # noqa: E402
 from services.keystore import namuh_keystore       # noqa: E402

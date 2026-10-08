@@ -141,6 +141,11 @@ try:
     check("워커는 화면을 내주지 않는다", r.status_code == 403, f"HTTP {r.status_code}")
 
     print("── 화면(crypto) ──")
+    r = requests.post(f"http://127.0.0.1:{cport}/api/auth/login", json={"password": PASSWORD}, timeout=5,
+                      headers={"Host": "evil.example", "X-Requested-With": "alpha-console"})
+    r2 = requests.get(f"http://127.0.0.1:{cport}/", timeout=5, headers={"Host": "localhost:8888"})
+    check("Host 가 localhost · 127.0.0.1 이 아니면 거절한다 (DNS 리바인딩으로 로그인을 두드리지 못하게)",
+          r.status_code == 400 and r2.status_code == 200, f"HTTP {r.status_code} · localhost {r2.status_code}")
     r = requests.post(f"http://127.0.0.1:{cport}/api/auth/login", json={"password": PASSWORD}, timeout=5)
     check("CSRF: 화면 헤더 없는 POST 는 거절한다 (다른 사이트의 폼이 전체 정지를 못 누르게)",
           r.status_code == 403, f"HTTP {r.status_code}")
