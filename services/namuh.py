@@ -309,6 +309,7 @@ _BALANCE_CACHE: Dict[str, tuple] = {}
 _BALANCE_TTL_SEC = float(os.getenv("NAMUH_BALANCE_TTL_SEC") or "8")
 _BALANCE_LOCK = threading.Lock()
 _ORDERABLE_CACHE: Dict[str, tuple] = {}
+_FILL_TL = threading.local()
 _ORDERABLE_TTL_SEC = 15.0
 _price_lock = threading.Lock()
 _PRICE_TTL = 3.0  # 초
@@ -1005,6 +1006,14 @@ class NamuhAccount:
         # 주문 완료 코드는 00171 이다 (rt_cd 가 아니다).
         rsp_cd = str(res_data.get("rsp_cd", ""))
         order_id = str((res_data.get("Output_0") or {}).get("orr_no") or "")
+        if res.status_code >= 500 and not order_id:
+            # 게이트웨이 시간 초과(502 · 504)는 JSON 오류 본문을 줘도 주문이 이미 거래소에 닿았을 수 있다
+            if not await_fill:
+                raise OrderUnknown(f"{sym} LOC 매수 응답이 서버 오류(HTTP {res.status_code} · {rsp_cd})입니다 — "
+                                   f"접수됐을 수 있어 다시 내지 않습니다.", side="buy", ticker=sym, qty=qty,
+                                   price=price, qty_before=qty_before, order_type=order_type)
+            return self._resolve_unknown("buy", sym, qty, price, qty_before, "", order_type,
+                                         f"서버 오류 응답 (HTTP {res.status_code} · {rsp_cd})")
         if res.status_code != 200 or (not order_id and rsp_cd != "00171"):
             raise NamuhError(
                 f"나무증권 매수 주문 실패 ({rsp_cd}): "
@@ -1115,6 +1124,15 @@ class NamuhAccount:
         except Exception as e:
             return f" 미체결 주문 취소도 실패했습니다({e}) — 나무증권 앱에서 확인하세요."
 
+    @property
+    def _fill_unreadable(self) -> bool:
+        # 두 봇이 계좌 객체 하나를 같이 쓴다 — 스레드마다 따로 둔다 (한쪽이 다른 쪽 값을 덮지 않게)
+        return getattr(_FILL_TL, "unreadable", False)
+
+    @_fill_unreadable.setter
+    def _fill_unreadable(self, v: bool) -> None:
+        _FILL_TL.unreadable = bool(v)
+
     def _await_fill(self, sym: str, qty_before: float, want: float,
                     what: str, tries: int = 6, wait: float = 1.0) -> float:
         """주문 뒤 보유 수량이 얼마나 변했는지 확인한다 (실체결 수량).
@@ -1218,6 +1236,9 @@ class NamuhAccount:
 
         rsp_cd = str(res_data.get("rsp_cd", ""))
         order_id = str((res_data.get("Output_0") or {}).get("orr_no") or "")
+        if res.status_code >= 500 and not order_id:
+            return self._resolve_unknown("sell", sym, qty, price, qty_before, "", order_type,
+                                         f"서버 오류 응답 (HTTP {res.status_code} · {rsp_cd})")
         if res.status_code != 200 or (not order_id and rsp_cd != "00171"):
             raise NamuhError(
                 f"나무증권 매도 주문 실패 ({rsp_cd}): "

@@ -10,6 +10,7 @@
   3) 모든 판단에는 근거가 로그로 남는다.
 """
 
+import functools
 import os
 import time
 import uuid
@@ -38,6 +39,27 @@ MAX_ACTIVE_BOTS = env_int("APP_MAX_ACTIVE_BOTS", 10)
 #
 # 따라서 가격은 캔들 간격과 무관하게 항상 같은 주기로 확인한다.
 PRICE_POLL_SEC = env_float("APP_PRICE_POLL_SEC", 10.0)
+# 정지 · 삭제가 진행 중인 주문을 기다리는 최대 시간. 결과 모름 확인(60초) + 체결 확인 · 취소를 덮는다.
+ORDER_LOCK_WAIT_SEC = env_float("APP_ORDER_LOCK_WAIT_SEC", 150.0)
+
+
+def _order_locked(buy: bool):
+    """주문을 내고 장부에 적는 한 덩어리를 봇별 잠금으로 묶는다.
+
+    잠금이 없을 때: 첫 매수의 체결 확인(7~13초) 중 사용자가 삭제하면 봇이 지워진 뒤에
+    체결이 지워진 객체에 적혀 주식이 어느 장부에도 없게 됐다. 매수 중 정지(청산)하면
+    청산이 장부를 비운 뒤 매수가 그 위에 체결을 더했다. 정지 · 삭제는 이 잠금을 잡고
+    진행 중인 주문이 끝나기를 기다린다. 정지된 뒤에는 새 매수를 시작하지 않는다.
+    """
+    def deco(fn):
+        @functools.wraps(fn)
+        def wrapper(self, *a, **k):
+            with self._order_lock:
+                if buy and self._stop_requested:
+                    return None
+                return fn(self, *a, **k)
+        return wrapper
+    return deco
 
 CANDLE_REFRESH_SECONDS = {
     "1m": 30, "3m": 60, "5m": 90, "10m": 150,
@@ -114,6 +136,8 @@ class TradingBot:
         self._thread: Optional[threading.Thread] = None
         self._lock = threading.Lock()
         self._last_bar_time: Optional[int] = None
+        # 나무증권 일봉 봇이 마지막으로 산(또는 익절한) 미국 거래일 (뉴욕 날짜). 하루 한 번을 보장한다.
+        self.buy_session: Optional[str] = None
         # 복원 직후 첫 봉을 '이미 소비한 것' 으로 볼지 (아래 restore 참고)
         self._adopt_bar_on_start = False
         # 미국 주식 정수 1주 매수 후 남은 잔돈 이월금 (USD)
@@ -129,6 +153,11 @@ class TradingBot:
         # 결과를 모르는 주문(namuh.OrderUnknown) — 있으면 새 주문을 내지 않는다.
         # 계좌 수량 = 장부이고 그 주문이 살아 있을 수 없게 된 뒤(정규장 마감)에 풀린다.
         self.order_hold: Optional[Dict[str, Any]] = None
+        self._order_lock = threading.RLock()
+        self._stop_requested = False          # 정지 뒤에는 잠금을 기다리던 매수도 시작하지 않는다
+        # 보내는 중인 나무증권 주문. 주문 직전에 저장하고 끝나면 지운다 — 재시작 때 남아 있으면
+        # 그 주문의 결과를 모르는 것이라 order_hold 로 이어 받는다.
+        self._inflight: Optional[Dict[str, Any]] = None
         # 이번 판단에서 체결된 나무증권 주문들 [(수량, 실제 체결가 또는 None)] — 장부 가격을 정한다
         self._fills: List[Tuple[float, Optional[float]]] = []
         self._hold_checked_at = 0.0
@@ -196,6 +225,7 @@ class TradingBot:
     # ── 수명주기 ──
     def start(self):
         self.is_running = True
+        self._stop_requested = False
         # 루프 첫 틱 전에 상태를 조회하면 현재가가 0 으로 보였다. 시작 시점에 채운다.
         try:
             self.last_price = self._fetch_price()
@@ -252,7 +282,17 @@ class TradingBot:
         False 면 계좌에 물량이나 미체결 주문이 남아 있다는 뜻이다.
         호출부(삭제)는 이 값을 보고 지울지 말지 정해야 한다.
         """
+        if not self._order_lock.acquire(timeout=ORDER_LOCK_WAIT_SEC):
+            raise LiquidationFailed(f"{self.coin} 봇이 주문을 처리하는 중이라 정지하지 않았습니다 — "
+                                    f"잠시 뒤 다시 시도하세요.")
+        try:
+            return self._stop_locked(liquidate)
+        finally:
+            self._order_lock.release()
+
+    def _stop_locked(self, liquidate: bool) -> bool:
         self.is_running = False
+        self._stop_requested = True
         if liquidate and self.pos.open:
             try:
                 price = self._fetch_price()
@@ -412,6 +452,9 @@ class TradingBot:
                             # 가격, 즉 그 봉의 고점에서 새 사이클을 시작하는 셈이다.
                             # 백테스트는 다음 봉을 기다리므로 실전과 백테스트가 어긋났다.
                             self._last_bar_time = cur_bar_time
+                            if self._us_daily():
+                                self.buy_session = self._ny_date()   # 익절한 날은 새 회차를 시작하지 않는다
+                                self._persist()
                             time.sleep(poll)
                             continue
 
@@ -435,10 +478,12 @@ class TradingBot:
                                 f"원전 LOC 대기 — 미국장 개장 후 접수합니다 "
                                 f"(T={self.pos.turn}/{self.params.splitCount})")
                     else:
-                        buy_now = bool(cur_bar_time and cur_bar_time != self._last_bar_time)
+                        buy_now = self._bar_gate(cur_bar_time)
 
                     if buy_now:
                         self._last_bar_time = cur_bar_time
+                        if self._us_daily():
+                            self.buy_session = self._ny_date()
                         if self.params.raoerVersion == "v4":
                             # V4.0 공식: 잔여 현금 / (N - T)
                             # 미국 주식(USD)인 경우 이전 회차의 미체결 잔돈(budget_carryover)을 제외한 미배정 순수 현금 기준으로 분할
@@ -541,13 +586,44 @@ class TradingBot:
             time.sleep(poll)
 
     # ── 체결 ──
+    def _us_daily(self) -> bool:
+        """나무증권 일봉 봇 — '새 봉' 이 아니라 '새 미국 거래일' 에 한 번 산다.
+
+        일봉은 1시간마다 받는다. 개장 직후 받아 둔 봉은 아직 **전날** 봉이라 그걸로 한 번
+        사고, 다음 갱신에서 **오늘** 봉이 생기면 그것도 '새 봉' 이라 같은 날 또 샀다.
+        (2026-09-25 모의 TQQQ: 13:30 1회차 · 13:49 2회차 — UTC.) 장중에만 판단하므로
+        뉴욕 날짜가 곧 거래일이다.
+        """
+        return self.broker == "namuh" and self.interval in ("12h", "24h")
+
+    def _bar_gate(self, cur_bar_time: Optional[int]) -> bool:
+        """LOC 가 아닌 모드의 매수 시점. 나무증권 일봉은 미국 거래일마다 한 번, 그 밖은 새 봉마다."""
+        if not cur_bar_time:
+            return False
+        if self._us_daily():
+            return self.buy_session != self._ny_date()
+        return cur_bar_time != self._last_bar_time
+
+    @staticmethod
+    def _ny_date() -> str:
+        return datetime.now(ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
+
     # ── 나무증권 주문 통로 — 결과를 모르는 주문은 봇을 멈춰 세운다 ──
+    def _mark_inflight(self, side: str, k: Dict[str, Any]) -> None:
+        self._inflight = {"side": side, "ticker": self.coin, "qty": k.get("units"),
+                          "at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"), "etDate": self._ny_date(),
+                          "qtyBefore": self.pos.units}
+        self._persist()
+
     def _nh_buy(self, *a, **k) -> Dict[str, Any]:
+        self._mark_inflight("buy", k)
         try:
             res = self.namuh_account.market_buy(*a, **k)
         except namuh.OrderUnknown as e:
             self._hold_unknown(e.to_dict())
             raise                                   # 호출부는 NamuhError 로 받아 '이번엔 실패' 로 끝낸다
+        finally:
+            self._inflight = None                   # 다음 저장에 반영된다 (장부를 적은 뒤)
         self._fills.append((float(res.get("units") or 0), res.get("fillPrice")))
         if res.get("remainderUnknown"):
             self._hold_unknown({"side": "buy", "ticker": self.coin, "qty": res.get("requestedUnits"),
@@ -557,11 +633,14 @@ class TradingBot:
         return res
 
     def _nh_sell(self, *a, **k) -> Dict[str, Any]:
+        self._mark_inflight("sell", {"units": a[1] if len(a) > 1 else k.get("units")})
         try:
             res = self.namuh_account.market_sell(*a, **k)
         except namuh.OrderUnknown as e:
             self._hold_unknown(e.to_dict())
             raise
+        finally:
+            self._inflight = None
         self._fills.append((float(res.get("units") or 0), res.get("fillPrice")))
         if res.get("remainderUnknown"):
             self._hold_unknown({"side": "sell", "ticker": self.coin, "qty": res.get("requestedUnits"),
@@ -633,6 +712,7 @@ class TradingBot:
             self.log("WARNING", self.last_decision)
         return True
 
+    @_order_locked(buy=True)
     def _enter(self, price: float, reason: str):
         invest = self.cash
         min_invest = 10.0 if self.currency == "USD" else 5000.0
@@ -746,6 +826,7 @@ class TradingBot:
             return []
         return [{"leg": "평단", "units": qty, "limit": round(avg, 2)}]
 
+    @_order_locked(buy=True)
     def _place_loc_orders(self, price: float, chunk_budget: float,
                           session: str, reason: str) -> None:
         """마감 전 LOC 접수. 장부는 건드리지 않는다 (체결 전이다)."""
@@ -834,6 +915,7 @@ class TradingBot:
             self.log("WARNING", f"LOC 접수가 거부돼 오늘 세션을 종료합니다: {why}{hint}")
         self._persist()
 
+    @_order_locked(buy=False)
     def _cancel_pending_loc(self, why: str) -> None:
         """미체결 LOC 를 거둬들인다.
 
@@ -865,6 +947,7 @@ class TradingBot:
         self.pending_orders = left
         self._persist()
 
+    @_order_locked(buy=False)
     def _settle_pending_loc(self) -> None:
         """지난 세션의 LOC 를 잔고 변화로 정산한다.
 
@@ -985,6 +1068,7 @@ class TradingBot:
                              f"— ${self.budget_carryover:,.2f} 를 다음 봉으로 이월합니다 (회차 유지).")
         self._persist()
 
+    @_order_locked(buy=True)
     def _enter_chunk(self, price: float, invest_krw: float, reason: str):
         """라오어 무한매수 분할 매수 (원조 반반 매수 · 미국주식 정수 1주 · 잔돈 이월).
 
@@ -1070,6 +1154,10 @@ class TradingBot:
                                 ("평단+5%", units_b, loc_b_price)):
                             if _leg_units < 1:
                                 continue
+                            if self.order_hold:
+                                # 앞 다리의 결과를 모른다 — 다음 다리의 체결 확인이 앞 다리의 늦은
+                                # 체결을 자기 것으로 셀 수 있어 내지 않는다
+                                break
                             try:
                                 res = self._nh_buy(
                                     self.coin, amount_usd=_leg_units * cost_per_share,
@@ -1245,6 +1333,7 @@ class TradingBot:
                         f"({inv_str}) | 평단가 {avg_str} (총 {u_total:.4f} {self.coin}){carry_note} | 사유: {reason}")
         self._persist()
 
+    @_order_locked(buy=False)
     def _exit(self, price: float, reason: str):
         units = self.pos.units
         if units <= 0:
@@ -1351,6 +1440,7 @@ class TradingBot:
             self.loc_session = None
         self._persist()
 
+    @_order_locked(buy=False)
     def _exit_quarter(self, price: float, reason: str):
         """라오어 무한매수 소진 시 25% 쿼터 매도 방어 (미국 주식은 정수 1주 단위)."""
         cut_ratio = self.params.quarterCutPct / 100.0
@@ -1437,6 +1527,7 @@ class TradingBot:
             "pendingOrders": list(self.pending_orders),
             "locSession": self.loc_session,
             "orderHold": self.order_hold,
+            "inflightOrder": self._inflight,
             "units": self.pos.units, "entryPrice": self.pos.entryPrice,
             "peakPrice": self.pos.peakPrice,
             "turn": self.pos.turn,
@@ -1449,6 +1540,7 @@ class TradingBot:
             # '새 봉' 으로 보여 즉시 한 회차를 더 산다. 실측: 오늘 배포로 12번
             # 재시작했더니 6시간봉 봇이 8시간 만에 T1 → T19 까지 갔다.
             "lastBarTime": self._last_bar_time,
+            "buySession": self.buy_session,
         }
 
     @classmethod
@@ -1467,8 +1559,17 @@ class TradingBot:
         bot.pending_orders = list(d.get("pendingOrders") or [])
         bot.loc_session = d.get("locSession")
         bot.order_hold = d.get("orderHold")
+        if d.get("inflightOrder") and not bot.order_hold:
+            # 주문을 보내던 중에 프로세스가 내려갔다(배포 재시작 · 장애). 체결됐는지 모른다.
+            f = d["inflightOrder"]
+            bot.order_hold = {**f, "message": "재시작될 때 주문을 처리하던 중이었습니다 — 체결 여부를 계좌로 "
+                                             "확인할 때까지 새 주문을 내지 않습니다."}
         lbt = d.get("lastBarTime")
         bot._last_bar_time = int(lbt) if lbt else None
+        bot.buy_session = d.get("buySession")
+        if not bot.buy_session and lbt and bot._us_daily():
+            # 이 필드가 생기기 전의 봇: 마지막으로 소비한 일봉의 뉴욕 날짜로 잡는다
+            bot.buy_session = datetime.fromtimestamp(int(lbt) / 1000, ZoneInfo("America/New_York")).strftime("%Y-%m-%d")
         # 이 값이 없던 시절에 저장된 봇: 이미 포지션을 들고 있다면 어느 봉에서
         # 샀는지 알 수 없다. 그 경우 첫 판단에서 현재 봉을 '이미 소비했다' 로
         # 잡아 중복 매수를 막는다. 포지션이 없으면 새로 시작해도 되므로 둔다.
@@ -1632,7 +1733,11 @@ class BotManager:
             if not ok:
                 skipped.append(f"{bot.coin}: {why}")
                 continue
-            bot.stop(liquidate=True)
+            try:
+                bot.stop(liquidate=True)
+            except LiquidationFailed as e:
+                skipped.append(f"{bot.coin}: {e}")
+                continue
             n += 1
         return n, skipped
 
@@ -1640,6 +1745,11 @@ class BotManager:
         bot = self.bots.get(bot_id)
         if not bot:
             return False
+        if getattr(bot, "order_hold", None):
+            # 지우면 확인할 기록(결과를 모르는 주문)이 사라진다. 정지는 된다 — 기록은 남는다.
+            raise LiquidationFailed(
+                f"{bot.coin} 봇은 결과를 모르는 주문 확인 중이라 지우지 않았습니다 — 정지는 할 수 있습니다. "
+                f"나무증권 앱에서 체결을 확인한 뒤 다시 시도하거나 알려 주세요.")
 
         # 지우기 전에 팔 수 있는 상태인지 먼저 본다. 여기서 막으면 돌고 있는
         # 봇을 건드리지 않고 그대로 둘 수 있다.
