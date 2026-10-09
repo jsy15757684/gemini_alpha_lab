@@ -11,6 +11,7 @@
 """
 
 import functools
+import math
 import os
 import time
 import uuid
@@ -21,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from services import backtest, bithumb, jsonfile, botstore, tradelog
-from services import gemini_service, namuh, macro_regime
+from services import gemini_service, namuh, macro_regime, muma_sheet
 from services.namuh import NamuhAccount, NAMUH_STOCKS
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 from services.envconf import env_float, env_int
@@ -241,7 +242,11 @@ class TradingBot:
         if self.params.strategyType == "raoer_infinite":
             v_title = "라오어 V4.0" if self.params.raoerVersion == "v4" else "라오어 V1.0"
             formula_desc = "잔금비례: 잔여현금 ÷ 잔여회차" if self.params.raoerVersion == "v4" else f"고정 1회 {self.initial_krw / self.params.splitCount:,.2f}{curr_lbl}"
-            if self.params.raoerUseAi:
+            if self._excel():
+                self.log("INFO", f"🔄 [무매법 엑셀 방식] {self.params.splitCount}분할 · 1회분할금 "
+                                 f"${self.initial_krw / self.params.splitCount:,.2f} 고정 · 1.15 LOC + 평단 LOC + 사다리 · "
+                                 f"평단 +{self.params.targetProfitPct}% 전량 매도 (기어 · AI · 쿼터매도 없음)")
+            elif self.params.raoerUseAi:
                 self.log("INFO", f"🔄✨ [{v_title} AI 스마트 무한매수] {self.params.splitCount}분할 ({formula_desc} · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
                                  f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
             else:
@@ -402,13 +407,14 @@ class TradingBot:
                     cur_bar_time = bars[-1].get("time") if bars else None
 
                     # 매크로 국면 감지 적응형 변속 기어 점검 (나스닥 200일선 & VIX)
-                    if (self.currency == "USD" or self.broker == "namuh") and self.params.useMacroGear:
+                    if (self.currency == "USD" or self.broker == "namuh") and self.params.useMacroGear and not self._excel():
                         try:
                             self.last_macro_regime = macro_regime.get_macro_regime()
                         except Exception as e:
                             logger.warning(f"[{self.bot_id}] 매크로 국면 조회 실패: {e}")
 
-                    if self.params.raoerUseAi and (now - last_ai_check >= float(candle_ttl) or not self.last_ai_analysis):
+                    if (self.params.raoerUseAi and not self._excel()
+                            and (now - last_ai_check >= float(candle_ttl) or not self.last_ai_analysis)):
                         try:
                             ai_res = gemini_service.analyze_raoer_context(
                                 coin=self.coin,
@@ -438,6 +444,8 @@ class TradingBot:
 
                     if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
                         target_tp = self.last_ai_analysis.get("dynamicTargetProfitPct", target_tp)
+                    if self._excel():
+                        target_tp = self.params.targetProfitPct     # 엑셀: 목표 고정 (기어 · AI 를 쓰지 않는다)
 
                     # 1) 목표 익절선 도달 시 즉시 전량 익절
                     if self.pos.open:
@@ -455,6 +463,11 @@ class TradingBot:
                             if self._us_daily():
                                 self.buy_session = self._ny_date()   # 익절한 날은 새 회차를 시작하지 않는다
                                 self._persist()
+                            if self._excel():
+                                # LOC 방식은 buy_session 이 아니라 loc_session 을 본다 — 익절한 날 첫 매수 LOC 를 다시 걸지 않게
+                                from services import market_schedule as _ms
+                                self.loc_session = _ms.loc_window()["sessionDate"]
+                                self._persist()
                             time.sleep(poll)
                             continue
 
@@ -464,7 +477,7 @@ class TradingBot:
                     # 40거래일). 마감 20분 전 창에서 하루 한 번만 낸다.
                     # 그 외 모드는 종전대로 캔들 갱신마다 판단한다.
                     loc_native = (self.broker == "namuh"
-                                  and self.params.locMode == "half_half")
+                                  and self.params.locMode in ("half_half", "excel"))
                     if loc_native:
                         from services import market_schedule as _ms
                         _win = _ms.loc_window()
@@ -484,6 +497,10 @@ class TradingBot:
                         self._last_bar_time = cur_bar_time
                         if self._us_daily():
                             self.buy_session = self._ny_date()
+                        if self._excel():
+                            self._place_excel_orders(price, _win["sessionDate"])
+                            time.sleep(poll)
+                            continue
                         if self.params.raoerVersion == "v4":
                             # V4.0 공식: 잔여 현금 / (N - T)
                             # 미국 주식(USD)인 경우 이전 회차의 미체결 잔돈(budget_carryover)을 제외한 미배정 순수 현금 기준으로 분할
@@ -560,6 +577,16 @@ class TradingBot:
                             rev_note = " (V4 리버스 모드: 쿼터 매도 후 롤백)" if self.params.raoerVersion == "v4" else ""
                             self.last_decision = f"무한매수 {self.params.splitCount}회 소진 쿼터매도 방어{rev_note} ({pnl_pct:+.2f}%)"
                             self._exit_quarter(price, self.last_decision)
+                    elif self._excel():
+                        if self.pos.open:
+                            pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
+                            self.last_decision = (
+                                f"무매법(엑셀) {self.pos.turn}회차 · 평단 ${self.pos.entryPrice:,.2f} · 손익 {pnl_pct:+.2f}% · "
+                                f"매도 목표 ${self.pos.entryPrice * (1 + target_tp / 100.0):,.2f}"
+                                + (" · 오늘 LOC 접수 완료" if self.loc_session == _win["sessionDate"] else " · LOC 접수 대기"))
+                        elif self.loc_session != _win["sessionDate"]:
+                            self.last_decision = "무매법(엑셀) 첫 매수 LOC 대기 — 미국장 개장 후 접수합니다"
+                        # 오늘 주문 없음(운용자본 부족 등) 사유는 지우지 않고 둔다
                     else:
                         if self.pos.open:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
@@ -826,6 +853,126 @@ class TradingBot:
             return []
         return [{"leg": "평단", "units": qty, "limit": round(avg, 2)}]
 
+    def _excel(self) -> bool:
+        """무매법 엑셀 방식 (locMode='excel') — 나무증권 미국 ETF 전용."""
+        return self.broker == "namuh" and self.params.locMode == "excel"
+
+    def _excel_targets(self, price: float) -> Dict[str, Any]:
+        """오늘 낼 LOC 들 — services.muma_sheet.order_plan(엑셀 수식 그대로)을 쓴다.
+
+          1회분할금 = SEED(운용자본) ÷ 분할수 (고정 · V4 잔금비례 아님)
+          보유 없음  1회분할금으로 살 수 있는 만큼 · 현재가 × 1.05 LOC
+          보유 있음  0.5회분 현재가 × 1.15 LOC(큰수) + 0.5회분 평단 LOC + 사다리(1주씩 LOC)
+          수량은 엑셀처럼 ROUND (0.5회분이 1주 값의 절반 이상이면 1주)
+
+        봇 현금으로 '전부 체결될 때' 의 금액을 낼 수 있어야 한다. 모자라면 사다리 아래 단부터,
+        그다음 평단 LOC, 1.15 LOC 순으로 덜어낸다 (엑셀은 현금 검사가 없다 — 사람이 봤다).
+        """
+        plan = muma_sheet.order_plan(self.initial_krw, self.pos.units, self.pos.entryPrice, price,
+                                     self.params.splitCount, self.params.targetProfitPct)
+        legs = [{"leg": b["leg"], "units": int(b["units"]), "limit": round(float(b["price"]), 2)}
+                for b in plan["buys"] if int(b["units"]) > 0]
+        legs += [{"leg": f"사다리 {l['level']}단", "units": int(l["units"]), "limit": round(float(l["price"]), 2)}
+                 for l in plan["ladder"] if int(l["units"]) > 0]
+        fee = self.params.feePct / 100.0
+        cost = lambda ls: sum(x["units"] * x["limit"] * (1 + fee) for x in ls)
+        dropped = []
+        order = sorted(range(len(legs)), key=lambda i: (not legs[i]["leg"].startswith("사다리"), -i))
+        keep = list(legs)
+        for i in order:
+            if cost(keep) <= self.cash + 1e-9:
+                break
+            dropped.append(legs[i]["leg"])
+            keep.remove(legs[i])
+        return {"legs": keep, "dropped": dropped, "plan": plan}
+
+    @_order_locked(buy=True)
+    def _place_excel_orders(self, price: float, session: str) -> None:
+        """무매법 엑셀 방식의 하루 주문 — LOC 를 접수하고 장부는 마감 뒤 정산한다."""
+        t = self._excel_targets(price)
+        legs, plan = t["legs"], t["plan"]
+        count = self.pos.turn + 1
+        reason = f"무매법(엑셀) {count}회차 · 1회분할금 ${plan['unitBudget']:,.2f}"
+        if t["dropped"]:
+            self.log("WARNING", f"현금 ${self.cash:,.2f} 이 모자라 {', '.join(t['dropped'])} 은(는) 내지 않습니다.")
+        if not legs:
+            self.loc_session = session
+            z = plan.get("zeroLegs")
+            min_seed = z["minSeed"] if z else math.ceil(price * self.params.splitCount)
+            why = (f"1회분할금 ${plan['unitBudget']:,.2f} 로는 1주(${price:,.2f})를 못 삽니다"
+                   f" — 엑셀 기준 운용자본(SEED) ${min_seed:,} 이상이 필요합니다"
+                   if self.cash >= price else f"현금 ${self.cash:,.2f} 이 1주 값보다 적습니다")
+            self.last_decision = f"무매법(엑셀) 오늘 주문 없음 — {why}"
+            self.log("INFO", self.last_decision)
+            self._persist()
+            return
+        desc = " + ".join(f"{x['leg']} {x['units']}주@${x['limit']:,.2f}" for x in legs)
+        if self.mode != "LIVE":
+            # 모의투자: 종가를 모르니 현재가로, 상한이 현재가 이상인 다리만 체결시킨다
+            got = [x for x in legs if x["limit"] >= price]
+            self.loc_session = session
+            if got:
+                q = sum(x["units"] for x in got)
+                self._book_buy(q, price, reason + f" · {desc}", carry=False)
+            else:
+                self.last_decision = f"무매법(엑셀) 모의: 상한이 모두 현재가 아래 — 오늘 체결 없음 ({desc})"
+                self._persist()
+            return
+        if not (self.namuh_account and self.namuh_account.configured):
+            self.log("WARNING", "나무증권 실주문 보류 — API 키가 등록되지 않았습니다.")
+            return
+        try:
+            bal = self.namuh_account.get_balance()
+            qty_before = float(bal.get("qtyByTicker", {}).get(self.coin, 0.0))
+            avg_before = float(((bal.get("holdings") or {}).get(self.coin) or {}).get("avgPrice") or 0.0)
+        except Exception as e:
+            self._loc_retry_after = time.time() + LOC_RETRY_SEC
+            self.log("ERROR", f"LOC 접수 전 잔고 조회 실패 — {LOC_RETRY_SEC:.0f}초 뒤 다시 시도합니다: {e}")
+            return
+        placed, rejected = [], []
+        for x in legs:
+            if self.order_hold:
+                break                       # 앞 주문의 결과를 모른다 — 더 내지 않는다
+            try:
+                res = self._nh_buy(self.coin, units=x["units"], order_type=namuh.ORD_LOC,
+                                   limit_price=x["limit"], await_fill=False)
+                placed.append({"orderId": res.get("orderId"), "leg": x["leg"], "units": x["units"],
+                               "limit": x["limit"], "session": session, "qtyBefore": qty_before,
+                               "avgBefore": avg_before, "budget": plan["unitBudget"], "reason": reason,
+                               "mode": "excel"})
+                self.log("ORDER", f"LOC 접수 {x['leg']} ${x['limit']:,.2f} × {x['units']}주 (주문번호 {res.get('orderId')})")
+            except namuh.NamuhError as e:
+                rejected.append(e.message)
+                self.log("ERROR", f"LOC 접수 실패 ({x['leg']}): {e.message}")
+        self._fills = []                    # LOC 는 접수만 — 체결은 마감 뒤 정산에서 읽는다
+        self.loc_session = session          # 한 번이라도 보냈으면 오늘은 여기까지 (두 번 걸지 않는다)
+        if placed:
+            self.pending_orders.extend(placed)
+            self.last_decision = f"무매법(엑셀) LOC 접수 ({desc}) · 마감 체결 대기"
+        else:
+            self.last_decision = f"무매법(엑셀) LOC 접수 실패 — {rejected[0] if rejected else '알 수 없음'}"
+        self._persist()
+
+    def _book_buy(self, qty: float, px: float, reason: str, carry: bool = True) -> None:
+        """체결된 매수를 장부에 적는다 (평단 · 회차 · 현금)."""
+        fee = self.params.feePct / 100.0
+        invest = qty * px
+        u0, p0 = self.pos.units, self.pos.entryPrice
+        u_total = u0 + qty
+        self.pos.units = u_total
+        self.pos.entryPrice = ((u0 * p0) + invest) / u_total if u_total > 0 else px
+        self.pos.peakPrice = max(self.pos.peakPrice, px)
+        self.pos.turn += 1
+        self.pos.totalInvested += invest
+        self.cash = max(0.0, self.cash - invest * (1 + fee))
+        if not carry:
+            self.budget_carryover = 0.0
+        self._record_trade("BUY_CHUNK", px, qty, invest, pnl=0.0, return_pct=0.0, reason=reason)
+        self.log("BUY", f"[{self.pos.turn}회차 체결] {qty:g}주 @ ${px:,.2f} (${invest:,.2f}) | "
+                        f"평단 ${self.pos.entryPrice:,.2f} (총 {u_total:g}주) | {reason}")
+        self.last_decision = f"체결 {qty:g}주 @ ${px:,.2f} · 평단 ${self.pos.entryPrice:,.2f}"
+        self._persist()
+
     @_order_locked(buy=True)
     def _place_loc_orders(self, price: float, chunk_budget: float,
                           session: str, reason: str) -> None:
@@ -949,10 +1096,10 @@ class TradingBot:
 
     @_order_locked(buy=False)
     def _settle_pending_loc(self) -> None:
-        """지난 세션의 LOC 를 잔고 변화로 정산한다.
+        """지난 세션의 LOC 를 정산한다.
 
-        주문 조회 API 가 없어서 체결 수량을 직접 물어볼 수 없다. 대신
-        잔고가 수량과 매입단가를 같이 주므로 체결가를 역산할 수 있다.
+        주문번호마다 체결내역(order_fill)으로 체결 수량 · 체결가를 읽는다. 하나라도 못 읽으면
+        예전처럼 잔고 변화로 역산한다 (잔고는 수량과 매입단가를 같이 준다).
 
             체결가 = (새수량×새평단 − 옛수량×옛평단) ÷ (새수량 − 옛수량)
         """
@@ -984,12 +1131,24 @@ class TradingBot:
         qty_before = float(ripe[0].get("qtyBefore") or 0.0)
         avg_before = float(ripe[0].get("avgBefore") or 0.0)
         budget = float(ripe[0].get("budget") or 0.0)
+        excel = any(o.get("mode") == "excel" for o in ripe)
         legs = " + ".join(f"{o['leg']} {o['units']}주@${o['limit']:,.2f}" for o in ripe)
         filled = qty_now - qty_before
+        by_order = self._loc_fills(ripe)          # (수량, 체결금액) 또는 None
+        if by_order is not None:
+            if abs(by_order[0] - filled) > 1e-9:
+                self.log("WARNING", f"[LOC 정산] 주문 체결 {by_order[0]:g}주 ≠ 잔고 변화 {filled:g}주 — "
+                                    f"주문 체결내역으로 적습니다 (봇 밖의 매매가 있었는지 확인하세요).")
+            filled = by_order[0]
 
         # 정산했으니 목록에서 뺀다. 실패해도 같은 주문을 두 번 반영하지 않는다.
         self.pending_orders = [o for o in self.pending_orders if o not in ripe]
 
+        if excel and filled < 1:
+            self.last_decision = f"무매법(엑셀) LOC 미체결 (종가가 모든 상한 위) · 회차 유지 {self.pos.turn}"
+            self.log("INFO", f"[LOC 정산] {legs} 미체결 — 종가가 상한을 넘었습니다. 이월 없이 다음 거래일에 다시 냅니다.")
+            self._persist()
+            return
         if filled < 1:
             self.budget_carryover = min(self.cash, budget) + self.budget_carryover
             self.last_decision = (
@@ -1000,7 +1159,9 @@ class TradingBot:
             self._persist()
             return
 
-        if filled > 0 and qty_now > 0:
+        if by_order is not None and by_order[1] > 0:
+            fill_price = by_order[1] / filled
+        elif filled > 0 and qty_now > 0:
             fill_price = ((qty_now * avg_now) - (qty_before * avg_before)) / filled
         else:
             fill_price = self.last_price or self.pos.entryPrice
@@ -1018,7 +1179,10 @@ class TradingBot:
         self.pos.peakPrice = max(self.pos.peakPrice, fill_price)
         self.pos.turn += 1
         self.pos.totalInvested += invest
-        self.budget_carryover = max(0.0, min(self.cash, budget) + self.budget_carryover - spent)
+        if excel:
+            self.budget_carryover = 0.0           # 엑셀은 1회분할금이 고정이라 남은 돈을 넘기지 않는다
+        else:
+            self.budget_carryover = max(0.0, min(self.cash, budget) + self.budget_carryover - spent)
         self.cash = max(0.0, self.cash - spent)
 
         reason = ripe[0].get("reason") or "LOC 체결"
@@ -1030,6 +1194,24 @@ class TradingBot:
         self.last_decision = (f"LOC 체결 {filled:.0f}주 @ ${fill_price:,.2f} · "
                               f"평단 ${self.pos.entryPrice:,.2f}")
         self._persist()
+
+    def _loc_fills(self, orders: List[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
+        """주문들의 체결 (수량 합, 체결금액 합). 하나라도 못 읽으면 None — 잔고로 정산한다."""
+        qty = amt = 0.0
+        for o in orders:
+            oid = o.get("orderId")
+            if not oid or str(oid).startswith(("UNKNOWN", "MOCK")):
+                return None
+            try:
+                f = self.namuh_account.order_fill(oid)
+            except Exception as e:
+                self.log("WARNING", f"[LOC 정산] 주문 {oid} 체결내역 조회 실패 — 잔고로 정산합니다: {e}")
+                return None
+            if f is None:
+                return None
+            qty += f["qty"]
+            amt += f["qty"] * f["price"]
+        return qty, amt
 
     def _skip_turn(self, price: float, total_budget: float, chased: bool,
                    where: str, limit_desc: str, note: str = "") -> None:

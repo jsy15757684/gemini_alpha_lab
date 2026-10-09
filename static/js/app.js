@@ -273,9 +273,11 @@ let lastNamuhAccount = null;
 function renderLocModeHint() {
   const el = $("locModeHint");
   const mode = $("bp_locMode")?.value;
-  const native = mode === "half_half";
+  const native = mode === "half_half" || mode === "excel";
   if (el) {
-    el.textContent = native
+    el.textContent = mode === "excel"
+      ? "무매법.xlsx 그대로: 1회분할금 = 운용자본 ÷ 분할수(고정). 하루 한 번 0.5회분 현재가×1.15 LOC + 0.5회분 평단 LOC + 아래로 1주씩 사다리 LOC, 평단×(1+목표%) 에 전량 매도. 매크로 기어 · AI 는 쓰지 않습니다."
+      : native
       ? "하루 한 번, 미국장이 열려 있는 동안 LOC 를 걸어두고 그날 종가로 체결됩니다. 40분할 = 40거래일 — 캔들 간격은 쓰이지 않습니다."
       : (mode === "half_half_now"
           ? "캔들이 갱신될 때마다 평단을 상한으로 건 지정가로 즉시 매수합니다."
@@ -390,14 +392,19 @@ async function deployBot() {
   summary.push(`운용 자본 : ${curr === "$" ? "$" : ""}${Number($("botCapital").value || 0).toLocaleString()}${curr === "원" ? "원" : ""}`);
   if (params.strategyType === "raoer_infinite") {
     const locLabel = { half_half: "라오어 원전 반반 LOC (하루 한 번 · 종가 체결)",
+                       excel: "무매법 엑셀 방식 (1.15 LOC + 평단 LOC + 사다리 · 하루 한 번)",
                        half_half_now: "반반 지정가 즉시 체결 (봉마다)",
                        single: "단일 묶음 시장가" }[params.locMode] || params.locMode;
     if (isStock) summary.push(`체결 방식 : ${locLabel}`);
-    if (!(isStock && params.locMode === "half_half"))
+    if (!(isStock && ["half_half", "excel"].includes(params.locMode)))
       summary.push(`캔들 간격 : ${$("botInterval").value}`);
     summary.push(`분할·익절 : ${params.splitCount}분할 · +${params.targetProfitPct}%`);
-    if (isStock) summary.push(`매크로 기어: ${params.useMacroGear ? "켬 (목표·배수를 국면이 덮어씀)" : "끔"}`);
-    if (params.raoerUseAi) summary.push(`AI 동적   : 켬`);
+    if (isStock && params.locMode === "excel") {
+      summary.push(`1회분할금 : $${(Number($("botCapital").value || 0) / params.splitCount).toFixed(2)} (고정) · 기어 · AI 안 씀`);
+    } else {
+      if (isStock) summary.push(`매크로 기어: ${params.useMacroGear ? "켬 (목표·배수를 국면이 덮어씀)" : "끔"}`);
+      if (params.raoerUseAi) summary.push(`AI 동적   : 켬`);
+    }
   }
   summary.push("");
   summary.push(mode === "LIVE"

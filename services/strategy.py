@@ -153,8 +153,12 @@ class StrategyParams:
             self.raoerVersion = "v4"
         if self.raoerTrendMode not in ("off", "pause_down", "boost_up"):
             self.raoerTrendMode = "off"
-        if self.locMode not in ("half_half", "half_half_now", "single"):
+        if self.locMode not in ("half_half", "half_half_now", "single", "excel"):
             self.locMode = "half_half"
+        if self.locMode == "excel":
+            # 무매법 엑셀 방식은 목표 · 1회분할금이 고정이다 — 기어 · AI 가 켜져 있다고 보이지 않게 끈다
+            self.useMacroGear = False
+            self.raoerUseAi = False
         if self.strategyType not in ("quant_ai", "raoer_infinite"):
             self.strategyType = "quant_ai"
         self.splitCount = max(5, min(100, self.splitCount))
