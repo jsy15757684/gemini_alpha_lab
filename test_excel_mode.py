@@ -167,6 +167,40 @@ pb._place_excel_orders(81.0, "2026-10-09")
 check("모의: 상한이 현재가 이상인 다리만 현재가로 체결 (1.15 · 평단 LOC 2주)",
       pb.pos.units == 3.0 and pb.pos.turn == 2 and abs(pb.cash - (3917.74 - 162.0)) < 1e-9, f"{pb.pos.units:g}주")
 
+print("── 돌고 있는 봇 옮기기 (scripts/namuh_to_excel.py) ──")
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "scripts"))
+import io, contextlib, namuh_to_excel                # noqa: E402
+from services.jsonfile import read_records, write_records   # noqa: E402
+old = bot(FakeAcct(qty=1.0, avg=82.26), locMode="half_half_now")
+old.pos.units, old.pos.entryPrice, old.pos.turn, old.cash, old.budget_carryover = 1.0, 82.26, 1, 3917.71, 37.71
+old.loc_session = "2026-10-08"
+path = botstore.namuh_store_file()
+write_records(path, "bots", [old.snapshot()])
+namuh_to_excel.service_active = lambda: False
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = namuh_to_excel.main(["TQQQ"])
+check("미리 보기는 파일을 바꾸지 않는다", rc == 0 and read_records(path, "bots", "")[0]["params"]["locMode"] == "half_half_now", "")
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = namuh_to_excel.main(["TQQQ", "--apply"])
+rec = read_records(path, "bots", "")[0]
+m = trader.TradingBot.restore(rec, None, FakeAcct(qty=1.0, avg=82.26))
+check("--apply: 엑셀 방식 · 기어 · AI 끔 · 이월 0 · 오늘 LOC 다시 걸 수 있게",
+      rc == 0 and m._excel() and not m.params.useMacroGear and not m.params.raoerUseAi
+      and m.budget_carryover == 0.0 and m.loc_session is None, "")
+check("장부(수량 · 평단 · 회차 · 현금)는 그대로", (m.pos.units, m.pos.entryPrice, m.pos.turn, m.cash)
+      == (1.0, 82.26, 1, 3917.71), "")
+check("원본을 남긴다", any(f.startswith("bots_namuh.json.before-excel-") for f in os.listdir(_SANDBOX)), "")
+namuh_to_excel.service_active = lambda: True
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = namuh_to_excel.main(["TQQQ", "--apply"])
+check("나무증권 서비스가 돌고 있으면 쓰지 않는다", rc == 1, "")
+rec["orderHold"] = {"side": "buy"}
+write_records(path, "bots", [rec])
+namuh_to_excel.service_active = lambda: False
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = namuh_to_excel.main(["TQQQ", "--apply"])
+check("결과를 모르는 주문이 있으면 옮기지 않는다", rc == 1, "")
+
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")
 sys.exit(1 if FAIL else 0)
