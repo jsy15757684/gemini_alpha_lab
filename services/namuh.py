@@ -87,6 +87,15 @@ if MARGIN_PREF not in ("auto", "usd", "krw"):
     MARGIN_PREF = "auto"
 MARGIN_USD, MARGIN_KRW = "1", "2"
 
+# 해외주식 매매 수수료(%). 실계좌 잔고(비용 포함 조회)의 sby_fee_rt = 0.0009 —
+# 2026-10-09 TQQQ $244.82 매수에 $0.22, SOXL $139.76 에 $0.13. 매도도 같은 율
+# (+ 미국 거래소 수수료가 몇 센트 붙는다). 봇의 feePct 기본값(0.04)은 빗썸 것이라
+# 나무증권 봇은 이 값을 쓴다. 수수료 이벤트가 바뀌면 .env 의 NAMUH_FEE_PCT 로 고친다.
+try:
+    FEE_PCT = max(0.0, min(1.0, float(os.getenv("NAMUH_FEE_PCT") or 0.09)))
+except ValueError:
+    FEE_PCT = 0.09
+
 
 def margin_code(need_usd: float, balance: Optional[Dict[str, Any]]) -> str:
     """이번 매수에 쓸 증거금 통화 코드."""

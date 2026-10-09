@@ -1878,6 +1878,8 @@ class BotManager:
             raise TooManyBots(f"동시 가동 봇 상한({MAX_ACTIVE_BOTS}개)에 도달했습니다. "
                               f"기존 봇을 정지한 뒤 다시 시도하세요.")
         p = StrategyParams.from_dict(params)
+        if broker == "namuh" and "feePct" not in (params or {}):
+            p.feePct = namuh.FEE_PCT            # 기본값 0.04 는 빗썸 수수료다
         bot = TradingBot(self._new_id(coin), coin, interval, mode, capital_krw, p,
                          account=account, namuh_account=namuh_account, broker=broker)
         self.bots[bot.bot_id] = bot

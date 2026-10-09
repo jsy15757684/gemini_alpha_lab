@@ -201,6 +201,31 @@ with contextlib.redirect_stdout(io.StringIO()):
     rc = namuh_to_excel.main(["TQQQ", "--apply"])
 check("결과를 모르는 주문이 있으면 옮기지 않는다", rc == 1, "")
 
+print("── 나무증권 수수료 ──")
+mgr = trader.BotManager()
+trader.TradingBot.start = lambda self: None              # 스레드는 띄우지 않는다
+nb = mgr.deploy("TQQQ", "24h", "PAPER", 4000.0, {"strategyType": "raoer_infinite", "locMode": "excel"}, None,
+                FakeAcct(), broker="namuh")
+check("나무증권 봇은 실제 수수료(0.09%)로 만든다 (빗썸 기본 0.04% 아님)", nb.params.feePct == namuh.FEE_PCT == 0.09,
+      f"{nb.params.feePct}")
+nb2 = mgr.deploy("TQQQ", "24h", "PAPER", 4000.0, {"strategyType": "raoer_infinite", "feePct": 0.07}, None,
+                 FakeAcct(), broker="namuh")
+check("수수료를 직접 넣으면 그 값", nb2.params.feePct == 0.07, "")
+import namuh_fee_fix                                      # noqa: E402
+r1 = old.snapshot()
+r1.update(cash=3755.08, totalInvested=244.82, params=dict(r1["params"], feePct=0.04))
+r2 = dict(r1, coin="SOXL", cash=5860.18, totalInvested=139.76)
+write_records(path, "bots", [r1, r2])
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = namuh_fee_fix.main(["--apply"])
+got = {r["coin"]: (r["params"]["feePct"], round(r["cash"], 2)) for r in read_records(path, "bots", "")}
+check("이미 산 물량의 수수료 차이만큼 현금을 맞춘다 (계좌: TQQQ 수수료 $0.22 · SOXL $0.13)",
+      rc == 0 and got == {"TQQQ": (0.09, 3754.96), "SOXL": (0.09, 5860.11)}, f"{got}")
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = namuh_fee_fix.main(["--apply"])
+check("두 번 돌려도 현금을 또 빼지 않는다", {r["coin"]: round(r["cash"], 2) for r in read_records(path, "bots", "")}
+      == {"TQQQ": 3754.96, "SOXL": 5860.11}, "")
+
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")
 sys.exit(1 if FAIL else 0)
