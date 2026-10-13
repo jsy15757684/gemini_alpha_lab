@@ -1171,8 +1171,13 @@ class NamuhAccount:
         return max(0.0, moved)
 
     def market_sell(self, ticker: str, units: float,
-                    order_type: str = "", limit_price: float = 0.0) -> Dict[str, Any]:
-        """미국 주식 매도 (전량 또는 쿼터 매도)."""
+                    order_type: str = "", limit_price: float = 0.0,
+                    await_fill: bool = True) -> Dict[str, Any]:
+        """미국 주식 매도 (전량 또는 쿼터 매도).
+
+        await_fill=False 는 지정가를 걸어 두기만 한다 (무매법 엑셀 방식의 평단×1.10 매도).
+        체결은 호출부가 주문번호로(order_fill) 확인한다. 응답이 끊기면 다시 내지 않도록 OrderUnknown.
+        """
         sym = ticker.upper().strip()
         order_type = (order_type or DEFAULT_ORDER_TYPE).strip()
         price = limit_price if limit_price > 0 else self.get_price(sym)
@@ -1194,7 +1199,7 @@ class NamuhAccount:
             return {
                 "orderId": f"MOCK-SELL-{int(time.time()*1000)}",
                 "ticker": sym,
-                "units": float(qty),
+                "units": float(qty) if await_fill else 0.0,
                 "price": price,
                 "proceedsUsd": proceeds,
                 "status": "FILLED",
@@ -1233,6 +1238,11 @@ class NamuhAccount:
         except Exception as e:
             if not maybe_sent(e):
                 raise NamuhError(f"나무증권 매도 주문 통신 오류 (주문이 나가기 전): {e}")
+            if not await_fill:
+                raise OrderUnknown(
+                    f"{sym} 지정가 매도 접수 응답이 끊겼습니다 ({type(e).__name__}) — 접수됐을 수 있어 다시 내지 "
+                    f"않습니다.", side="sell", ticker=sym, qty=qty, price=price, qty_before=qty_before,
+                    order_type=order_type)
             return self._resolve_unknown("sell", sym, qty, price, qty_before, "", order_type,
                                          f"주문 응답이 끊겼습니다 ({type(e).__name__})")
         try:
@@ -1240,18 +1250,31 @@ class NamuhAccount:
         except Exception:
             if 400 <= res.status_code < 500:
                 raise NamuhError(f"나무증권 매도 주문 거부 (HTTP {res.status_code}): {(res.text or '')[:160]}")
+            if not await_fill:
+                raise OrderUnknown(f"{sym} 지정가 매도 응답을 읽지 못했습니다 (HTTP {res.status_code}) — 다시 내지 않습니다.",
+                                   side="sell", ticker=sym, qty=qty, price=price, qty_before=qty_before,
+                                   order_type=order_type)
             return self._resolve_unknown("sell", sym, qty, price, qty_before, "", order_type,
                                          f"주문 응답을 읽지 못했습니다 (HTTP {res.status_code})")
 
         rsp_cd = str(res_data.get("rsp_cd", ""))
         order_id = str((res_data.get("Output_0") or {}).get("orr_no") or "")
         if res.status_code >= 500 and not order_id:
+            if not await_fill:
+                raise OrderUnknown(f"{sym} 지정가 매도 응답이 서버 오류(HTTP {res.status_code} · {rsp_cd})입니다 — "
+                                   f"접수됐을 수 있어 다시 내지 않습니다.", side="sell", ticker=sym, qty=qty,
+                                   price=price, qty_before=qty_before, order_type=order_type)
             return self._resolve_unknown("sell", sym, qty, price, qty_before, "", order_type,
                                          f"서버 오류 응답 (HTTP {res.status_code} · {rsp_cd})")
         if res.status_code != 200 or (not order_id and rsp_cd != "00171"):
             raise NamuhError(
                 f"나무증권 매도 주문 실패 ({rsp_cd}): "
                 f"{res_data.get('rsp_msg') or (res.text or '')[:160]}", res_data)
+
+        if not await_fill:
+            # 걸어 두는 지정가: 접수만 확인한다. 체결은 호출부가 주문번호로 본다.
+            return {"orderId": order_id, "ticker": sym, "units": 0.0, "requestedUnits": float(qty),
+                    "price": price, "proceedsUsd": 0.0, "status": "ACCEPTED"}
 
         self._fill_unreadable = False
         filled = self._await_fill(sym, qty_before, qty, "매도")

@@ -75,6 +75,10 @@ class TooManyBots(Exception):
 # LOC 접수 전 잔고 조회가 실패했을 때 다시 시도하기까지 기다리는 시간(초).
 # 매 틱(10초) 두드리면 호출 한도를 더 빨리 태운다.
 LOC_RETRY_SEC = env_float("APP_LOC_RETRY_SEC", 60.0)
+# 무매법 엑셀 방식: 걸어 둔 평단×(1+목표%) 지정가 매도의 체결을 몇 초마다 주문번호로 확인하나.
+# 시세가 지정가 근처면 SELL_CHECK_NEAR_SEC, 멀면 SELL_CHECK_FAR_SEC (조회 건수를 아낀다).
+SELL_CHECK_NEAR_SEC = env_float("APP_SELL_CHECK_NEAR_SEC", 60.0)
+SELL_CHECK_FAR_SEC = env_float("APP_SELL_CHECK_FAR_SEC", 900.0)
 
 
 class LiquidationFailed(Exception):
@@ -163,6 +167,12 @@ class TradingBot:
         self._fills: List[Tuple[float, Optional[float]]] = []
         self._hold_checked_at = 0.0
         self._hold_warned_at = 0.0
+        # 무매법 엑셀 방식: 오늘 걸어 둔 평단×(1+목표%) 지정가 매도
+        # {orderId, units, limit, session, booked} — 체결은 주문번호로 확인해 장부에 적는다.
+        self.sell_order: Optional[Dict[str, Any]] = None
+        self.sell_session: Optional[str] = None        # 그 매도를 건 미국 세션 (하루 한 번)
+        self._sell_check_at = 0.0
+        self._sell_retry_after = 0.0
 
     def _fetch_price(self) -> float:
         if self.broker == "namuh":
@@ -304,6 +314,12 @@ class TradingBot:
                 self._exit(price, "사용자 정지 명령 (시장가 청산)")
             except Exception as e:
                 self.log("ERROR", f"청산 실패 — 포지션이 남아 있습니다: {e}")
+        # 걸어 둔 지정가 매도도 거둬들인다 — 정지된 봇 몰래 팔리면 장부와 계좌가 어긋난다.
+        if self.mode == "LIVE" and self.sell_order:
+            try:
+                self._withdraw_sell_order("봇 정지")
+            except Exception as e:
+                self.log("ERROR", f"지정가 매도 취소 실패 — 거래소에 주문이 남아 있습니다: {e}")
         # 봇을 세워도 거래소의 LOC 는 살아 있다. 정지했는데 마감에 주식이
         # 생기는 일이 없도록 미체결 주문을 거둬들인다.
         if self.mode == "LIVE" and self.pending_orders:
@@ -318,7 +334,7 @@ class TradingBot:
         self.log("WARNING", "봇이 정지되었습니다.")
         self._persist()
         # 팔려고 했는데 아직 들고 있거나, 거둬들이지 못한 주문이 남았는가.
-        return not (liquidate and self.pos.open) and not self.pending_orders
+        return not (liquidate and self.pos.open) and not self.pending_orders and not self.sell_order
 
     # ── 메인 루프 ──
     def _loop(self):
@@ -371,6 +387,13 @@ class TradingBot:
                 if self.broker == "namuh":
                     # LOC 정산은 장이 닫힌 뒤에 해야 한다. 휴장 게이트보다
                     # 먼저 돌지 않으면 영영 정산되지 않는다.
+                    # 걸어 둔 지정가 매도 — 체결 확인 · 마감 뒤 정리 · 장 시작 때 걸기.
+                    # LOC 정산보다 먼저 (마감 동시호가에 둘 다 붙었으면 매도를 먼저 적는다).
+                    if self.mode == "LIVE" and self._excel():
+                        try:
+                            self._excel_sell_tick()
+                        except Exception as e:
+                            logger.warning(f"[{self.bot_id}] 지정가 매도 처리 실패: {e}")
                     if self.mode == "LIVE" and self.pending_orders:
                         try:
                             self._settle_pending_loc()
@@ -448,7 +471,8 @@ class TradingBot:
                         target_tp = self.params.targetProfitPct     # 엑셀: 목표 고정 (기어 · AI 를 쓰지 않는다)
 
                     # 1) 목표 익절선 도달 시 즉시 전량 익절
-                    if self.pos.open:
+                    #    (엑셀 방식 실계좌는 지정가 매도가 걸려 있으면 그 주문이 판다 — 두 번 팔지 않는다)
+                    if self.pos.open and not (self.mode == "LIVE" and self._excel() and self.sell_order):
                         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                         if pnl_pct >= target_tp:
                             ai_note = f" (가변목표 +{target_tp:.1f}%)" if (self.params.raoerUseAi or self.params.useMacroGear) else ""
@@ -591,6 +615,7 @@ class TradingBot:
                             self.last_decision = (
                                 f"무매법(엑셀) {self.pos.turn}회차 · 평단 ${self.pos.entryPrice:,.2f} · 손익 {pnl_pct:+.2f}% · "
                                 f"매도 목표 ${self.pos.entryPrice * (1 + target_tp / 100.0):,.2f}"
+                                + (" (지정가 걸림)" if self.sell_order else "")
                                 + (" · 오늘 LOC 접수 완료" if self.loc_session == _win["sessionDate"] else " · LOC 접수 대기"))
                         elif self.loc_session != _win["sessionDate"]:
                             self.last_decision = "무매법(엑셀) 첫 매수 LOC 대기 — 미국장 개장 후 접수합니다"
@@ -960,6 +985,141 @@ class TradingBot:
         else:
             self.last_decision = f"무매법(엑셀) LOC 접수 실패 — {rejected[0] if rejected else '알 수 없음'}"
         self._persist()
+
+    # ── 무매법 엑셀 방식: 걸어 두는 지정가 매도 ──
+    @_order_locked(buy=False)
+    def _excel_sell_tick(self) -> None:
+        """평단×(1+목표%) 지정가 매도를 장 시작 때 걸고, 체결을 주문번호로 확인해 장부에 적는다.
+
+        엑셀처럼 주문을 거래소에 걸어 두므로, 장중에 잠깐 목표가를 찍고 내려와도 체결된다
+        (예전: 봇이 시세를 보다가 목표가에 닿으면 그때 매도 — 놓치거나 슬리피지만큼 낮게 팔렸다).
+        미국 주문은 그날만 유효하다. 다음 세션에는 그날 평단(마감 LOC 정산 뒤)으로 다시 건다.
+        """
+        if not (self.namuh_account and self.namuh_account.configured):
+            return
+        from services import market_schedule as ms
+        win = ms.loc_window()
+        now = time.time()
+        so = self.sell_order
+        if so:
+            over = so.get("session") != win["sessionDate"] or bool(win.get("pastClose"))
+            if not over and now < self._sell_check_at:
+                return
+            near = (self.last_price or 0.0) >= float(so.get("limit") or 0.0) * 0.995
+            self._sell_check_at = now + (SELL_CHECK_NEAR_SEC if near else SELL_CHECK_FAR_SEC)
+            self._check_sell_fill(final=over)
+            return
+        if (self.pos.open and win.get("in") and self.sell_session != win["sessionDate"]
+                and not self.order_hold and not self._stop_requested and now >= self._sell_retry_after
+                and int(self.pos.units) >= 1):
+            limit = round(self.pos.entryPrice * (1 + self.params.targetProfitPct / 100.0), 2)
+            units = int(self.pos.units)
+            self.sell_session = win["sessionDate"]
+            try:
+                res = self._nh_sell(self.coin, units, order_type=namuh.ORD_LIMIT,
+                                    limit_price=limit, await_fill=False)
+            except namuh.OrderUnknown:
+                self._persist()                 # _nh_sell 이 order_hold 를 걸었다 — 다시 내지 않는다
+                return
+            except namuh.NamuhError as e:
+                self.sell_session = None
+                self._sell_retry_after = now + LOC_RETRY_SEC
+                self.log("ERROR", f"지정가 매도 접수 실패 — {LOC_RETRY_SEC:.0f}초 뒤 다시 겁니다 "
+                                  f"(그동안은 시세로 목표가를 지켜봅니다): {e.message}")
+                return
+            finally:
+                self._fills = []
+            self.sell_order = {"orderId": res.get("orderId"), "units": float(units), "limit": limit,
+                               "session": win["sessionDate"], "booked": 0.0}
+            self._sell_check_at = now + SELL_CHECK_NEAR_SEC
+            self.log("ORDER", f"지정가 매도 접수 평단 ${self.pos.entryPrice:,.2f} × {1 + self.params.targetProfitPct / 100.0:g} "
+                              f"= ${limit:,.2f} × {units}주 (주문번호 {res.get('orderId')}) — 오늘 장 동안 유효")
+            self._persist()
+
+    def _check_sell_fill(self, final: bool = False) -> None:
+        """걸어 둔 지정가 매도의 체결을 장부에 적는다. final=True 면 (장 마감 뒤) 주문을 정리한다."""
+        so = self.sell_order
+        if not so:
+            return
+        try:
+            f = self.namuh_account.order_fill(so["orderId"])
+        except Exception as e:
+            self.log("WARNING", f"지정가 매도 체결 조회 실패 (주문번호 {so['orderId']}): {e}")
+            return
+        if f is None:
+            if not final:
+                return
+            # 날이 바뀌어 체결내역에서 못 찾는다 (서비스가 오래 꺼져 있었다) — 계좌 수량으로 본다
+            try:
+                held = float(self.namuh_account.held_qty(self.coin))
+            except Exception as e:
+                self.log("WARNING", f"지정가 매도 정리 보류 — 체결내역도 잔고도 읽지 못했습니다: {e}")
+                return
+            gap = max(0.0, min(so["units"] - so["booked"], self.pos.units - held))
+            f = {"qty": so["booked"] + gap, "price": so["limit"]}
+            if gap >= 1:
+                self.log("WARNING", f"지정가 매도 {so['orderId']} 를 체결내역에서 찾지 못해 계좌 수량으로 정산합니다 "
+                                    f"({gap:g}주 · 지정가 ${so['limit']:,.2f} 로 적음).")
+        new = float(f["qty"]) - float(so.get("booked") or 0.0)
+        px = float(f.get("price") or 0.0) or float(so["limit"])
+        if new >= 1:
+            so["booked"] = float(f["qty"])
+            reason = f"무매법(엑셀) 목표 익절 · 지정가 ${so['limit']:,.2f}"
+            if new >= self.pos.units - 1e-9:
+                if self.pending_orders:
+                    self._cancel_pending_loc(f"익절: {reason}")
+                self._book_exit(self.pos.units, px, reason)
+                # 익절한 날은 새 첫 매수 LOC 를 걸지 않는다 (엑셀: 다음 거래일에 새로 시작)
+                from services import market_schedule as ms
+                self.loc_session = ms.loc_window()["sessionDate"]
+                if self._us_daily():
+                    self.buy_session = self._ny_date()
+                self.last_decision = f"무매법(엑셀) 지정가 익절 {new:g}주 @ ${px:,.2f}"
+            else:
+                self._book_partial_sell(new, px, reason, note=(
+                    f"지정가 매도 일부 체결 {new:g}주 @ ${px:,.2f} — 남은 {self.pos.units - new:g}주는 "
+                    f"주문이 그대로 걸려 있습니다 | 사유: {reason}"))
+        done = float(f["qty"]) >= so["units"] - 1e-9 or not self.pos.open
+        if done or final:
+            if not done:
+                try:                             # 그날만 유효한 주문이라 이미 없을 수 있다 — 실패해도 된다
+                    self.namuh_account.cancel_order(so["orderId"], self.coin)
+                except Exception:
+                    pass
+            self.sell_order = None
+        self._persist()
+
+    def _withdraw_sell_order(self, why: str) -> bool:
+        """걸어 둔 지정가 매도를 취소하고, 그 사이 체결된 것은 장부에 적는다. 주문이 사라졌으면 True."""
+        so = self.sell_order
+        if not so:
+            return True
+        cancel_err = None
+        try:
+            self.namuh_account.cancel_order(so["orderId"], self.coin)
+            self.log("ORDER", f"지정가 매도 취소 ({so['units']:g}주 @ ${so['limit']:,.2f}) — {why}")
+        except Exception as e:
+            cancel_err = e
+        try:
+            f = self.namuh_account.order_fill(so["orderId"])
+        except Exception:
+            f = None
+        if f is not None:
+            self._check_sell_fill(final=False)          # 그 사이 체결분을 적는다 (다 팔렸으면 주문도 정리된다)
+            so = self.sell_order
+            if so is None:
+                return True
+            if cancel_err is None or float(f.get("canceled") or 0) + float(f["qty"]) >= so["units"] - 1e-9:
+                self.sell_order = None
+                self._persist()
+                return True
+        elif cancel_err is None:
+            self.sell_order = None
+            self._persist()
+            return True
+        self.log("ERROR", f"지정가 매도({so['orderId']}) 취소 실패 — 주문이 살아 있을 수 있어 새 매도를 내지 않습니다: "
+                          f"{cancel_err}")
+        return False
 
     def _book_buy(self, qty: float, px: float, reason: str, carry: bool = True) -> None:
         """체결된 매수를 장부에 적는다 (평단 · 회차 · 현금)."""
@@ -1525,6 +1685,11 @@ class TradingBot:
 
     @_order_locked(buy=False)
     def _exit(self, price: float, reason: str):
+        # 걸어 둔 지정가 매도가 있으면 먼저 거둬들인다 — 주식이 그 주문에 묶여 있어 새 매도가 거부되고,
+        # 둘 다 살아 있으면 두 번 팔린다. 못 거둬들이면 이번에는 팔지 않는다.
+        if self.mode == "LIVE" and self.sell_order:
+            if not self._withdraw_sell_order(f"청산: {reason}"):
+                return
         units = self.pos.units
         if units <= 0:
             return
@@ -1582,6 +1747,11 @@ class TradingBot:
                     return
                 self.log("ORDER", f"빗썸 실주문 매도 접수 (주문번호 {res.get('orderId')}, API {res.get('apiVersion')})")
 
+        self._book_exit(units, price, reason)
+
+    def _book_exit(self, units: float, price: float, reason: str) -> None:
+        """전량 매도 체결을 장부에 적는다 (손익 · 현금 · 포지션 비움)."""
+        fee = self.params.feePct / 100.0
         proceeds = units * price * (1 - fee)
         # 원가는 '실제로 쓴 원화'(totalInvested)다. units x entryPrice 로 잡으면
         # 매수 수수료가 빠져 손익이 그만큼 과대 계상된다.
@@ -1606,7 +1776,7 @@ class TradingBot:
                          f"손익 {pnl_str} ({pnl_pct:+.2f}%) | 사유: {reason}")
         self._persist()
 
-    def _book_partial_sell(self, sold: float, price: float, reason: str) -> None:
+    def _book_partial_sell(self, sold: float, price: float, reason: str, note: str = "") -> None:
         """전량 매도가 일부만 체결됐을 때 — 판 만큼만 장부에서 덜어낸다 (회차는 그대로)."""
         fee = self.params.feePct / 100.0
         proceeds = sold * price * (1 - fee)
@@ -1622,8 +1792,8 @@ class TradingBot:
         if pnl > 0:
             self.winning_trades += 1
         self._record_trade("SELL_PARTIAL", price, sold, proceeds, pnl=pnl, return_pct=pnl_pct, reason=reason)
-        self.log("WARNING", f"전량 매도 중 {sold:g}주만 팔렸습니다 @ ${price:,.2f} · 손익 {pnl:+,.2f}$ — "
-                            f"남은 {self.pos.units:g}주는 다음 판단에서 다시 팝니다 | 사유: {reason}")
+        self.log("WARNING", note or (f"전량 매도 중 {sold:g}주만 팔렸습니다 @ ${price:,.2f} · 손익 {pnl:+,.2f}$ — "
+                                     f"남은 {self.pos.units:g}주는 다음 판단에서 다시 팝니다 | 사유: {reason}"))
         if self.pos.units <= 1e-9:
             self.pos = Position()
             self.budget_carryover = 0.0
@@ -1715,6 +1885,8 @@ class TradingBot:
             "cash": self.cash,
             "budgetCarryover": round(self.budget_carryover, 2),
             "pendingOrders": list(self.pending_orders),
+            "sellOrder": dict(self.sell_order) if self.sell_order else None,
+            "sellSession": self.sell_session,
             "locSession": self.loc_session,
             "orderHold": self.order_hold,
             "inflightOrder": self._inflight,
@@ -1747,6 +1919,8 @@ class TradingBot:
         # 이 두 줄을 빼먹으면 재시작 뒤 같은 세션에 주문을 또 내고,
         # 이미 체결된 것을 영영 정산하지 못한다.
         bot.pending_orders = list(d.get("pendingOrders") or [])
+        bot.sell_order = d.get("sellOrder") or None
+        bot.sell_session = d.get("sellSession")
         bot.loc_session = d.get("locSession")
         bot.order_hold = d.get("orderHold")
         if d.get("inflightOrder") and not bot.order_hold:
@@ -2289,7 +2463,11 @@ class BotManager:
                         continue
                     actual = float(namuh_exchange.get(bot.coin, 0.0))
                     req_total = allocated_units.get(f"namuh:{bot.coin}", 0.0) + bot.pos.units
-                    if actual + 1e-4 < req_total:
+                    # 꺼져 있는 동안 걸어 둔 지정가 매도가 체결됐을 수 있다 — 그만큼은 모자라도 된다
+                    # (재가동 뒤 첫 판단에서 주문번호로 확인해 장부에 적는다)
+                    so = bot.sell_order or {}
+                    selling = max(0.0, float(so.get("units") or 0) - float(so.get("booked") or 0))
+                    if actual + 1e-4 + selling < req_total:
                         msg = (f"내부 장부 누적({req_total:.4f} {bot.coin})이 나무증권 실제 "
                                f"보유량({actual:.4f})보다 많습니다. 재가동을 보류합니다.")
                         bot.log("ERROR", msg); notes.append(f"[{bot.bot_id}] {msg}")
