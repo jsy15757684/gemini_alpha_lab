@@ -14,7 +14,7 @@
 """
 
 from dataclasses import dataclass, asdict, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 # ───────────────────────── 파라미터 ─────────────────────────
@@ -139,6 +139,31 @@ class StrategyParams:
         """
         base = initial_krw / max(1, self.splitCount)
         return base * max(1.0, self.raoerMaxMultiplier)
+
+    @staticmethod
+    def raoer_reserve(chunk: float, cash: float, rem_turns: int, min_order: float) -> Tuple[float, str]:
+        """남은 회차 몫을 당겨 쓰지 않게 1회 매수금을 줄인다 (줄인 값, 화면용 메모).
+
+        V4 기본 매수금(남은 현금 ÷ 남은 회차)에 AI · 매크로 · 추세 배수를 곱하면, 배수가 1보다
+        큰 회차가 이어질 때 마지막 회차 몫까지 미리 써 버린다. 2026-10 빗썸 실계좌: SOL 은
+        36~39회차를 1.7~1.8배로 사 39회차에 현금 615원(최소 주문 5,000원 미만)이 남아 40회차를
+        사지 못했고, XRP 도 38회차에서 4,623원으로 멈췄다.
+
+        그래서 이번 매수 뒤에도 남은 회차마다 최소 주문 금액은 남도록 자른다.
+          · 남길 돈 = 최소 주문 × (남은 회차 − 1)
+          · 배수가 1보다 작아 최소 주문에 못 미치면 최소 주문으로 올린다 (현금이 있으면)
+        현금이 애초에 남은 회차 × 최소 주문보다 적으면 다 지킬 수 없다 — 최소 주문만 산다.
+        """
+        rem_turns = max(1, int(rem_turns))
+        out, note = chunk, ""
+        room = cash - min_order * (rem_turns - 1)
+        if out > room:
+            out = max(room, min_order)
+            note = f" [남은 {rem_turns - 1}회차 최소 몫 보존 · 산출 {chunk:,.0f} → {out:,.0f}]"
+        if out < min_order <= cash:
+            out = min_order
+            note = f" [최소 주문 {min_order:,.0f} 로 올림 · 산출 {chunk:,.0f}]"
+        return out, note
 
     def validated(self) -> "StrategyParams":
         # NaN · inf 는 min/max 로 걸러지지 않는다 (max(0.5, min(100, nan)) == nan).

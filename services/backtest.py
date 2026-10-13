@@ -127,6 +127,8 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
                 # 실전 엔진과 같은 1회 매수금 상한을 적용한다. 다르면 백테스트로
                 # 고른 설정이 실제 동작과 어긋난다.
                 chunk_krw = min(chunk_krw, p.raoer_chunk_cap(initial_krw))
+                if p.raoerVersion == "v4":
+                    chunk_krw, _ = StrategyParams.raoer_reserve(chunk_krw, cash, rem_turns, 5000.0)
 
                 invest = min(cash, chunk_krw)
                 if invest >= 5000:

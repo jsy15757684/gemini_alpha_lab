@@ -555,6 +555,14 @@ class TradingBot:
                             cap_note = (f" [1회 상한 {cap:,.0f}원 적용 · "
                                         f"산출 {chunk_krw:,.0f}원]")
                             chunk_krw = cap
+                        if self.params.raoerVersion == "v4":
+                            # 배수가 마지막 회차 몫까지 당겨 쓰지 않게 (SOL 39/40 · 현금 615원)
+                            min_order = 10.0 if self.currency == "USD" else 5000.0
+                            avail = (max(0.0, self.cash - self.budget_carryover)
+                                     if self.currency == "USD" else self.cash)
+                            chunk_krw, keep_note = StrategyParams.raoer_reserve(
+                                chunk_krw, avail, max(1, self.params.splitCount - self.pos.turn), min_order)
+                            cap_note += keep_note
 
                         version_tag = " [V4]" if self.params.raoerVersion == "v4" else ""
                         if not self.pos.open:
