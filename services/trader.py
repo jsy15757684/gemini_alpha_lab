@@ -589,6 +589,11 @@ class TradingBot:
                             cap_note += keep_note
 
                         version_tag = " [V4]" if self.params.raoerVersion == "v4" else ""
+                        # 코인: 회차가 남았어도 현금이 최소 주문(5,000원)보다 적으면 더 살 수 없다 — 40회 소진과
+                        # 같다. 예전에는 '매수 보류' 만 되풀이해 쿼터매도도 일어나지 않고 멈춰 있었다
+                        # (2026-10 SOL 39/40 · 현금 615원, XRP 38/40 · 4,623원).
+                        cash_out = (self.pos.open and self.currency != "USD"
+                                    and self.pos.turn < self.params.splitCount and self.cash < 5000.0)
                         if not self.pos.open:
                             self.last_decision = f"무한매수{version_tag} 1/{self.params.splitCount}회차 첫 매수{ai_reason}{cap_note}"
                             if loc_native:
@@ -596,7 +601,7 @@ class TradingBot:
                                                        self.last_decision)
                             else:
                                 self._enter_chunk(price, chunk_krw, self.last_decision)
-                        elif self.pos.turn < self.params.splitCount:
+                        elif self.pos.turn < self.params.splitCount and not cash_out:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                             self.last_decision = f"무한매수{version_tag} {self.pos.turn + 1}/{self.params.splitCount}회차 매수 (평단 대비 {pnl_pct:+.2f}%){ai_reason}{cap_note}"
                             if loc_native:
@@ -608,6 +613,10 @@ class TradingBot:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                             rev_note = " (V4 리버스 모드: 쿼터 매도 후 롤백)" if self.params.raoerVersion == "v4" else ""
                             self.last_decision = f"무한매수 {self.params.splitCount}회 소진 쿼터매도 방어{rev_note} ({pnl_pct:+.2f}%)"
+                            if cash_out:
+                                self.last_decision = (f"현금 소진 ({self.cash:,.0f}원 < 최소 주문 5,000원 · "
+                                                      f"{self.pos.turn}/{self.params.splitCount}회차) — 40회 소진으로 보고 "
+                                                      f"쿼터매도 방어{rev_note} ({pnl_pct:+.2f}%)")
                             self._exit_quarter(price, self.last_decision)
                     elif self._excel():
                         if self.pos.open:
