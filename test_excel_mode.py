@@ -84,8 +84,14 @@ check("보유 없음: 1회분할금 $100 으로 1주 · 현재가×1.05 LOC", [(
 b.pos.units, b.pos.entryPrice, b.pos.turn, b.cash = 1.0, 82.26, 1, 3917.74
 t = b._excel_targets(81.0)
 plan = muma_sheet.order_plan(4000.0, 1.0, 82.26, 81.0, 40, 10.0)
-check("보유 있음: 1.15 LOC · 평단 LOC 가 엑셀 계산과 같다",
-      [(x["units"], x["limit"]) for x in t["legs"][:2]] == [(1, 93.15), (1, 82.26)], f"{t['legs'][:2]}")
+check("보유 있음: 1.15 LOC(수량은 엑셀 그대로) · 평단 LOC",
+      [(x["units"], x["limit"]) for x in t["legs"][:2]] == [(1, 90.48), (1, 82.26)], f"{t['legs'][:2]}")
+check("1.15 LOC 상한은 지정가 매도(평단×1.10 = $90.49) 바로 아래로 (나무증권이 내 매도보다 비싼 매수를 거부)",
+      t["legs"][0]["limit"] == 90.48 and plan["buys"][0]["price"] == 93.15, "엑셀 $93.15 → $90.48")
+pv = bot(FakeAcct())
+pv.pos.units, pv.pos.entryPrice, pv.pos.turn, pv.cash = 1.0, 82.26, 1, 3917.74
+check("매도가보다 낮은 다리는 그대로", all(x["limit"] < 90.49 for x in pv._excel_targets(70.0)["legs"])
+      and pv._excel_targets(70.0)["legs"][0]["limit"] == 80.5, f"{pv._excel_targets(70.0)['legs'][0]}")
 check("사다리 단도 엑셀 계산 그대로 1주씩",
       [x["limit"] for x in t["legs"][2:]] == [round(l["price"], 2) for l in plan["ladder"]]
       and all(x["units"] == 1 for x in t["legs"][2:]), f"{[x['limit'] for x in t['legs'][2:]]}")

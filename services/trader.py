@@ -907,6 +907,15 @@ class TradingBot:
                 for b in plan["buys"] if int(b["units"]) > 0]
         legs += [{"leg": f"사다리 {l['level']}단", "units": int(l["units"]), "limit": round(float(l["price"]), 2)}
                  for l in plan["ladder"] if int(l["units"]) > 0]
+        if self.pos.open:
+            # 나무증권은 같은 종목에 걸린 내 매도보다 비싼 매수를 받지 않는다
+            # (24174 '동일 종목 반대포지션 존재시 신규주문이 불가' — 2026-10-13 TQQQ 1.15 LOC $92.67 가
+            # 지정가 매도 $88.89 에 막혔다). 매수 상한을 매도가 바로 아래로 내린다.
+            # 종가가 그 위면 장중에 매도가가 찍혔다는 뜻이라 그날은 익절하는 날이다 — 엑셀과 결과가 같다.
+            sell_px = round(self.pos.entryPrice * (1 + self.params.targetProfitPct / 100.0), 2)
+            for x in legs:
+                if x["limit"] >= sell_px:
+                    x["limit"] = round(sell_px - 0.01, 2)
         fee = self.params.feePct / 100.0
         cost = lambda ls: sum(x["units"] * x["limit"] * (1 + fee) for x in ls)
         dropped = []
