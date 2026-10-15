@@ -168,6 +168,62 @@ tick(b7)
 tick(b7)
 check("결과를 모르면 멈추고 다시 내지 않는다", bool(b7.order_hold) and [x[0] for x in fg.calls].count("sell") == 1, "")
 
+print("── 쿼터손절 (라오어: 40회 소진 · 현금 소진) ──")
+WIN.update(sessionDate="2026-10-13", pastClose=False, **{"in": True})
+fq = FakeAcct(qty=6.0)
+bq = bot(fq)
+bq.pos.units, bq.pos.turn, bq.pos.totalInvested, bq.cash = 6.0, 40, 484.86, 3515.14
+bq.last_price = 70.0
+tick(bq)
+kinds = [(x[0], x[1], x[4]) for x in fq.calls]
+check("40회 소진: 25%(6주 중 2주)를 먼저 팔고, 남은 4주에 지정가 매도를 건다",
+      kinds == [("sell", 2, True), ("sell", 4, False)], f"{kinds}")
+check("회차를 10 되돌리고 판 돈이 현금에 들어간다", bq.pos.turn == 30 and bq.pos.units == 4.0
+      and abs(bq.cash - (3515.14 + 2 * 70.0)) < 1e-6 and bq.quarter_session == "2026-10-13",
+      f"T={bq.pos.turn} 현금 ${bq.cash:,.2f}")
+bq.sell_order, bq.sell_session, bq.pos.turn = None, None, 40
+tick(bq)
+check("같은 세션에 두 번 손절하지 않는다", [x[1] for x in fq.calls if x[0] == "sell" and x[4]] == [2], f"{fq.calls}")
+
+fr = FakeAcct(qty=6.0)
+br = bot(fr)
+br.pos.units, br.pos.turn, br.cash = 6.0, 25, 5.0
+br.last_price = 70.0
+tick(br)
+check("현금 소진(오늘 낼 매수가 없음)도 쿼터손절", fr.calls and fr.calls[0][:2] == ("sell", 2) and fr.calls[0][4]
+      and br.pos.turn == 15, f"{fr.calls[:1]} T={br.pos.turn}")
+
+fs = FakeAcct(qty=6.0)
+bs = bot(fs)
+bs.pos.units, bs.pos.turn = 6.0, 4
+tick(bs)
+check("회차 · 현금이 남아 있으면 손절하지 않는다", [x[4] for x in fs.calls if x[0] == "sell"] == [False]
+      and bs._quarter_checked == "2026-10-13", f"{fs.calls}")
+
+ft = FakeAcct(qty=6.0)
+bt = bot(ft)
+bt.pos.units, bt.pos.turn = 6.0, 40
+bt.pending_orders = [{"orderId": "L9", "leg": "평단 LOC", "units": 1, "limit": 80.0, "session": "2026-10-12"}]
+tick(bt)
+check("지난 세션 LOC 정산 전이면 손절 · 매도를 미룬다 (장부가 옛것)", ft.calls == [] and bt._quarter_checked is None, "")
+
+fu = FakeAcct(qty=1.0)
+bu = bot(fu)
+bu.pos.units, bu.pos.turn, bu.pos.totalInvested = 1.0, 40, 80.81
+bu.last_price = 70.0
+tick(bu)
+check("1주만 들고 손절하면 포지션을 비운다", not bu.pos.open and bu.pos.turn == 0, f"T={bu.pos.turn}")
+
+pp = trader.TradingBot(bot_id="pq", coin="TQQQ", interval="24h", mode="PAPER", capital_krw=4000.0,
+                       params=strategy.StrategyParams.from_dict({"strategyType": "raoer_infinite", "locMode": "excel",
+                                                                "feePct": 0.0}), broker="namuh")
+pp._persist = lambda: None
+pp.pos.units, pp.pos.entryPrice, pp.pos.turn, pp.pos.totalInvested, pp.cash = 8.0, 80.0, 40, 640.0, 3360.0
+pp.last_price = 72.0
+pp._excel_quarter("2026-10-13")
+check("모의 봇도 같은 규칙 (8주 중 2주)", pp.pos.units == 6.0 and pp.pos.turn == 30
+      and any(t["action"] == "SELL_QUARTER" for t in pp.trade_history), f"{pp.pos.units:g}주")
+
 print("── 나무증권 주문 (가짜 통신) ──")
 import requests                                       # noqa: E402
 namuh._NH_MIN_INTERVAL = 0.0

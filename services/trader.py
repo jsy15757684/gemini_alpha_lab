@@ -173,6 +173,8 @@ class TradingBot:
         self.sell_session: Optional[str] = None        # 그 매도를 건 미국 세션 (하루 한 번)
         self._sell_check_at = 0.0
         self._sell_retry_after = 0.0
+        self.quarter_session: Optional[str] = None     # 쿼터손절을 한 미국 세션 (하루 한 번)
+        self._quarter_checked: Optional[str] = None    # 쿼터손절 판단을 마친 세션 — 그 전에는 매수 LOC 를 내지 않는다
 
     def _fetch_price(self) -> float:
         if self.broker == "namuh":
@@ -255,7 +257,8 @@ class TradingBot:
             if self._excel():
                 self.log("INFO", f"🔄 [무매법 엑셀 방식] {self.params.splitCount}분할 · 1회분할금 "
                                  f"${self.initial_krw / self.params.splitCount:,.2f} 고정 · 1.15 LOC + 평단 LOC + 사다리 · "
-                                 f"평단 +{self.params.targetProfitPct}% 전량 매도 (기어 · AI · 쿼터매도 없음)")
+                                 f"평단 +{self.params.targetProfitPct}% 전량 매도 · 40회/현금 소진 때 쿼터손절 "
+                                 f"{self.params.quarterCutPct:.0f}% (기어 · AI 없음)")
             elif self.params.raoerUseAi:
                 self.log("INFO", f"🔄✨ [{v_title} AI 스마트 무한매수] {self.params.splitCount}분할 ({formula_desc} · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
                                  f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
@@ -522,6 +525,12 @@ class TradingBot:
                         if self._us_daily():
                             self.buy_session = self._ny_date()
                         if self._excel():
+                            if self.mode != "LIVE" and self.quarter_session != _win["sessionDate"]:
+                                self._excel_quarter(_win["sessionDate"])   # 실계좌는 지정가 매도를 걸기 전에 한다
+                            elif (self.mode == "LIVE" and self.pos.open
+                                  and self._quarter_checked != _win["sessionDate"]):
+                                time.sleep(poll)                           # 쿼터손절 판단이 먼저 (다음 틱에)
+                                continue
                             self._place_excel_orders(price, _win["sessionDate"])
                             time.sleep(poll)
                             continue
@@ -1027,7 +1036,16 @@ class TradingBot:
             self._sell_check_at = now + (SELL_CHECK_NEAR_SEC if near else SELL_CHECK_FAR_SEC)
             self._check_sell_fill(final=over)
             return
-        if (self.pos.open and win.get("in") and self.sell_session != win["sessionDate"]
+        # 지난 세션 LOC 가 아직 정산 전이면 장부(수량 · 현금 · 회차)가 옛것이다 — 정산을 기다린다
+        stale = any(o.get("session") != win["sessionDate"] for o in self.pending_orders)
+        if (self.pos.open and win.get("in") and not stale and self._quarter_checked != win["sessionDate"]
+                and not self.order_hold and not self._stop_requested):
+            # 쿼터손절은 지정가 매도 · 매수 LOC 보다 먼저 — 매도를 걸면 주식이 묶이고,
+            # 매수 LOC 가 걸려 있으면 그보다 싼 매도는 거부된다 (24174)
+            if self.quarter_session != win["sessionDate"]:
+                self._excel_quarter(win["sessionDate"])
+            self._quarter_checked = win["sessionDate"]
+        if (self.pos.open and win.get("in") and not stale and self.sell_session != win["sessionDate"]
                 and not self.order_hold and not self._stop_requested and now >= self._sell_retry_after
                 and int(self.pos.units) >= 1):
             limit = round(self.pos.entryPrice * (1 + self.params.targetProfitPct / 100.0), 2)
@@ -1053,6 +1071,32 @@ class TradingBot:
             self.log("ORDER", f"지정가 매도 접수 평단 ${self.pos.entryPrice:,.2f} × {1 + self.params.targetProfitPct / 100.0:g} "
                               f"= ${limit:,.2f} × {units}주 (주문번호 {res.get('orderId')}) — 오늘 장 동안 유효")
             self._persist()
+
+    def _excel_exhausted(self, price: float) -> str:
+        """라오어 쿼터손절 조건 — 40회를 다 썼거나, 현금이 모자라 오늘 낼 매수가 하나도 없다. 아니면 빈 문자열."""
+        if not self.pos.open:
+            return ""
+        if self.pos.turn >= self.params.splitCount:
+            return f"{self.pos.turn}/{self.params.splitCount}회 소진"
+        if price > 0:
+            t = self._excel_targets(price)
+            if not t["legs"] and t["dropped"]:
+                return f"현금 소진 (${self.cash:,.2f} — 오늘 낼 매수가 없음 · {self.pos.turn}/{self.params.splitCount}회차)"
+        return ""
+
+    def _excel_quarter(self, session: str) -> None:
+        """무매법 엑셀 방식의 쿼터손절 — 보유의 quarterCutPct(25%)를 팔고 회차를 되돌린다 (하루 한 번)."""
+        price = self.last_price or 0.0
+        why = self._excel_exhausted(price)
+        if not why:
+            return
+        self.quarter_session = session
+        before = self.pos.units
+        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
+        self.last_decision = f"무매법(엑셀) 쿼터손절 — {why} ({pnl_pct:+.2f}%)"
+        self.log("WARNING", f"{self.last_decision} · 보유 {before:g}주의 {self.params.quarterCutPct:.0f}% 를 팝니다")
+        self._exit_quarter(price, self.last_decision)
+        self._persist()
 
     def _check_sell_fill(self, final: bool = False) -> None:
         """걸어 둔 지정가 매도의 체결을 장부에 적는다. final=True 면 (장 마감 뒤) 주문을 정리한다."""
@@ -1878,6 +1922,8 @@ class TradingBot:
         self.pos.units -= units_to_sell
         turns_rolled_back = max(1, int(self.params.splitCount * cut_ratio))
         self.pos.turn = max(1, self.pos.turn - turns_rolled_back)
+        if self.pos.units <= 1e-9:
+            self.pos = Position()               # 1주를 들고 쿼터손절하면 전부 판 것이다
         self.cash += proceeds
         self.realized_pnl += pnl
         self.total_trades += 1
@@ -1905,6 +1951,7 @@ class TradingBot:
             "pendingOrders": list(self.pending_orders),
             "sellOrder": dict(self.sell_order) if self.sell_order else None,
             "sellSession": self.sell_session,
+            "quarterSession": self.quarter_session,
             "locSession": self.loc_session,
             "orderHold": self.order_hold,
             "inflightOrder": self._inflight,
@@ -1939,6 +1986,7 @@ class TradingBot:
         bot.pending_orders = list(d.get("pendingOrders") or [])
         bot.sell_order = d.get("sellOrder") or None
         bot.sell_session = d.get("sellSession")
+        bot.quarter_session = d.get("quarterSession")
         bot.loc_session = d.get("locSession")
         bot.order_hold = d.get("orderHold")
         if d.get("inflightOrder") and not bot.order_hold:
