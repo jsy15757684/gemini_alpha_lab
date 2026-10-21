@@ -58,6 +58,9 @@ class ScalpParams:
     costPct: float = krx.SELL_COST_PCT
     entryEnd: str = "09:20"
     forceClose: str = "09:30"
+    seedKrw: float = 10_000_000   # 원본 TOTAL_SEED_KRW — 하루 손실 한도의 기준
+    maxDayStops: int = 2          # 하루 손절 이 횟수면 그날 신규 진입 끝 (0 = 끔)
+    maxDayLossPct: float = 1.0    # 하루 실현 손실이 시드의 이 %면 그날 신규 진입 끝 (0 = 끔)
     gapMinPct: float = 1.5        # 선정: 동시호가 예상 갭 하한 (원본 MIN_GAP_UP_PCT)
     gapMaxPct: float = 7.0        # 선정: 상한 (원본 MAX_GAP_UP_PCT)
     minExpTurnoverEok: float = 0.5
@@ -166,8 +169,9 @@ class Scalper:
             return
         code = q["code"]
         self.positions[code] = {"code": code, "name": q.get("name") or code, "entry": float(px), "qty": qty,
-                                "remaining": qty, "peak": float(q["price"]), "partialDone": False, "pnl": 0.0,
-                                "at": now.strftime("%H:%M:%S")}
+                                "remaining": qty, "peak": float(q["price"]), "low": float(q["price"]),
+                                "partialDone": False, "pnl": 0.0, "at": now.strftime("%H:%M:%S")}
+        self.day.setdefault("entered", []).append(code)      # 같은 날 같은 종목은 다시 사지 않는다
         self._record(code, q.get("name"), "BUY", px, qty, 0.0, 0.0,
                      f"시가 {q['open']:,} 돌파 +{(q['price'] / q['open'] - 1) * 100:.2f}% (진입 기준 +{self.params.breakoutPct}%)",
                      now)
@@ -186,7 +190,15 @@ class Scalper:
         self._record(code, pos["name"], kind, px, qty, pct, pnl, reason, now)
         self.log("INFO", f"모의 매도 {pos['name']}({code}) {qty:,}주 @ {px:,}원 · {pnl:+,.0f}원 ({pct:+.2f}%) · {reason}")
         if pos["remaining"] <= 0:
-            self.day.setdefault("closed", []).append({"code": code, "name": pos["name"], "pnl": round(pos["pnl"])})
+            # 최대 유리 · 불리 이동 (MFE · MAE) — 매수가 대비 %, 비용 빼기 전. 손절 · 익절 값을 근거로 고치려고 남긴다
+            mfe = (pos["peak"] / pos["entry"] - 1) * 100.0
+            mae = (pos.get("low", pos["entry"]) / pos["entry"] - 1) * 100.0
+            self.trades[-1].update(mfePct=round(mfe, 2), maePct=round(mae, 2))
+            self.day.setdefault("closed", []).append({"code": code, "name": pos["name"], "pnl": round(pos["pnl"]),
+                                                      "mfePct": round(mfe, 2), "maePct": round(mae, 2),
+                                                      "stopped": kind == "STOP_LOSS"})
+            if kind == "STOP_LOSS":
+                self.day["stops"] = self.day.get("stops", 0) + 1
             del self.positions[code]
         self.save()
 
@@ -211,10 +223,28 @@ class Scalper:
         closed = d.get("closed") or []
         self.days.append({"date": d["date"], "chosen": [c.get("name") for c in d.get("chosen") or []],
                           "pnl": round(sum(t["pnl"] for t in day_trades)),
-                          "positions": len(closed), "wins": sum(1 for c in closed if c["pnl"] > 0), "note": note})
+                          "positions": len(closed), "wins": sum(1 for c in closed if c["pnl"] > 0),
+                          "stops": d.get("stops", 0), "halt": d.get("halt", ""), "note": note})
         del self.days[:-MAX_DAYS]
         self.log("INFO", f"{d['date']} 마감 — {note}")
         self.save()
+
+    def _day_halt(self) -> str:
+        """하루 손실 한도 — 걸리면 그 사유, 아니면 빈 문자열. 걸려도 들고 있는 것은 규칙대로 판다."""
+        d, p = self.day, self.params
+        if d.get("halt"):
+            return d["halt"]
+        pnl = sum(t["pnl"] for t in self.trades if t["date"] == d.get("date") and t["kind"] != "BUY")
+        why = ""
+        if p.maxDayStops and d.get("stops", 0) >= p.maxDayStops:
+            why = f"오늘 손절 {d['stops']}번 — 신규 진입 중단"
+        elif p.maxDayLossPct and pnl <= -p.seedKrw * p.maxDayLossPct / 100.0:
+            why = f"오늘 손실 {pnl:+,.0f}원 (시드의 −{p.maxDayLossPct}%) — 신규 진입 중단"
+        if why:
+            d["halt"] = why
+            self.log("WARNING", why)
+            self.save()
+        return why
 
     def _quote(self, code: str) -> Optional[Dict[str, Any]]:
         try:
@@ -315,10 +345,13 @@ class Scalper:
         for q in quotes:
             code = q["code"]
             if code in self.positions:
-                act = decide_exit(self.positions[code], q["price"], p)
+                pos = self.positions[code]
+                pos["low"] = min(pos.get("low", pos["entry"]), q["price"])
+                act = decide_exit(pos, q["price"], p)
                 if act:
                     self._sell(code, q, act["qty"], act["kind"], act["reason"], now)
-            elif now < t_entry_end and len(self.positions) < p.maxStocks and can_enter(q, p):
+            elif (now < t_entry_end and len(self.positions) < p.maxStocks
+                  and code not in d.get("entered", []) and not self._day_halt() and can_enter(q, p)):
                 self._buy(q, now)
         return 1.0
 
@@ -359,6 +392,8 @@ class Scalper:
     def status(self) -> Dict[str, Any]:
         with self.lock:              # 판단 스레드와 겹쳐도 되도록 복사본으로 만든다
             days, trades, logs = list(self.days), list(self.trades[-60:]), list(self.logs[-40:])
+            ex = [t for t in self.trades if "mfePct" in t]
+            avg = (lambda k: round(sum(t[k] for t in ex) / len(ex), 2) if ex else None)
             closed_days = [x for x in days if x.get("positions")]
             total = sum(x["pnl"] for x in days)
             pos_n = sum(x.get("positions", 0) for x in days)
@@ -373,7 +408,11 @@ class Scalper:
                     "trades": trades[::-1], "days": days[-30:][::-1],
                     "summary": {"days": len(days), "tradedDays": len(closed_days), "pnl": round(total),
                                 "positions": pos_n, "wins": wins,
-                                "winRate": round(wins / pos_n * 100, 1) if pos_n else None},
+                                "winRate": round(wins / pos_n * 100, 1) if pos_n else None,
+                                # 종목 매매 1건당 평균 손익 (비용 포함) — 승률보다 이게 플러스여야 한다
+                                "perPosition": round(total / pos_n) if pos_n else None,
+                                "avgMfePct": avg("mfePct"), "avgMaePct": avg("maePct"),
+                                "closedWithMfe": len(ex)},
                     "logs": logs[::-1], "lastError": self.last_error}
 
 

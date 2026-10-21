@@ -116,6 +116,44 @@ sc4.step(at(9, 10, day=26))
 check("장이 열린 뒤에 뜨면 그날은 쉰다 (장 전 데이터로 고를 수 없다)", sc4.day["done"] and not sc4.positions, sc4.day.get("note"))
 check("주말은 쉰다", S.Scalper(namuh_account=object()).step(at(9, 5, day=24)) == 600.0, "토요일")
 
+print("── 재진입 금지 · 하루 손실 한도 · MFE/MAE ──")
+check("다 판 종목에 최대 상승 · 하락폭이 남는다", sc.trades[-1].get("mfePct") is not None
+      and sc.trades[-1]["mfePct"] == round((10_300 / 10_070 - 1) * 100, 2) and sc.trades[-1]["maePct"] <= 0,
+      f"MFE {sc.trades[-1].get('mfePct')}% · MAE {sc.trades[-1].get('maePct')}%")
+s5 = S.Scalper(namuh_account=object())
+s5.step(at(8, 50, 5, day=27)); s5.step(at(8, 57, 55, day=27))
+Q["000001"] = mk(10_060, hoga="09:01:00")
+s5.step(at(9, 1, day=27))
+Q["000001"] = mk(9_850, bid=9_840, hoga="09:02:00")          # 손절
+s5.step(at(9, 2, day=27))
+Q["000001"] = mk(10_100, hoga="09:04:00")                    # 다시 시가 돌파
+s5.step(at(9, 4, day=27))
+check("손절한 종목은 그날 다시 사지 않는다", not s5.positions and s5.trades[-1]["kind"] == "STOP_LOSS"
+      and s5.trades[-1].get("maePct", 0) < 0, f"{[t['kind'] for t in s5.trades if t['date'] == '2026-10-27']}")
+s6 = S.Scalper(namuh_account=object())
+s6.params.maxStocks = 3
+SEL["chosen"] = [{"code": c, "name": c, "gap": 3.0, "score": 1.0} for c in ("A1", "A2", "A3")]
+for c in ("A1", "A2", "A3"):
+    Q[c] = mk(10_060, hoga="09:01:00", name=c)
+s6.step(at(8, 50, 5, day=28)); s6.step(at(8, 57, 55, day=28))
+Q["A1"] = mk(10_060, hoga="09:01:00", name="A1")
+Q["A2"] = mk(10_000, hoga="09:01:00", name="A2"); Q["A3"] = mk(10_000, hoga="09:01:00", name="A3")
+s6.step(at(9, 1, day=28))                                    # A1 만 산다
+Q["A1"] = mk(9_850, bid=9_840, hoga="09:02:00", name="A1")
+s6.step(at(9, 2, day=28))                                    # A1 손절 (1번)
+s6.day["stops"] = 2                                          # 두 번째 손절이 났다고 치고
+Q["A2"] = mk(10_100, hoga="09:03:00", name="A2")
+s6.step(at(9, 3, day=28))
+check("하루 손절 2번이면 그날 신규 진입을 멈춘다", "A2" not in s6.positions and "손절 2번" in s6.day.get("halt", ""),
+      s6.day.get("halt"))
+s6.step(at(9, 31, day=28))
+check("일별 결과에 손절 수 · 중단 사유가 남는다", s6.days[-1]["stops"] == 2 and s6.days[-1]["halt"], f"{s6.days[-1]}")
+s7 = S.Scalper(namuh_account=object())
+s7.day = {"date": "2026-10-29", "stops": 0}
+s7.trades = [{"date": "2026-10-29", "kind": "STOP_LOSS", "pnl": -100_001}]
+check("하루 실현 손실이 시드의 −1%(10만원)를 넘어도 멈춘다", "손실" in s7._day_halt(), s7.day.get("halt"))
+SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
+
 print("── 저장 · 끄기 ──")
 sc.save()
 r = S.Scalper(namuh_account=object()); r.load()
@@ -124,7 +162,9 @@ r.set_enabled(False)
 n = len(CALLS)
 check("끄면 아무것도 조회하지 않는다", r.step(at(9, 5, day=27)) == 30.0 and len(CALLS) == n, "")
 st = sc.status()
-check("화면용 요약 (모의 · 손익 · 승률)", st["paper"] and st["summary"]["wins"] == 1 and st["summary"]["winRate"] == 100.0, f"{st['summary']}")
+check("화면용 요약 (모의 · 손익 · 승률 · 1건당 손익 · 평균 MFE/MAE)", st["paper"] and st["summary"]["wins"] == 1
+      and st["summary"]["winRate"] == 100.0 and st["summary"]["perPosition"] > 0 and st["summary"]["avgMfePct"] > 0,
+      f"{st['summary']}")
 
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")

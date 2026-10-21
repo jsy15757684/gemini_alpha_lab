@@ -909,7 +909,9 @@ function renderScalper(s) {
     <div class="metric"><div class="metric-k">누적 가상 손익</div><div class="metric-v ${m.pnl >= 0 ? "up" : "down"}">${m.pnl >= 0 ? "+" : ""}${won0(m.pnl)}</div></div>
     <div class="metric"><div class="metric-k">기록한 날 · 매매한 날</div><div class="metric-v">${m.days} · ${m.tradedDays}</div></div>
     <div class="metric"><div class="metric-k">종목 매매 · 이긴 수</div><div class="metric-v">${m.positions} · ${m.wins}</div></div>
-    <div class="metric"><div class="metric-k">승률</div><div class="metric-v">${m.winRate == null ? "-" : m.winRate + "%"}</div></div></div>`;
+    <div class="metric"><div class="metric-k">승률</div><div class="metric-v">${m.winRate == null ? "-" : m.winRate + "%"}</div></div>
+    <div class="metric"><div class="metric-k">1건당 평균 손익</div><div class="metric-v ${(m.perPosition ?? 0) >= 0 ? "up" : "down"}">${m.perPosition == null ? "-" : (m.perPosition >= 0 ? "+" : "") + won0(m.perPosition)}</div></div>
+    <div class="metric"><div class="metric-k">평균 최대 상승 · 하락 (MFE · MAE)</div><div class="metric-v">${m.avgMfePct == null ? "-" : `+${m.avgMfePct}% · ${m.avgMaePct}%`}</div></div></div>`;
   const d = s.day || {};
   const chosen = (d.chosen || []).map(c => `${escapeHtml(c.name)} <span class="muted">(${escapeHtml(c.code)} · 예상 갭 ${Number(c.gap).toFixed(2)}% · 체결량/전일 ${Number(c.score).toFixed(2)})</span>`).join("<br>") || "-";
   const held = (s.positions || []).map(p => `<tr><td>${escapeHtml(p.name)}</td><td>${p.remaining.toLocaleString()}/${p.qty.toLocaleString()}주</td>
@@ -921,15 +923,15 @@ function renderScalper(s) {
     ${held ? `<div class="tbl-wrap" style="margin-top:.4rem"><table><thead><tr><th>가상 보유</th><th>남은/산 수량</th><th>매수가</th><th>현재가</th><th>순수익률</th></tr></thead><tbody>${held}</tbody></table></div>` : ""}`;
   const trades = (s.trades || []).map(t => `<tr><td>${escapeHtml(t.date.slice(5))} ${escapeHtml(t.time)}</td><td>${escapeHtml(t.name)}</td>
     <td>${escapeHtml(SCALP_KIND[t.kind] || t.kind)}</td><td>${won0(t.price)}</td><td>${t.qty.toLocaleString()}</td>
-    <td class="${t.pnl >= 0 ? "up" : "down"}">${t.kind === "BUY" ? "" : (t.pnl >= 0 ? "+" : "") + won0(t.pnl)}</td><td class="muted small">${escapeHtml(t.reason)}</td></tr>`).join("");
+    <td class="${t.pnl >= 0 ? "up" : "down"}">${t.kind === "BUY" ? "" : (t.pnl >= 0 ? "+" : "") + won0(t.pnl)}</td><td class="muted small">${escapeHtml(t.reason)}${t.mfePct != null ? ` · 최대 +${t.mfePct}% / ${t.maePct}%` : ""}</td></tr>`).join("");
   $("scalperTrades").innerHTML = trades ? `<div class="tbl-wrap"><table><thead><tr><th>시각</th><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>손익</th><th>사유</th></tr></thead><tbody>${trades}</tbody></table></div>` : `<div class="empty">아직 가상 체결이 없습니다.</div>`;
   const days = (s.days || []).map(x => `<tr><td>${escapeHtml(x.date)}</td><td>${escapeHtml((x.chosen || []).join(", ") || "-")}</td>
-    <td>${x.positions}</td><td>${x.wins}</td><td class="${x.pnl >= 0 ? "up" : "down"}">${x.pnl >= 0 ? "+" : ""}${won0(x.pnl)}</td><td class="muted small">${escapeHtml(x.note || "")}</td></tr>`).join("");
+    <td>${x.positions}</td><td>${x.wins}</td><td class="${x.pnl >= 0 ? "up" : "down"}">${x.pnl >= 0 ? "+" : ""}${won0(x.pnl)}</td><td class="muted small">${escapeHtml(x.note || "")}${x.halt ? ` · ${escapeHtml(x.halt)}` : ""}</td></tr>`).join("");
   $("scalperDays").innerHTML = days ? `<div class="tbl-wrap"><table><thead><tr><th>날짜</th><th>대장주</th><th>매매</th><th>이김</th><th>손익</th><th>메모</th></tr></thead><tbody>${days}</tbody></table></div>` : `<div class="empty">아직 기록한 날이 없습니다.</div>`;
   const p = s.params;
   $("scalperRules").innerHTML = `종목 ${p.maxStocks}개 · 종목당 ${won0(p.positionKrw)} · 진입: 시가 +${p.breakoutPct}% 돌파 (등락률 ${p.maxChangePct}% 이하, ${escapeHtml(p.entryEnd)}까지) ·
     1차 익절 +${p.partialPct}% 절반 · 목표 +${p.targetPct}% · 손절 −${p.stopPct}% · 트레일링 고점 대비 −${p.trailPct}% · ${escapeHtml(p.forceClose)} 강제 청산 ·
-    비용 ${p.costPct}% · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}% · 체결가 = 살 때 매도1호가, 팔 때 매수1호가`;
+    비용 ${p.costPct}% · 같은 종목 하루 1번 · 손절 ${p.maxDayStops}번 또는 시드 ${won0(p.seedKrw)}의 −${p.maxDayLossPct}% 손실이면 그날 신규 진입 끝 · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}% · 체결가 = 살 때 매도1호가, 팔 때 매수1호가`;
   $("scalperLogs").innerHTML = (s.logs || []).map(l => `${escapeHtml(l.time)} ${escapeHtml(l.message)}`).join("<br>");
 }
 
