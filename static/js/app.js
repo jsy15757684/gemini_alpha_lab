@@ -888,7 +888,8 @@ async function loadMuma() {
 // ───────── 국내 스캘퍼 (모의) ─────────
 
 const SCALP_KIND = { BUY: "매수", PARTIAL: "1차 익절(절반)", TARGET: "목표 익절", TRAIL: "트레일링",
-                     STOP_LOSS: "손절", FORCE: "09:30 청산", STALE: "미청산 정리" };
+                     STOP_LOSS: "손절", FORCE: "09:30 청산", STALE: "미청산 정리",
+                     TIME: "30초 타임컷", PYRAMID: "불타기", FLOOR: "보존선 이탈" };
 const SCALP_PHASE = { wait: "08:50 후보 훑기 대기", select: "후보 훑는 중 (약 7분)", selected: "08:57:50 다시 거르기 대기",
                       refine: "다시 거르는 중", ready: "09:00 장 시작 대기", trade: "감시 · 매매 중", done: "오늘 끝" };
 
@@ -902,6 +903,7 @@ async function loadScalper() {
 
 function renderScalper(s) {
   $("scalperEnabled").checked = !!s.enabled;
+  document.querySelectorAll(".scalper-skill").forEach(el => { el.checked = !!s.params[el.dataset.skill]; });
   setAlert($("scalperAlert"), !s.running ? "스캘퍼가 돌고 있지 않습니다 (나무증권 키 · APP_SCALPER 확인)"
     : (s.lastError ? `최근 오류: ${s.lastError}` : ""), s.running ? "warn" : "error");
   const m = s.summary, won0 = (v) => `${Math.round(v).toLocaleString()}원`;
@@ -924,7 +926,7 @@ function renderScalper(s) {
     ${held ? `<div class="tbl-wrap" style="margin-top:.4rem"><table><thead><tr><th>가상 보유</th><th>남은/산 수량</th><th>매수가</th><th>현재가</th><th>순수익률</th></tr></thead><tbody>${held}</tbody></table></div>` : ""}`;
   const trades = (s.trades || []).map(t => `<tr><td>${escapeHtml(t.date.slice(5))} ${escapeHtml(t.time)}</td><td>${escapeHtml(t.name)}</td>
     <td>${escapeHtml(SCALP_KIND[t.kind] || t.kind)}</td><td>${won0(t.price)}</td><td>${t.qty.toLocaleString()}</td>
-    <td class="${t.pnl >= 0 ? "up" : "down"}">${t.kind === "BUY" ? "" : (t.pnl >= 0 ? "+" : "") + won0(t.pnl)}</td><td class="muted small">${escapeHtml(t.reason)}${t.mfePct != null ? ` · 최대 +${t.mfePct}% / ${t.maePct}%` : ""}</td></tr>`).join("");
+    <td class="${t.pnl >= 0 ? "up" : "down"}">${t.kind === "BUY" ? "" : (t.pnl >= 0 ? "+" : "") + won0(t.pnl)}</td><td class="muted small">${escapeHtml(t.reason)}${t.mfePct != null ? ` · 최대 +${t.mfePct}% / ${t.maePct}%` : ""}${(t.skills || []).length ? ` · [${escapeHtml(t.skills.join(", "))}]` : ""}</td></tr>`).join("");
   $("scalperTrades").innerHTML = trades ? `<div class="tbl-wrap"><table><thead><tr><th>시각</th><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>손익</th><th>사유</th></tr></thead><tbody>${trades}</tbody></table></div>` : `<div class="empty">아직 가상 체결이 없습니다.</div>`;
   const days = (s.days || []).map(x => `<tr><td>${escapeHtml(x.date)}</td><td>${escapeHtml((x.chosen || []).join(", ") || "-")}</td>
     <td>${x.positions}</td><td>${x.wins}</td><td class="${x.pnl >= 0 ? "up" : "down"}">${x.pnl >= 0 ? "+" : ""}${won0(x.pnl)}</td><td class="muted small">${escapeHtml(x.note || "")}${x.halt ? ` · ${escapeHtml(x.halt)}` : ""}</td></tr>`).join("");
@@ -932,7 +934,11 @@ function renderScalper(s) {
   const p = s.params;
   $("scalperRules").innerHTML = `종목 ${p.maxStocks}개 · 종목당 ${won0(p.positionKrw)} · 진입: 시가 +${p.breakoutPct}% 돌파 (등락률 ${p.maxChangePct}% 이하, ${escapeHtml(p.entryEnd)}까지) ·
     1차 익절 +${p.partialPct}% 절반 · 목표 +${p.targetPct}% · 손절 −${p.stopPct}% · 트레일링 고점 대비 −${p.trailPct}% · ${escapeHtml(p.forceClose)} 강제 청산 ·
-    비용 ${p.costPct}% · 모의 체결가는 10단계 호가 잔량을 먹어 내려간 평균 (10단계로 못 채우면 진입 안 함) · 정적 VI 상단까지 목표 익절폭 여유가 없으면 진입 안 함 · 같은 종목 하루 1번 · 손절 ${p.maxDayStops}번 또는 시드 ${won0(p.seedKrw)}의 −${p.maxDayLossPct}% 손실이면 그날 신규 진입 끝 · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}% · 체결가 = 살 때 매도1호가, 팔 때 매수1호가`;
+    비용 ${p.costPct}% ·
+    ② 타임컷 ${p.timeStopOn ? `켬 (${p.timeStopSec}초 안에 +${p.timeStopPct}% 못 찍으면 매도)` : "끔"} ·
+    ③ 호가 불균형 ${p.imbalanceOn ? `켬 (매도잔량 ÷ 매수잔량 ≥ ${p.imbalanceMin}배일 때만 매수)` : "끔"} ·
+    ⑥ 불타기 ${p.pyramidOn ? `켬 (+${p.pyramidPct}% · 거래 속도 ${p.pyramidVolX}배면 ${p.pyramidAddPct}% 추가 · 평단 아래면 전량)` : "끔"} ·
+    모의 체결가는 10단계 호가 잔량을 먹어 내려간 평균 (10단계로 못 채우면 진입 안 함) · 정적 VI 상단까지 목표 익절폭 여유가 없으면 진입 안 함 · 같은 종목 하루 1번 · 손절 ${p.maxDayStops}번 또는 시드 ${won0(p.seedKrw)}의 −${p.maxDayLossPct}% 손실이면 그날 신규 진입 끝 · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}% · 체결가 = 살 때 매도1호가, 팔 때 매수1호가`;
   $("scalperLogs").innerHTML = (s.logs || []).map(l => `${escapeHtml(l.time)} ${escapeHtml(l.message)}`).join("<br>");
 }
 
@@ -1773,6 +1779,12 @@ async function boot() {
 
   if ($("refreshMumaBtn")) $("refreshMumaBtn").onclick = () => loadMuma();
   if ($("refreshScalperBtn")) $("refreshScalperBtn").onclick = () => loadScalper();
+  document.querySelectorAll(".scalper-skill").forEach(el => el.onchange = async () => {
+    try {
+      renderScalper(await api("/api/namuh/scalper/skills", { method: "POST", headers: { "Content-Type": "application/json" },
+                                                               body: JSON.stringify({ [el.dataset.skill]: el.checked }) }));
+    } catch (err) { setAlert($("scalperAlert"), `스킬 변경 실패: ${err.message}`, "error"); loadScalper(); }
+  });
   if ($("scalperEnabled")) $("scalperEnabled").onchange = async (e) => {
     try {
       renderScalper(await api("/api/namuh/scalper/enable", { method: "POST", headers: { "Content-Type": "application/json" },

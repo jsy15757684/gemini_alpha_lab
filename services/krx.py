@@ -77,6 +77,8 @@ def quote(acc: namuh.NamuhAccount, code: str) -> Dict[str, Any]:
         "bids": [(_i(o.get(f"bidp{i}")), _i(o.get(f"bidp_rsqn{i}"))) for i in range(1, 11) if _i(o.get(f"bidp{i}")) > 0],
         # 정적 VI 발동 예정 가격 (상단 · 하단 · 기준). 동적 VI 는 오지 않는다. 0 이면 모름
         "viUp": _i(o.get("vi_antc_mxpr")),
+        "totalAsk": _i(o.get("total_askp_rsqn")),     # 총 매도잔량 (10단계 합)
+        "totalBid": _i(o.get("total_bidp_rsqn")),     # 총 매수잔량
         "viDown": _i(o.get("vi_antc_llam")),
         "volume": _i(o.get("acml_vol")),
         "prevVolume": _i(o.get("prdy_vol")),

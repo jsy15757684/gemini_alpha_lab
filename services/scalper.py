@@ -61,6 +61,16 @@ class ScalpParams:
     seedKrw: float = 10_000_000   # 원본 TOTAL_SEED_KRW — 하루 손실 한도의 기준
     maxDayStops: int = 2          # 하루 손절 이 횟수면 그날 신규 진입 끝 (0 = 끔)
     maxDayLossPct: float = 1.0    # 하루 실현 손실이 시드의 이 %면 그날 신규 진입 끝 (0 = 끔)
+    # ── 추가 스킬 (사용자 2026-10-21 · 처음부터 켬 · 하나씩 끌 수 있다) ──
+    timeStopOn: bool = True       # ② 30초 타임컷: 산 뒤 timeStopSec 안에 +timeStopPct 를 못 찍으면 판다
+    timeStopSec: float = 30.0
+    timeStopPct: float = 1.5      #   매수가 대비 (비용 빼기 전)
+    imbalanceOn: bool = True      # ③ 호가 불균형: 총매도잔량 ÷ 총매수잔량 ≥ imbalanceMin 일 때만 산다
+    imbalanceMin: float = 2.0
+    pyramidOn: bool = True        # ⑥ 불타기: +pyramidPct 를 넘고 거래량이 몰리면 처음 수량의 pyramidAddPct% 를 더 산다
+    pyramidPct: float = 1.5       #   그 뒤 평단(비용 포함) 아래로 내려오면 전량 — 수익 보존선
+    pyramidAddPct: float = 30.0
+    pyramidVolX: float = 2.0      #   직전 몇 초 거래 속도 ≥ 개장 이후 평균 속도 × 이 배수
     gapMinPct: float = 1.5        # 선정: 동시호가 예상 갭 하한 (원본 MIN_GAP_UP_PCT)
     gapMaxPct: float = 7.0        # 선정: 상한 (원본 MAX_GAP_UP_PCT)
     minExpTurnoverEok: float = 0.5
@@ -157,6 +167,12 @@ def vi_room_ok(q: Dict[str, Any], entry: float, p: "ScalpParams") -> bool:
     return not up or entry * (1 + p.targetPct / 100.0) < up
 
 
+def imbalance(q: Dict[str, Any]) -> Optional[float]:
+    """총매도잔량 ÷ 총매수잔량. 잔량을 모르면 None."""
+    a, b = q.get("totalAsk") or 0, q.get("totalBid") or 0
+    return round(a / b, 2) if a > 0 and b > 0 else None
+
+
 def can_enter(q: Dict[str, Any], p: ScalpParams) -> bool:
     """원본 evaluate_entry — 시가 돌파 (+breakoutPct%) · 너무 오른 종목(> maxChangePct) 제외."""
     o, px = q.get("open") or 0, q.get("price") or 0
@@ -176,6 +192,7 @@ class Scalper:
         self.quotes: Dict[str, Dict[str, Any]] = {}
         self.logs: List[Dict[str, Any]] = []
         self.last_error = ""
+        self._vol_seen: Dict[str, tuple] = {}
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -226,9 +243,13 @@ class Scalper:
             self._skip(code, f"정적 VI 상단 {q['viUp']:,}원까지 목표 익절 +{self.params.targetPct}% 여유가 없음", True)
             return
         px = round(px, 2)
+        ratio = imbalance(q)
         self.positions[code] = {"code": code, "name": q.get("name") or code, "entry": float(px), "qty": qty,
                                 "remaining": qty, "peak": float(q["price"]), "low": float(q["price"]),
-                                "partialDone": False, "pnl": 0.0, "at": now.strftime("%H:%M:%S")}
+                                "partialDone": False, "pnl": 0.0, "at": now.strftime("%H:%M:%S"),
+                                "atTs": now.timestamp(), "firstEntry": float(px), "cost": qty * px,
+                                "timeOk": not self.params.timeStopOn, "pyramided": False, "floor": 0.0,
+                                "skills": [f"호가불균형 {ratio}배"] if self.params.imbalanceOn and ratio else []}
         self.day.setdefault("entered", []).append(code)      # 같은 날 같은 종목은 다시 사지 않는다
         self._record(code, q.get("name"), "BUY", px, qty, 0.0, 0.0,
                      f"시가 {q['open']:,} 돌파 +{(q['price'] / q['open'] - 1) * 100:.2f}% (진입 기준 +{self.params.breakoutPct}%)",
@@ -252,7 +273,7 @@ class Scalper:
             # 최대 유리 · 불리 이동 (MFE · MAE) — 매수가 대비 %, 비용 빼기 전. 손절 · 익절 값을 근거로 고치려고 남긴다
             mfe = (pos["peak"] / pos["entry"] - 1) * 100.0
             mae = (pos.get("low", pos["entry"]) / pos["entry"] - 1) * 100.0
-            self.trades[-1].update(mfePct=round(mfe, 2), maePct=round(mae, 2))
+            self.trades[-1].update(mfePct=round(mfe, 2), maePct=round(mae, 2), skills=list(pos.get("skills") or []))
             self.day.setdefault("closed", []).append({"code": code, "name": pos["name"], "pnl": round(pos["pnl"]),
                                                       "mfePct": round(mfe, 2), "maePct": round(mae, 2),
                                                       "stopped": kind == "STOP_LOSS"})
@@ -413,15 +434,76 @@ class Scalper:
         for q in quotes:
             code = q["code"]
             if code in self.positions:
-                pos = self.positions[code]
-                pos["low"] = min(pos.get("low", pos["entry"]), q["price"])
-                act = decide_exit(pos, q["price"], p)
-                if act:
-                    self._sell(code, q, act["qty"], act["kind"], act["reason"], now)
+                self._manage(code, q, now)
             elif (now < t_entry_end and len(self.positions) < p.maxStocks
                   and code not in d.get("entered", []) and not self._day_halt() and can_enter(q, p)):
+                ratio = imbalance(q)
+                if p.imbalanceOn and ratio is not None and ratio < p.imbalanceMin:
+                    self._skip(code, f"호가 불균형 {ratio}배 < {p.imbalanceMin}배 (매도잔량이 무겁지 않음)", False)
+                    continue
                 self._buy(q, now)
         return 1.0
+
+    def _manage(self, code: str, q: Dict[str, Any], now: datetime) -> None:
+        """보유 하나: 보존선 → 30초 타임컷 → 원래 청산 규칙 → 불타기 순서로 본다."""
+        p, pos, px = self.params, self.positions[code], q["price"]
+        pos["low"] = min(pos.get("low", pos["entry"]), px)
+        pos["peak"] = max(pos["peak"], px)
+        first = pos.get("firstEntry", pos["entry"])
+        if pos.get("floor") and px <= pos["floor"]:
+            self._sell(code, q, pos["remaining"], "FLOOR", f"불타기 뒤 수익 보존선 {pos['floor']:,.0f}원 이탈", now)
+            return
+        if not pos.get("timeOk", True):
+            if pos["peak"] >= first * (1 + p.timeStopPct / 100.0):
+                pos["timeOk"] = True
+            elif now.timestamp() - pos.get("atTs", now.timestamp()) >= p.timeStopSec:
+                pos.setdefault("skills", []).append("30초 타임컷")
+                self._sell(code, q, pos["remaining"], "TIME",
+                           f"{p.timeStopSec:.0f}초 안에 +{p.timeStopPct}% 를 못 찍음 (타임컷)", now)
+                return
+        act = decide_exit(pos, px, p)
+        if act:
+            self._sell(code, q, act["qty"], act["kind"], act["reason"], now)
+            return
+        if p.pyramidOn and not pos.get("pyramided") and px >= first * (1 + p.pyramidPct / 100.0) \
+                and self._vol_surge(q, now):
+            self._pyramid(code, q, now)
+
+    def _vol_surge(self, q: Dict[str, Any], now: datetime) -> bool:
+        """직전 판단 이후 거래 속도(주/초)가 09:00 이후 평균 속도의 pyramidVolX 배 이상인가."""
+        code, vol, t = q["code"], q.get("volume") or 0, now.timestamp()
+        last = self._vol_seen.get(code)
+        self._vol_seen[code] = (t, vol)
+        if not last or vol <= 0 or t <= last[0]:
+            return False
+        since_open = t - _at(now, OPEN_AT).timestamp()
+        if since_open <= 0:
+            return False
+        recent = (vol - last[1]) / (t - last[0])
+        return recent >= self.params.pyramidVolX * (vol / since_open)
+
+    def _pyramid(self, code: str, q: Dict[str, Any], now: datetime) -> None:
+        p, pos = self.params, self.positions[code]
+        add_qty = int(pos["qty"] * p.pyramidAddPct / 100.0)
+        invested = sum(x.get("cost", x["entry"] * x["remaining"]) for x in self.positions.values())
+        fill = walk_buy(q, add_qty * (q.get("ask") or q["price"]) * 1.01) if add_qty > 0 else None
+        if not fill or invested + fill[0] * fill[1] > p.seedKrw:
+            pos["pyramided"] = True              # 한 번만 시도한다
+            return
+        n, px = min(fill[0], add_qty), fill[1]
+        old_qty = pos["remaining"]
+        pos["entry"] = (pos["entry"] * old_qty + px * n) / (old_qty + n)
+        pos["remaining"] += n
+        pos["qty"] += n
+        pos["cost"] = pos.get("cost", 0) + n * px
+        pos["pyramided"] = True
+        pos["timeOk"] = True
+        pos["floor"] = round(pos["entry"] * (1 + p.costPct / 100.0), 2)     # 비용까지 본전
+        pos.setdefault("skills", []).append(f"불타기 +{n}주")
+        self._record(code, pos["name"], "PYRAMID", round(px, 2), n, 0.0, 0.0,
+                     f"+{p.pyramidPct}% 돌파 · 거래 몰림 → {p.pyramidAddPct:.0f}% 추가 · 보존선 {pos['floor']:,.0f}원", now)
+        self.log("INFO", f"모의 불타기 {pos['name']}({code}) +{n}주 @ {px:,.0f}원 · 평단 {pos['entry']:,.0f}원")
+        self.save()
 
     # ── 스레드 ──
     def _loop(self) -> None:
@@ -455,6 +537,17 @@ class Scalper:
         with self.lock:
             self.enabled = bool(on)
             self.log("INFO", "켰습니다" if on else "껐습니다 (가상 보유가 있으면 다음 거래일 정리)")
+            self.save()
+
+    SKILLS = ("timeStopOn", "imbalanceOn", "pyramidOn")
+
+    def set_skills(self, flags: Dict[str, Any]) -> None:
+        """추가 스킬 켜고 끄기 (② 타임컷 · ③ 호가 불균형 · ⑥ 불타기). 들고 있는 종목에는 다음 판단부터."""
+        with self.lock:
+            for k in self.SKILLS:
+                if k in flags and flags[k] is not None:
+                    setattr(self.params, k, bool(flags[k]))
+            self.log("INFO", "스킬: " + " · ".join(f"{k}={getattr(self.params, k)}" for k in self.SKILLS))
             self.save()
 
     def status(self) -> Dict[str, Any]:

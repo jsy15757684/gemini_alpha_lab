@@ -830,6 +830,19 @@ def namuh_scalper_status():
     return scalper.get(namuh_keystore.account).status()
 
 
+class ScalperSkillsRequest(BaseModel):
+    timeStopOn: Optional[bool] = None
+    imbalanceOn: Optional[bool] = None
+    pyramidOn: Optional[bool] = None
+
+
+@app.post("/api/namuh/scalper/skills")
+def namuh_scalper_skills(req: ScalperSkillsRequest):
+    sc = scalper.get(namuh_keystore.account)
+    sc.set_skills(req.dict())
+    return sc.status()
+
+
 @app.post("/api/namuh/scalper/enable")
 def namuh_scalper_enable(req: ScalperEnableRequest):
     sc = scalper.get(namuh_keystore.account)

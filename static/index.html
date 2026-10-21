@@ -438,6 +438,11 @@
             <button class="btn btn-ghost btn-sm" id="refreshScalperBtn" style="white-space:nowrap">🔄 새로고침</button>
           </div>
         </div>
+        <div class="inline small" style="flex-wrap:wrap;gap:1rem;margin:.3rem 0 .6rem">
+          <label class="inline"><input type="checkbox" class="scalper-skill" data-skill="timeStopOn"> ② 30초 타임컷</label>
+          <label class="inline"><input type="checkbox" class="scalper-skill" data-skill="imbalanceOn"> ③ 호가 불균형 (매도잔량 2배)</label>
+          <label class="inline"><input type="checkbox" class="scalper-skill" data-skill="pyramidOn"> ⑥ 불타기 (+30% · 보존선)</label>
+        </div>
         <div id="scalperAlert"></div>
         <div id="scalperSummary"></div>
         <h3 class="card-title" style="margin-top:1rem">오늘</h3>
@@ -653,6 +658,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.16.2"></script>
+<script src="/static/js/app.js?v=5.17.0"></script>
 </body>
 </html>
