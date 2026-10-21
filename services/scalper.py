@@ -1,0 +1,389 @@
+"""국내 주식 장초반 스캘퍼 (모의 전용) — local_training/stock_scalper 의 규칙을 서버에 옮겼다.
+
+**실주문은 없다.** 나무증권 국내 시세만 읽고, 매매는 가상 장부(data/scalper.json)에만 적는다.
+2~4주 모의 결과를 보고 실계좌로 넘길지 판단한다 (사용자 결정 2026-10-21).
+
+하루 흐름 (한국시간 · 평일)
+  08:50     후보(코스피200 ∪ 코스닥150, 위험 종목 제외)를 훑어 예비 목록 (kr_selector.select)
+  08:57:50  예비 목록만 다시 조회해 대장주 maxStocks 개 (kr_selector.refine)
+            — 동시호가 예상체결 기준. 원본은 다음(daum) 비공식 주소의 '전날' 거래량으로 골랐다.
+  09:00     감시 시작. 장이 안 열린 날(휴장)은 호가 시각으로 알아채고 쉰다
+  ~09:20    진입: 현재가 > 시가 × (1 + breakoutPct%) 이고 등락률 ≤ maxChangePct
+  ~09:30    청산 규칙 (원본 execution.py 와 같은 순서)
+              손절      순수익률 ≤ −stopPct            → 전량
+              트레일링  고점이 매수가 +partialPct% 를 넘은 뒤 고점 대비 −trailPct% → 전량
+              목표 익절  순수익률 ≥ targetPct          → 전량
+              1차 익절  순수익률 ≥ partialPct (처음 한 번) → 절반
+            순수익률 = (현재가 − 매수가) ÷ 매수가 − costPct(세금 · 수수료 0.20%)
+  09:30     남은 물량 전량 청산 · 그날 결과 기록
+
+원본과 다른 점 — 모의 체결가를 살 때 매도1호가 · 팔 때 매수1호가로 적는다 (원본은 현재가).
+"""
+
+import logging
+import threading
+import time
+from dataclasses import asdict, dataclass
+from datetime import datetime, timedelta
+from typing import Any, Dict, List, Optional
+from zoneinfo import ZoneInfo
+
+from services import kr_selector, krx, krx_master
+from services.botstore import JsonStore
+from services.namuh import NamuhError
+
+logger = logging.getLogger(__name__)
+KST = ZoneInfo("Asia/Seoul")
+
+store = JsonStore("scalper.json", "국내 스캘퍼(모의) 상태")
+
+SELECT_AT = (8, 50, 0)
+REFINE_AT = (8, 57, 50)
+OPEN_AT = (9, 0, 0)
+HOGA_FRESH_SEC = 180          # 호가 시각이 지금과 이보다 멀면 장이 안 열린 것 (휴장 · 지연 개장)
+MAX_TRADES = 3000
+MAX_DAYS = 400
+
+
+@dataclass
+class ScalpParams:
+    maxStocks: int = 3
+    positionKrw: float = 3_000_000
+    partialPct: float = 1.8
+    targetPct: float = 2.5
+    stopPct: float = 1.5
+    trailPct: float = 0.8
+    breakoutPct: float = 0.5
+    maxChangePct: float = 10.0
+    costPct: float = krx.SELL_COST_PCT
+    entryEnd: str = "09:20"
+    forceClose: str = "09:30"
+    gapMinPct: float = 1.5        # 선정: 동시호가 예상 갭 하한 (원본 MIN_GAP_UP_PCT)
+    gapMaxPct: float = 7.0        # 선정: 상한 (원본 MAX_GAP_UP_PCT)
+    minExpTurnoverEok: float = 0.5
+
+    @classmethod
+    def from_dict(cls, d: Optional[Dict[str, Any]]) -> "ScalpParams":
+        p = cls()
+        for k, v in (d or {}).items():
+            if hasattr(p, k) and v is not None:
+                setattr(p, k, type(getattr(p, k))(v))
+        p.maxStocks = max(1, min(10, p.maxStocks))
+        return p
+
+    def selector(self) -> kr_selector.SelectParams:
+        return kr_selector.SelectParams(topN=self.maxStocks, gapMinPct=self.gapMinPct, gapMaxPct=self.gapMaxPct,
+                                        minExpTurnoverEok=self.minExpTurnoverEok,
+                                        preN=max(self.maxStocks, 50), looseGapPct=3.0)
+
+
+def _hm(s: str) -> tuple:
+    h, m = s.split(":")
+    return int(h), int(m), 0
+
+
+def _at(now: datetime, hms: tuple) -> datetime:
+    return now.replace(hour=hms[0], minute=hms[1], second=hms[2], microsecond=0)
+
+
+def net_pct(entry: float, price: float, cost_pct: float) -> float:
+    return (price - entry) / entry * 100.0 - cost_pct
+
+
+def decide_exit(pos: Dict[str, Any], price: float, p: ScalpParams) -> Optional[Dict[str, Any]]:
+    """보유 하나 · 현재가 하나로 청산을 판단한다 (원본 evaluate_exit 와 같은 순서). 없으면 None."""
+    entry = pos["entry"]
+    pos["peak"] = max(pos["peak"], price)
+    n = net_pct(entry, price, p.costPct)
+    if n <= -p.stopPct:
+        return {"qty": pos["remaining"], "kind": "STOP_LOSS", "reason": f"손절 (−{p.stopPct}%)"}
+    if pos["peak"] > entry * (1 + p.partialPct / 100.0):
+        dd = (pos["peak"] - price) / pos["peak"] * 100.0
+        if dd >= p.trailPct:
+            return {"qty": pos["remaining"], "kind": "TRAIL", "reason": f"트레일링 (고점 대비 −{dd:.1f}%)"}
+    if n >= p.targetPct:
+        return {"qty": pos["remaining"], "kind": "TARGET", "reason": f"목표 익절 (+{p.targetPct}%)"}
+    if not pos.get("partialDone") and n >= p.partialPct:
+        q = pos["remaining"] // 2
+        if q > 0:
+            return {"qty": q, "kind": "PARTIAL", "reason": f"1차 익절 (+{p.partialPct}%) 절반"}
+    return None
+
+
+def can_enter(q: Dict[str, Any], p: ScalpParams) -> bool:
+    """원본 evaluate_entry — 시가 돌파 (+breakoutPct%) · 너무 오른 종목(> maxChangePct) 제외."""
+    o, px = q.get("open") or 0, q.get("price") or 0
+    return o > 0 and px > o * (1 + p.breakoutPct / 100.0) and (q.get("changePct") or 0) <= p.maxChangePct
+
+
+class Scalper:
+    def __init__(self, namuh_account=None):
+        self.acc = namuh_account
+        self.lock = threading.RLock()
+        self.enabled = True
+        self.params = ScalpParams()
+        self.day: Dict[str, Any] = {}          # 오늘: date · phase · prelist · chosen · selection · note · done
+        self.positions: Dict[str, Dict[str, Any]] = {}
+        self.trades: List[Dict[str, Any]] = []
+        self.days: List[Dict[str, Any]] = []   # 날마다 결과
+        self.quotes: Dict[str, Dict[str, Any]] = {}
+        self.logs: List[Dict[str, Any]] = []
+        self.last_error = ""
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+    # ── 저장 ──
+    def snapshot(self) -> Dict[str, Any]:
+        return {"enabled": self.enabled, "params": asdict(self.params), "day": self.day,
+                "positions": self.positions, "trades": self.trades[-MAX_TRADES:], "days": self.days[-MAX_DAYS:]}
+
+    def save(self) -> None:
+        with self.lock:
+            store.save([self.snapshot()])
+
+    def load(self) -> None:
+        recs = store.load()
+        if not recs:
+            return
+        d = recs[0]
+        self.enabled = bool(d.get("enabled", True))
+        self.params = ScalpParams.from_dict(d.get("params"))
+        self.day = d.get("day") or {}
+        self.positions = d.get("positions") or {}
+        self.trades = d.get("trades") or []
+        self.days = d.get("days") or []
+
+    def log(self, level: str, msg: str) -> None:
+        self.logs.append({"time": datetime.now(KST).strftime("%m-%d %H:%M:%S"), "level": level, "message": msg})
+        del self.logs[:-200]
+        (logger.warning if level in ("WARNING", "ERROR") else logger.info)(f"[국내 스캘퍼] {msg}")
+
+    # ── 가상 체결 ──
+    def _buy(self, q: Dict[str, Any], now: datetime) -> None:
+        px = q.get("ask") or q["price"]
+        qty = int(self.params.positionKrw // px)
+        if qty <= 0:
+            return
+        code = q["code"]
+        self.positions[code] = {"code": code, "name": q.get("name") or code, "entry": float(px), "qty": qty,
+                                "remaining": qty, "peak": float(q["price"]), "partialDone": False, "pnl": 0.0,
+                                "at": now.strftime("%H:%M:%S")}
+        self._record(code, q.get("name"), "BUY", px, qty, 0.0, 0.0,
+                     f"시가 {q['open']:,} 돌파 +{(q['price'] / q['open'] - 1) * 100:.2f}% (진입 기준 +{self.params.breakoutPct}%)",
+                     now)
+        self.log("INFO", f"모의 매수 {q.get('name')}({code}) {qty:,}주 @ {px:,}원")
+        self.save()
+
+    def _sell(self, code: str, q: Dict[str, Any], qty: int, kind: str, reason: str, now: datetime) -> None:
+        pos = self.positions[code]
+        px = q.get("bid") or q["price"]
+        pnl = (px - pos["entry"]) * qty - px * qty * self.params.costPct / 100.0
+        pct = net_pct(pos["entry"], px, self.params.costPct)
+        pos["remaining"] -= qty
+        pos["pnl"] += pnl
+        if kind == "PARTIAL":
+            pos["partialDone"] = True
+        self._record(code, pos["name"], kind, px, qty, pct, pnl, reason, now)
+        self.log("INFO", f"모의 매도 {pos['name']}({code}) {qty:,}주 @ {px:,}원 · {pnl:+,.0f}원 ({pct:+.2f}%) · {reason}")
+        if pos["remaining"] <= 0:
+            self.day.setdefault("closed", []).append({"code": code, "name": pos["name"], "pnl": round(pos["pnl"])})
+            del self.positions[code]
+        self.save()
+
+    def _record(self, code, name, kind, price, qty, pct, pnl, reason, now) -> None:
+        self.trades.append({"date": now.strftime("%Y-%m-%d"), "time": now.strftime("%H:%M:%S"), "code": code,
+                            "name": name or code, "kind": kind, "price": price, "qty": qty,
+                            "pct": round(pct, 2), "pnl": round(pnl), "reason": reason})
+        del self.trades[:-MAX_TRADES]
+
+    # ── 하루 ──
+    def _new_day(self, date: str) -> None:
+        self.day = {"date": date, "phase": "wait", "prelist": [], "chosen": [], "selection": {}, "note": "",
+                    "done": False, "closed": []}
+        self.quotes = {}
+
+    def _finish_day(self, note: str) -> None:
+        d = self.day
+        if d.get("done"):
+            return
+        d["done"], d["phase"], d["note"] = True, "done", note
+        day_trades = [t for t in self.trades if t["date"] == d["date"] and t["kind"] != "BUY"]
+        closed = d.get("closed") or []
+        self.days.append({"date": d["date"], "chosen": [c.get("name") for c in d.get("chosen") or []],
+                          "pnl": round(sum(t["pnl"] for t in day_trades)),
+                          "positions": len(closed), "wins": sum(1 for c in closed if c["pnl"] > 0), "note": note})
+        del self.days[:-MAX_DAYS]
+        self.log("INFO", f"{d['date']} 마감 — {note}")
+        self.save()
+
+    def _quote(self, code: str) -> Optional[Dict[str, Any]]:
+        try:
+            q = krx.quote(self.acc, code)
+            self.quotes[code] = q
+            return q
+        except NamuhError as e:
+            self.last_error = str(e)
+            return None
+
+    @staticmethod
+    def _fresh(q: Dict[str, Any], now: datetime) -> bool:
+        try:
+            h, m, s = (int(x) for x in q.get("hogaTime", "").split(":"))
+        except (ValueError, AttributeError):
+            return False
+        return abs((now - now.replace(hour=h, minute=m, second=s, microsecond=0)).total_seconds()) <= HOGA_FRESH_SEC
+
+    def step(self, now: datetime) -> float:
+        """한 번 판단하고, 다음 판단까지 쉴 초를 돌려준다. 시각을 받아서 테스트가 시계를 정한다."""
+        now = now.astimezone(KST)
+        date = now.strftime("%Y-%m-%d")
+        if not self.enabled:
+            return 30.0
+        if self.day.get("date") != date:
+            if self.positions:                  # 어제 정리 못 한 가상 보유 (서버가 꺼져 있었다) — 진입가로 닫는다
+                for code, pos in list(self.positions.items()):
+                    self._sell(code, {"price": pos["entry"], "bid": pos["entry"]}, pos["remaining"], "STALE",
+                               "지난 거래일 미청산분 정리 (서버 중단 · 손익 0 처리)", now)
+            self._new_day(date)
+        if now.weekday() >= 5:
+            return 600.0
+        d, p = self.day, self.params
+        if d.get("done"):
+            return 600.0
+        t_select, t_refine, t_open = _at(now, SELECT_AT), _at(now, REFINE_AT), _at(now, OPEN_AT)
+        t_entry_end, t_close = _at(now, _hm(p.entryEnd)), _at(now, _hm(p.forceClose))
+        budget = p.positionKrw
+        if now < t_select:
+            d["phase"] = "wait"
+            return max(1.0, min(600.0, (t_select - now).total_seconds()))
+        if now < t_refine and d["phase"] == "wait":
+            d["phase"] = "select"
+            self.log("INFO", "08:50 후보 훑기 시작 (코스피200 ∪ 코스닥150)")
+            try:
+                res = kr_selector.select(self.acc, krx_master.candidates(krx_master.load()), budget, p.selector(),
+                                         deadline=(t_refine - timedelta(seconds=10)).timestamp(),
+                                         should_stop=self._stop.is_set)
+                d["prelist"], d["selection"] = res.get("prelist") or [], {k: v for k, v in res.items() if k != "prelist"}
+                d["chosen"] = res.get("chosen") or []
+                self.log("INFO", f"예비 목록 {len(d['prelist'])}종목 (훑은 {res.get('scanned')} · 예상체결 {res.get('withExpected')})")
+            except Exception as e:
+                self.log("ERROR", f"후보 훑기 실패: {e}")
+            d["phase"] = "selected"
+            self.save()
+            return 1.0
+        if now < t_open:
+            if d["phase"] in ("wait", "select"):
+                self._finish_day("08:50 후보 훑기를 하지 못해 오늘은 쉽니다 (서버가 늦게 떴거나 실패)")
+                return 600.0
+            if d["phase"] == "selected" and now >= t_refine:
+                d["phase"] = "refine"
+                try:
+                    res = kr_selector.refine(self.acc, d["prelist"], budget, p.selector(),
+                                             deadline=(t_open - timedelta(seconds=8)).timestamp(),
+                                             should_stop=self._stop.is_set)
+                    d["chosen"], d["selection"] = res.get("chosen") or d["chosen"], res
+                except Exception as e:
+                    self.log("ERROR", f"다시 거르기 실패 — 08:50 결과로 봅니다: {e}")
+                d["phase"] = "ready"
+                names = ", ".join(f"{c['name']}(갭 {c['gap']:+.2f}%)" for c in d["chosen"]) or "없음"
+                self.log("INFO", f"오늘의 대장주: {names}")
+                self.save()
+            return max(1.0, min(30.0, (t_open - now).total_seconds()))
+        if d["phase"] in ("wait", "select", "selected"):
+            self._finish_day("장 시작 전에 종목을 고르지 못해 오늘은 쉽니다")
+            return 600.0
+        if not d["chosen"]:
+            self._finish_day("조건에 맞는 대장주가 없어 오늘은 매매하지 않았습니다")
+            return 600.0
+        d["phase"] = "trade"
+        if now >= t_close:
+            for code in list(self.positions):
+                q = self.quotes.get(code) or self._quote(code)
+                if q:
+                    self._sell(code, q, self.positions[code]["remaining"], "FORCE",
+                               f"{p.forceClose} 강제 전량 청산", now)
+            if not self.positions:
+                self._finish_day(f"{p.forceClose} 청산 완료")
+            return 5.0
+        quotes = [q for q in (self._quote(c["code"]) for c in d["chosen"]) if q]
+        traded = any(t["date"] == date for t in self.trades)
+        # 휴장 판단은 개장 직후(09:02~09:10), 오늘 거래가 없을 때만 — 장중 한산한 종목을 휴장으로 보지 않는다
+        if (t_open + timedelta(minutes=2) <= now < t_open + timedelta(minutes=10) and quotes and not traded
+                and not self.positions and not any(self._fresh(q, now) for q in quotes)):
+            self._finish_day("호가가 갱신되지 않습니다 — 휴장일(또는 지연 개장)로 보고 쉽니다")
+            return 600.0
+        for q in quotes:
+            code = q["code"]
+            if code in self.positions:
+                act = decide_exit(self.positions[code], q["price"], p)
+                if act:
+                    self._sell(code, q, act["qty"], act["kind"], act["reason"], now)
+            elif now < t_entry_end and len(self.positions) < p.maxStocks and can_enter(q, p):
+                self._buy(q, now)
+        return 1.0
+
+    # ── 스레드 ──
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                # 잠그지 않는다 — 08:50 훑기가 7분 걸리는 동안 화면(status)이 멈추면 안 된다.
+                # 상태를 바꾸는 쪽은 이 스레드 하나뿐이다 (켜고 끄기는 enabled 한 칸).
+                wait = self.step(datetime.now(KST))
+            except Exception as e:
+                logger.exception("국내 스캘퍼 오류")
+                self.last_error = str(e)
+                wait = 30.0
+            self._stop.wait(wait)
+
+    def start(self) -> None:
+        if self._thread and self._thread.is_alive():
+            return
+        try:
+            self.load()
+        except Exception as e:
+            self.log("ERROR", f"저장된 상태를 읽지 못했습니다 — 새로 시작합니다: {e}")
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, name="kr-scalper", daemon=True)
+        self._thread.start()
+        logger.info("국내 스캘퍼(모의) 시작")
+
+    def stop(self) -> None:
+        self._stop.set()
+
+    def set_enabled(self, on: bool) -> None:
+        with self.lock:
+            self.enabled = bool(on)
+            self.log("INFO", "켰습니다" if on else "껐습니다 (가상 보유가 있으면 다음 거래일 정리)")
+            self.save()
+
+    def status(self) -> Dict[str, Any]:
+        with self.lock:              # 판단 스레드와 겹쳐도 되도록 복사본으로 만든다
+            days, trades, logs = list(self.days), list(self.trades[-60:]), list(self.logs[-40:])
+            closed_days = [x for x in days if x.get("positions")]
+            total = sum(x["pnl"] for x in days)
+            pos_n = sum(x.get("positions", 0) for x in days)
+            wins = sum(x.get("wins", 0) for x in days)
+            held = []
+            for code, pos in list(self.positions.items()):
+                q = self.quotes.get(code) or {}
+                px = q.get("price") or pos["entry"]
+                held.append({**pos, "price": px, "netPct": round(net_pct(pos["entry"], px, self.params.costPct), 2)})
+            return {"enabled": self.enabled, "running": bool(self._thread and self._thread.is_alive()),
+                    "paper": True, "params": asdict(self.params), "day": dict(self.day), "positions": held,
+                    "trades": trades[::-1], "days": days[-30:][::-1],
+                    "summary": {"days": len(days), "tradedDays": len(closed_days), "pnl": round(total),
+                                "positions": pos_n, "wins": wins,
+                                "winRate": round(wins / pos_n * 100, 1) if pos_n else None},
+                    "logs": logs[::-1], "lastError": self.last_error}
+
+
+scalper: Optional[Scalper] = None
+
+
+def get(namuh_account=None) -> Scalper:
+    global scalper
+    if scalper is None:
+        scalper = Scalper(namuh_account)
+    elif namuh_account is not None:
+        scalper.acc = namuh_account
+    return scalper

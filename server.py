@@ -57,7 +57,7 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog
+from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog, scalper
 from services import roles, worker_client
 from services.worker_client import WorkerDown
 from services.gemini_service import gemini_keystore
@@ -196,6 +196,14 @@ def _startup_log():
     # 저장된 봇을 복원한다. LIVE 포지션은 거래소 실제 보유량과 대조한 뒤에만 재가동한다.
     global RESTORE_SUMMARY
     RESTORE_SUMMARY = bot_manager.restore(keystore.account, namuh_keystore.account)
+
+    # 국내 장초반 스캘퍼 (모의 전용 · 주문 없음). 나무증권 국내 시세만 읽는다. APP_SCALPER=0 으로 끈다.
+    if roles.owns("namuh") and \
+            (os.getenv("APP_SCALPER") or "1").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            scalper.get(namuh_keystore.account).start()
+        except Exception as e:
+            logger.error(f"국내 스캘퍼 시작 실패 (서버는 계속 뜹니다): {e}")
 
     # 거래소 간 괴리를 계속 기록한다. 주문은 내지 않고 공개 호가만 읽는다.
     # 무전송 양방향을 구현할지 판단할 근거를 자금 0원으로 모으기 위한 것이다.
@@ -810,6 +818,23 @@ def namuh_macro_regime():
     """나스닥(QQQ) 200일 이동평균 및 VIX 기반 3단 변속 기어 국면."""
     from services.macro_regime import get_macro_regime
     return get_macro_regime()
+
+
+class ScalperEnableRequest(BaseModel):
+    on: bool
+
+
+@app.get("/api/namuh/scalper")
+def namuh_scalper_status():
+    """국내 장초반 스캘퍼(모의) — 오늘 고른 종목 · 가상 보유 · 체결 · 일별 결과."""
+    return scalper.get(namuh_keystore.account).status()
+
+
+@app.post("/api/namuh/scalper/enable")
+def namuh_scalper_enable(req: ScalperEnableRequest):
+    sc = scalper.get(namuh_keystore.account)
+    sc.set_enabled(req.on)
+    return sc.status()
 
 
 # ───────────────────────── Gemini AI ─────────────────────────

@@ -52,6 +52,7 @@
     <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
     <button class="tab" data-panel="panel-bots">🔄 무한매수 봇</button>
     <button class="tab" data-panel="panel-muma">📋 무매법 표</button>
+    <button class="tab" data-panel="panel-scalper">🎯 국내 스캘퍼 (모의)</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
     <button class="tab" data-panel="panel-chart">시세·지표</button>
@@ -423,6 +424,35 @@
 
 
     <!-- 무매법 표 (무매법.xlsx 를 봇 장부로) -->
+    <!-- 국내 장초반 스캘퍼 — 모의 전용 (주문 없음) -->
+    <section id="panel-scalper" class="panel hidden">
+      <div class="card">
+        <div class="card-head">
+          <div>
+            <h2 class="card-title">🎯 국내 장초반 스캘퍼 <span class="pill">모의 · 주문 없음</span></h2>
+            <p class="muted small">08:50 후보(코스피200 ∪ 코스닥150)를 훑고 08:57:50 동시호가 예상체결로 대장주를 고른 뒤,
+              09:00~09:20 시가 돌파 때 가상 매수하고 09:30 전량 청산합니다. 나무증권 국내 시세만 읽고 가상 장부에만 적습니다.</p>
+          </div>
+          <div class="inline">
+            <label class="inline small" style="white-space:nowrap"><input type="checkbox" id="scalperEnabled"> 켜기</label>
+            <button class="btn btn-ghost btn-sm" id="refreshScalperBtn" style="white-space:nowrap">🔄 새로고침</button>
+          </div>
+        </div>
+        <div id="scalperAlert"></div>
+        <div id="scalperSummary"></div>
+        <h3 class="card-title" style="margin-top:1rem">오늘</h3>
+        <div id="scalperToday"></div>
+        <h3 class="card-title" style="margin-top:1rem">가상 체결</h3>
+        <div id="scalperTrades"></div>
+        <h3 class="card-title" style="margin-top:1rem">일별 결과</h3>
+        <div id="scalperDays"></div>
+        <details style="margin-top:1rem"><summary class="muted small">규칙 · 로그</summary>
+          <div id="scalperRules" class="muted small"></div>
+          <div id="scalperLogs" class="muted small" style="margin-top:.5rem"></div>
+        </details>
+      </div>
+    </section>
+
     <section id="panel-muma" class="panel hidden">
       <div class="card">
         <div class="card-head">
@@ -623,6 +653,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.15.0"></script>
+<script src="/static/js/app.js?v=5.16.0"></script>
 </body>
 </html>
