@@ -57,7 +57,7 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service, spread_recorder, upbit_gap_recorder, namuh, muma_sheet, tradelog
+from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog
 from services import roles, worker_client
 from services.worker_client import WorkerDown
 from services.gemini_service import gemini_keystore
@@ -206,15 +206,6 @@ def _startup_log():
             spread_recorder.start()
         except Exception as e:
             logger.error(f"괴리 기록기 시작 실패 (서버는 계속 뜹니다): {e}")
-
-    # 업비트 ↔ 빗썸 원화 괴리 (국내 양거래소 차익을 만들지 판단할 근거). 공개 호가만 읽는다.
-    # APP_UPBIT_GAP_RECORDER=0 으로 끌 수 있다.
-    if roles.owns("bithumb") and \
-            (os.getenv("APP_UPBIT_GAP_RECORDER") or "1").strip().lower() not in ("0", "false", "no", "off"):
-        try:
-            upbit_gap_recorder.start()
-        except Exception as e:
-            logger.error(f"업비트 괴리 기록기 시작 실패 (서버는 계속 뜹니다): {e}")
 
 
 # ───────────────────────── 인증 ─────────────────────────
