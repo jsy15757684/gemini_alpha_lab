@@ -154,6 +154,48 @@ s7.trades = [{"date": "2026-10-29", "kind": "STOP_LOSS", "pnl": -100_001}]
 check("하루 실현 손실이 시드의 −1%(10만원)를 넘어도 멈춘다", "손실" in s7._day_halt(), s7.day.get("halt"))
 SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
 
+print("── 호가 잔량 체결 · VI · 조회 줄이기 · 미청산 정리 ──")
+qd = {"price": 10_000, "ask": 10_010, "asks": [(10_010, 100), (10_020, 100), (10_030, 1_000)]}
+qty, avg = S.walk_buy(qd, 3_000_000)
+check("살 때 매도호가를 먹어 내려간다 (1호가 100주 · 2호가 100주 · 나머지 3호가)",
+      qty == 299 and abs(avg - (100 * 10_010 + 100 * 10_020 + 99 * 10_030) / 299) < 1e-6, f"{qty}주 · 평균 {avg:,.1f}원")
+check("10단계를 다 먹어도 못 채우면 사지 않는다", S.walk_buy({"price": 10_000, "asks": [(10_010, 10)]}, 3_000_000) is None, "")
+check("팔 때 매수호가를 먹어 내려간다 · 모자라면 마지막 단계 가격",
+      S.walk_sell({"price": 10_000, "bids": [(9_990, 100), (9_980, 50)]}, 200) == (100 * 9_990 + 100 * 9_980) / 200, "")
+check("호가 잔량이 없으면 1호가 한 가격 (예전 방식)", S.walk_buy({"price": 10_000, "ask": 10_010}, 3_000_000) == (299, 10_010.0), "")
+p0 = S.ScalpParams()
+check("정적 VI 상단까지 +2.5% 여유가 없으면 진입하지 않는다",
+      not S.vi_room_ok({"viUp": 10_300}, 10_060, p0) and S.vi_room_ok({"viUp": 11_000}, 10_060, p0)
+      and S.vi_room_ok({"viUp": 0}, 10_060, p0), "VI 10,300 · 진입 10,060 → 목표 10,311")
+s8 = S.Scalper(namuh_account=object())
+SEL["chosen"] = [{"code": c, "name": c, "gap": 3.0, "score": 1.0} for c in ("B1", "B2", "B3")]
+s8.step(at(8, 50, 5, day=30)); s8.step(at(8, 57, 55, day=30))
+Q["B1"] = dict(mk(10_060, hoga="09:01:00", name="B1"), viUp=10_300)           # VI 가까움 → 그날 제외
+Q["B2"] = dict(mk(10_060, hoga="09:01:00", name="B2"), asks=[(10_070, 5)])     # 호가 얇음 → 계속 봄
+Q["B3"] = mk(10_000, hoga="09:01:00", name="B3")
+s8.step(at(9, 1, day=30))
+check("VI 로 거른 종목은 그날 제외, 호가가 얇은 종목은 계속 본다",
+      "B1" in s8.day.get("skipped", {}) and "B2" in s8.day.get("thin", {}) and not s8.positions, "")
+CALLS.clear()
+Q["B2"] = mk(10_060, hoga="09:02:00", name="B2")
+s8.step(at(9, 2, day=30))
+check("다음 판단에는 제외한 종목을 조회하지 않고, 얇았던 종목은 다시 보고 산다",
+      "B1" not in CALLS and "B2" in s8.positions, f"{CALLS}")
+CALLS.clear()
+s8.step(at(9, 3, day=30))
+check("보유 · 아직 살 수 있는 종목만 조회한다", sorted(CALLS) == ["B2", "B3"], f"{CALLS}")
+CALLS.clear()
+s8.step(at(9, 21, day=30))
+check("09:20 뒤에는 보유 종목만 조회한다", CALLS == ["B2"], f"{CALLS}")
+s9 = S.Scalper(namuh_account=object())
+s9.day = {"date": "2026-10-30"}
+s9.positions = {"X": {"code": "X", "name": "X", "entry": 10_000.0, "qty": 100, "remaining": 100, "peak": 10_000.0,
+                      "low": 10_000.0, "partialDone": False, "pnl": 0.0}}
+s9.step(at(7, 0, day=31))
+check("서버 중단으로 남은 미청산분은 손익 0 으로 정리한다 (비용도 빼지 않는다)",
+      not s9.positions and s9.trades[-1]["kind"] == "STALE" and s9.trades[-1]["pnl"] == 0, f"{s9.trades[-1]['pnl']}")
+SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
+
 print("── 저장 · 끄기 ──")
 sc.save()
 r = S.Scalper(namuh_account=object()); r.load()

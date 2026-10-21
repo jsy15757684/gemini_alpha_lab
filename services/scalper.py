@@ -113,6 +113,50 @@ def decide_exit(pos: Dict[str, Any], price: float, p: ScalpParams) -> Optional[D
     return None
 
 
+def walk_buy(q: Dict[str, Any], budget: float) -> Optional[tuple]:
+    """매도호가를 1단계부터 먹어 내려가며 budget 으로 살 수 있는 (수량, 평균 체결가). 10단계로 못 채우면 None.
+
+    호가 잔량이 없으면(옛 응답 · 시험) 매도1호가 한 가격으로 계산한다.
+    """
+    levels = q.get("asks") or []
+    if not levels:
+        px = q.get("ask") or q["price"]
+        qty = int(budget // px)
+        return (qty, float(px)) if qty > 0 else None
+    qty = cost = 0
+    for px, size in levels:
+        take = min(size, int((budget - cost) // px))
+        qty, cost = qty + take, cost + take * px
+        if take < size:                     # 이 단계에서 예산이 끝났다
+            break
+    else:
+        if budget - cost >= levels[-1][0]:  # 10단계를 다 먹고도 예산이 남았다 — 호가가 너무 얇다
+            return None
+    return (qty, cost / qty) if qty > 0 else None
+
+
+def walk_sell(q: Dict[str, Any], qty: int) -> float:
+    """매수호가를 먹어 내려가며 qty 를 팔 때의 평균 체결가. 10단계로 모자라면 나머지는 마지막 단계 가격."""
+    levels = q.get("bids") or []
+    if not levels:
+        return float(q.get("bid") or q["price"])
+    left, got = qty, 0.0
+    for px, size in levels:
+        take = min(size, left)
+        got, left = got + take * px, left - take
+        if left <= 0:
+            break
+    if left > 0:
+        got += left * levels[-1][0]
+    return got / qty
+
+
+def vi_room_ok(q: Dict[str, Any], entry: float, p: "ScalpParams") -> bool:
+    """정적 VI 상단까지 목표 익절폭보다 여유가 있나. VI 가 걸리면 2분 단일가라 그동안 손절도 못 한다."""
+    up = q.get("viUp") or 0
+    return not up or entry * (1 + p.targetPct / 100.0) < up
+
+
 def can_enter(q: Dict[str, Any], p: ScalpParams) -> bool:
     """원본 evaluate_entry — 시가 돌파 (+breakoutPct%) · 너무 오른 종목(> maxChangePct) 제외."""
     o, px = q.get("open") or 0, q.get("price") or 0
@@ -162,12 +206,26 @@ class Scalper:
         (logger.warning if level in ("WARNING", "ERROR") else logger.info)(f"[국내 스캘퍼] {msg}")
 
     # ── 가상 체결 ──
+    def _skip(self, code: str, why: str, for_day: bool) -> None:
+        """사지 않은 이유를 남긴다. for_day=True 면 그날은 그 종목을 더 보지 않는다 (VI),
+        False 면 다음 판단에 다시 본다 (개장 직후 호가가 잠깐 얇은 것은 흔하다)."""
+        key = "skipped" if for_day else "thin"
+        sk = self.day.setdefault(key, {})
+        if code not in sk:
+            sk[code] = why
+            self.log("INFO", f"{code} 진입 보류 — {why}" + ("" if for_day else " (계속 봅니다)"))
+
     def _buy(self, q: Dict[str, Any], now: datetime) -> None:
-        px = q.get("ask") or q["price"]
-        qty = int(self.params.positionKrw // px)
-        if qty <= 0:
-            return
         code = q["code"]
+        fill = walk_buy(q, self.params.positionKrw)
+        if not fill:
+            self._skip(code, f"매도호가 10단계 잔량으로 {self.params.positionKrw:,.0f}원을 채우지 못함 (호가 얇음)", False)
+            return
+        qty, px = fill
+        if not vi_room_ok(q, px, self.params):
+            self._skip(code, f"정적 VI 상단 {q['viUp']:,}원까지 목표 익절 +{self.params.targetPct}% 여유가 없음", True)
+            return
+        px = round(px, 2)
         self.positions[code] = {"code": code, "name": q.get("name") or code, "entry": float(px), "qty": qty,
                                 "remaining": qty, "peak": float(q["price"]), "low": float(q["price"]),
                                 "partialDone": False, "pnl": 0.0, "at": now.strftime("%H:%M:%S")}
@@ -180,9 +238,10 @@ class Scalper:
 
     def _sell(self, code: str, q: Dict[str, Any], qty: int, kind: str, reason: str, now: datetime) -> None:
         pos = self.positions[code]
-        px = q.get("bid") or q["price"]
-        pnl = (px - pos["entry"]) * qty - px * qty * self.params.costPct / 100.0
-        pct = net_pct(pos["entry"], px, self.params.costPct)
+        px = round(walk_sell(q, qty), 2)
+        cost = 0.0 if kind == "STALE" else self.params.costPct      # 미청산 정리는 손익 0 으로 적는다
+        pnl = (px - pos["entry"]) * qty - px * qty * cost / 100.0
+        pct = net_pct(pos["entry"], px, cost)
         pos["remaining"] -= qty
         pos["pnl"] += pnl
         if kind == "PARTIAL":
@@ -335,7 +394,16 @@ class Scalper:
             if not self.positions:
                 self._finish_day(f"{p.forceClose} 청산 완료")
             return 5.0
-        quotes = [q for q in (self._quote(c["code"]) for c in d["chosen"]) if q]
+        # 들고 있는 종목 · 아직 살 수 있는 종목만 본다 — 3종목을 다 보면 한 바퀴 4초+, 줄이면 손절이 덜 미끄러진다
+        can_buy = now < t_entry_end and not d.get("halt") and len(self.positions) < p.maxStocks
+        active = [c["code"] for c in d["chosen"]
+                  if c["code"] in self.positions
+                  or (can_buy and c["code"] not in d.get("entered", []) and c["code"] not in d.get("skipped", {}))]
+        if not active and not self.positions:
+            done_codes = set(d.get("entered", [])) | set(d.get("skipped", {}))
+            if now >= t_entry_end or d.get("halt") or all(c["code"] in done_codes for c in d["chosen"]):
+                return max(1.0, min(60.0, (t_close - now).total_seconds()))    # 09:30 마감까지 쉰다
+        quotes = [q for q in (self._quote(c) for c in active) if q]
         traded = any(t["date"] == date for t in self.trades)
         # 휴장 판단은 개장 직후(09:02~09:10), 오늘 거래가 없을 때만 — 장중 한산한 종목을 휴장으로 보지 않는다
         if (t_open + timedelta(minutes=2) <= now < t_open + timedelta(minutes=10) and quotes and not traded

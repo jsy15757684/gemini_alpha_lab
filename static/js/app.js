@@ -920,6 +920,7 @@ function renderScalper(s) {
   $("scalperToday").innerHTML = `<div class="small">${escapeHtml(d.date || "-")} · <b>${escapeHtml(SCALP_PHASE[d.phase] || d.phase || "-")}</b>
       ${d.note ? ` · ${escapeHtml(d.note)}` : ""}${sel.scanned != null ? ` · 훑은 ${sel.scanned} · 예상체결 ${sel.withExpected ?? "-"} · 통과 ${sel.passed ?? "-"}` : ""}</div>
     <div class="small" style="margin-top:.4rem">대장주: ${chosen}</div>
+    ${Object.entries({ ...(d.thin || {}), ...(d.skipped || {}) }).map(([c, why]) => `<div class="muted small">· ${escapeHtml(c)} 진입 보류: ${escapeHtml(why)}</div>`).join("")}
     ${held ? `<div class="tbl-wrap" style="margin-top:.4rem"><table><thead><tr><th>가상 보유</th><th>남은/산 수량</th><th>매수가</th><th>현재가</th><th>순수익률</th></tr></thead><tbody>${held}</tbody></table></div>` : ""}`;
   const trades = (s.trades || []).map(t => `<tr><td>${escapeHtml(t.date.slice(5))} ${escapeHtml(t.time)}</td><td>${escapeHtml(t.name)}</td>
     <td>${escapeHtml(SCALP_KIND[t.kind] || t.kind)}</td><td>${won0(t.price)}</td><td>${t.qty.toLocaleString()}</td>
@@ -931,7 +932,7 @@ function renderScalper(s) {
   const p = s.params;
   $("scalperRules").innerHTML = `종목 ${p.maxStocks}개 · 종목당 ${won0(p.positionKrw)} · 진입: 시가 +${p.breakoutPct}% 돌파 (등락률 ${p.maxChangePct}% 이하, ${escapeHtml(p.entryEnd)}까지) ·
     1차 익절 +${p.partialPct}% 절반 · 목표 +${p.targetPct}% · 손절 −${p.stopPct}% · 트레일링 고점 대비 −${p.trailPct}% · ${escapeHtml(p.forceClose)} 강제 청산 ·
-    비용 ${p.costPct}% · 같은 종목 하루 1번 · 손절 ${p.maxDayStops}번 또는 시드 ${won0(p.seedKrw)}의 −${p.maxDayLossPct}% 손실이면 그날 신규 진입 끝 · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}% · 체결가 = 살 때 매도1호가, 팔 때 매수1호가`;
+    비용 ${p.costPct}% · 모의 체결가는 10단계 호가 잔량을 먹어 내려간 평균 (10단계로 못 채우면 진입 안 함) · 정적 VI 상단까지 목표 익절폭 여유가 없으면 진입 안 함 · 같은 종목 하루 1번 · 손절 ${p.maxDayStops}번 또는 시드 ${won0(p.seedKrw)}의 −${p.maxDayLossPct}% 손실이면 그날 신규 진입 끝 · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}% · 체결가 = 살 때 매도1호가, 팔 때 매수1호가`;
   $("scalperLogs").innerHTML = (s.logs || []).map(l => `${escapeHtml(l.time)} ${escapeHtml(l.message)}`).join("<br>");
 }
 

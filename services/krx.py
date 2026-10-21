@@ -72,6 +72,12 @@ def quote(acc: namuh.NamuhAccount, code: str) -> Dict[str, Any]:
         "changePct": round(chg, 2),
         "bid": _i(o.get("bidp1") or o.get("bidp")),
         "ask": _i(o.get("askp1") or o.get("askp")),
+        # 10단계 호가 [(가격, 잔량)] — 모의 체결가를 잔량을 먹어 내려가며 낸다
+        "asks": [(_i(o.get(f"askp{i}")), _i(o.get(f"askp_rsqn{i}"))) for i in range(1, 11) if _i(o.get(f"askp{i}")) > 0],
+        "bids": [(_i(o.get(f"bidp{i}")), _i(o.get(f"bidp_rsqn{i}"))) for i in range(1, 11) if _i(o.get(f"bidp{i}")) > 0],
+        # 정적 VI 발동 예정 가격 (상단 · 하단 · 기준). 동적 VI 는 오지 않는다. 0 이면 모름
+        "viUp": _i(o.get("vi_antc_mxpr")),
+        "viDown": _i(o.get("vi_antc_llam")),
         "volume": _i(o.get("acml_vol")),
         "prevVolume": _i(o.get("prdy_vol")),
         "expPrice": exp_price,
