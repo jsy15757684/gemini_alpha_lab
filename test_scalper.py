@@ -252,6 +252,17 @@ k4 = S.Scalper(namuh_account=object())
 k4.set_skills({"pyramidOn": False, "timeStopOn": None})
 check("스킬을 하나씩 끌 수 있다 (안 보낸 것은 그대로)", not k4.params.pyramidOn and k4.params.timeStopOn and k4.params.imbalanceOn, "")
 
+print("── 시세 오류 표시 ──")
+ke = S.Scalper(namuh_account=object())
+orig_q = krx.quote
+krx.quote = lambda acc, code: (_ for _ in ()).throw(S.NamuhError("Failed to resolve 'api.nhplug.com' (시험)"))
+ke._quote("X"); ke._quote("X")
+check("연속 실패는 시각 · 횟수와 함께 보이고 로그에는 한 번만", "연속 2회" in ke.last_error
+      and sum("시세 조회 실패" in l["message"] for l in ke.logs) == 1, ke.last_error)
+krx.quote = orig_q
+ke._quote("000001")
+check("회복하면 오류 표시를 지운다 (예전에는 계속 떠 있었다)", ke.last_error == "" and "회복" in ke.logs[-1]["message"], "")
+
 print("── 저장 · 끄기 ──")
 sc.save()
 r = orig(); r.load()

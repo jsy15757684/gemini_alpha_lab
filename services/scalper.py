@@ -193,6 +193,7 @@ class Scalper:
         self.logs: List[Dict[str, Any]] = []
         self.last_error = ""
         self._vol_seen: Dict[str, tuple] = {}
+        self._err_streak = 0
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
@@ -329,11 +330,19 @@ class Scalper:
     def _quote(self, code: str) -> Optional[Dict[str, Any]]:
         try:
             q = krx.quote(self.acc, code)
-            self.quotes[code] = q
-            return q
         except NamuhError as e:
-            self.last_error = str(e)
+            # 연속 실패의 첫 번째만 로그에 남긴다 (1~2초마다 쌓이지 않게). 화면에는 시각 · 횟수와 함께
+            if not self._err_streak:
+                self.log("WARNING", f"국내 시세 조회 실패 ({code}): {e}")
+            self._err_streak += 1
+            self.last_error = f"{datetime.now(KST).strftime('%m-%d %H:%M:%S')} · 연속 {self._err_streak}회 · {e}"
             return None
+        if self._err_streak:
+            self.log("INFO", f"국내 시세 조회 회복 (연속 실패 {self._err_streak}회 뒤)")
+            self._err_streak = 0
+            self.last_error = ""                # 회복하면 지운다 — 예전에는 한 번 난 오류가 계속 떠 있었다
+        self.quotes[code] = q
+        return q
 
     @staticmethod
     def _fresh(q: Dict[str, Any], now: datetime) -> bool:
