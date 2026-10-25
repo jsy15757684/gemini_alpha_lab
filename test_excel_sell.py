@@ -70,9 +70,9 @@ class FakeAcct:
         return {"qtyByTicker": {"TQQQ": self.qty}, "holdings": {"TQQQ": {"avgPrice": 80.81}}}
 
 
-def bot(fa):
+def bot(fa, exhaust="quarter"):
     p = strategy.StrategyParams.from_dict({"strategyType": "raoer_infinite", "locMode": "excel",
-                                           "targetProfitPct": 10.0, "feePct": 0.0})
+                                           "targetProfitPct": 10.0, "feePct": 0.0, "exhaustMode": exhaust})
     b = trader.TradingBot(bot_id=f"s-{time.time()}", coin="TQQQ", interval="24h", mode="LIVE",
                           capital_krw=4000.0, params=p, namuh_account=fa, broker="namuh")
     b._persist = lambda: None
@@ -216,13 +216,72 @@ check("1주만 들고 손절하면 포지션을 비운다", not bu.pos.open and 
 
 pp = trader.TradingBot(bot_id="pq", coin="TQQQ", interval="24h", mode="PAPER", capital_krw=4000.0,
                        params=strategy.StrategyParams.from_dict({"strategyType": "raoer_infinite", "locMode": "excel",
-                                                                "feePct": 0.0}), broker="namuh")
+                                                                "feePct": 0.0, "exhaustMode": "quarter"}), broker="namuh")
 pp._persist = lambda: None
 pp.pos.units, pp.pos.entryPrice, pp.pos.turn, pp.pos.totalInvested, pp.cash = 8.0, 80.0, 40, 640.0, 3360.0
 pp.last_price = 72.0
 pp._excel_quarter("2026-10-13")
 check("모의 봇도 같은 규칙 (8주 중 2주)", pp.pos.units == 6.0 and pp.pos.turn == 30
       and any(t["action"] == "SELL_QUARTER" for t in pp.trade_history), f"{pp.pos.units:g}주")
+
+print("── 소진 스플릿 (40회 소진 대체법 · 엑셀 봇 기본) ──")
+check("엑셀 봇의 소진 대응 기본값은 스플릿", strategy.StrategyParams.from_dict({"locMode": "excel"}).exhaustMode == "split", "")
+fs1 = FakeAcct(qty=20.0)
+b1 = bot(fs1, exhaust="split")
+b1.initial_krw = 6000.0                                     # SOXL: 1회분할금 $150
+b1.pos.units, b1.pos.entryPrice, b1.pos.turn, b1.pos.totalInvested, b1.cash = 20.0, 103.83, 40, 2076.6, 3.0
+b1.last_price = 83.56
+tick(b1)
+kinds = [(x[0], x[1], x[4]) for x in fs1.calls]
+check("40회 소진: 1회분($150 ÷ $83.56 ≈ 2주)만 먼저 팔고 남은 18주에 지정가 매도",
+      kinds == [("sell", 2, True), ("sell", 18, False)], f"{kinds}")
+check("평단은 그대로 · 회차 그대로 · 판 손실은 실현손익으로", b1.pos.units == 18.0 and b1.pos.entryPrice == 103.83
+      and b1.pos.turn == 40 and b1.realized_pnl < 0, f"실현 {b1.realized_pnl:+.2f}")
+check("판 돈을 오늘 재매수 예산으로 둔다", b1.split_budget and abs(b1.split_budget["amount"] - 2 * 83.56) < 1e-6, f"{b1.split_budget}")
+t = b1._excel_targets(83.56)
+sp = [x for x in t["legs"] if x.get("split")]
+check("매수 LOC 맨 앞에 '스플릿 재매수' 2주 · 상한은 판 가격 (그보다 싸게 끝나야 다시 산다)", sp and sp[0]["units"] == 2
+      and sp[0]["limit"] == 83.56 and t["legs"][0].get("split"), f"{sp}")
+b1._place_excel_orders(83.56, "2026-10-13")
+check("재매수 LOC 를 접수하고 '스플릿' 표시를 남긴다", b1.split_budget["placed"]
+      and any(o.get("split") for o in b1.pending_orders), f"{[o['leg'] for o in b1.pending_orders]}")
+fs1.qty = 20.0
+fs1.fills = {o["orderId"]: ({"qty": 2.0, "price": 80.0} if o.get("split") else {"qty": 0.0, "price": 0.0})
+             for o in b1.pending_orders}
+for o in b1.pending_orders:
+    o["session"] = "2000-01-01"
+b1._settle_pending_loc()
+check("종가에 다시 사면 평단이 내려간다 · 회차는 세지 않는다", b1.pos.units == 20.0 and b1.pos.entryPrice < 103.83
+      and b1.pos.turn == 40, f"평단 ${b1.pos.entryPrice:,.2f} · T={b1.pos.turn}")
+bq2 = bot(FakeAcct(qty=20.0), exhaust="split")
+bq2.pos.units, bq2.pos.turn = 20.0, 40
+bq2.split_budget = None
+tick(bq2)
+first = bq2.split_budget
+bq2.sell_order, bq2.sell_session = None, None
+tick(bq2)
+check("하루 한 번만 판다", bq2.split_budget is first and bq2.pos.units == 19.0, f"{bq2.pos.units:g}주")
+WIN.update(sessionDate="2026-10-14")
+bq2.sell_order, bq2.sell_session = None, None
+bq2._quarter_checked = None
+tick(bq2)
+check("다음 거래일에 다시 1회분을 팔고, 어제 예산은 넘기지 않는다", bq2.split_budget["session"] == "2026-10-14"
+      and bq2.pos.units == 18.0, f"{bq2.pos.units:g}주")
+WIN.update(sessionDate="2026-10-13")
+b2 = bot(FakeAcct(qty=1.0), exhaust="split")
+b2.pos.units, b2.pos.turn = 1.0, 40
+tick(b2)
+check("1주뿐이면 나눠 팔 수 없어 그대로 둔다", b2.pos.units == 1.0 and not b2.split_budget, "")
+pp2 = trader.TradingBot(bot_id="ps", coin="SOXL", interval="24h", mode="PAPER", capital_krw=6000.0,
+                        params=strategy.StrategyParams.from_dict({"strategyType": "raoer_infinite", "locMode": "excel",
+                                                                 "feePct": 0.0}), broker="namuh")
+pp2._persist = lambda: None
+pp2.pos.units, pp2.pos.entryPrice, pp2.pos.turn, pp2.pos.totalInvested, pp2.cash = 20.0, 103.83, 40, 2076.6, 3.0
+pp2.last_price = 83.56
+pp2._excel_quarter("2026-10-13")
+pp2._place_excel_orders(82.0, "2026-10-13")          # 종가가 판 가격보다 낮게 끝났다
+check("모의 봇: 2주 팔고 같은 날 2주 다시 사 평단 하락 · 회차 그대로", pp2.pos.units == 20.0 and pp2.pos.entryPrice < 103.83
+      and pp2.pos.turn == 40, f"평단 ${pp2.pos.entryPrice:,.2f} · T={pp2.pos.turn}")
 
 print("── 나무증권 주문 (가짜 통신) ──")
 import requests                                       # noqa: E402

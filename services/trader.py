@@ -173,7 +173,9 @@ class TradingBot:
         self.sell_session: Optional[str] = None        # 그 매도를 건 미국 세션 (하루 한 번)
         self._sell_check_at = 0.0
         self._sell_retry_after = 0.0
-        self.quarter_session: Optional[str] = None     # 쿼터손절을 한 미국 세션 (하루 한 번)
+        self.quarter_session: Optional[str] = None     # 쿼터손절 · 소진 스플릿을 한 미국 세션 (하루 한 번)
+        # 소진 스플릿: 오늘 판 돈 {session, amount, placed} — 그날 종가 LOC 재매수 예산
+        self.split_budget: Optional[Dict[str, Any]] = None
         self._quarter_checked: Optional[str] = None    # 쿼터손절 판단을 마친 세션 — 그 전에는 매수 LOC 를 내지 않는다
 
     def _fetch_price(self) -> float:
@@ -257,8 +259,9 @@ class TradingBot:
             if self._excel():
                 self.log("INFO", f"🔄 [무매법 엑셀 방식] {self.params.splitCount}분할 · 1회분할금 "
                                  f"${self.initial_krw / self.params.splitCount:,.2f} 고정 · 1.15 LOC + 평단 LOC + 사다리 · "
-                                 f"평단 +{self.params.targetProfitPct}% 전량 매도 · 40회/현금 소진 때 쿼터손절 "
-                                 f"{self.params.quarterCutPct:.0f}% (기어 · AI 없음)")
+                                 f"평단 +{self.params.targetProfitPct}% 전량 매도 · 40회/현금 소진 때 "
+                                 + ("매일 1회분 스플릿(장중 매도 → 종가 재매수)" if self.params.exhaustMode == "split"
+                                    else f"쿼터손절 {self.params.quarterCutPct:.0f}%") + " (기어 · AI 없음)")
             elif self.params.raoerUseAi:
                 self.log("INFO", f"🔄✨ [{v_title} AI 스마트 무한매수] {self.params.splitCount}분할 ({formula_desc} · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
                                  f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
@@ -925,6 +928,11 @@ class TradingBot:
                 for b in plan["buys"] if int(b["units"]) > 0]
         legs += [{"leg": f"사다리 {l['level']}단", "units": int(l["units"]), "limit": round(float(l["price"]), 2)}
                  for l in plan["ladder"] if int(l["units"]) > 0]
+        sb = self.split_budget
+        if sb and not sb.get("placed") and sb.get("units", 0) >= 1 and sb.get("limit", 0) > 0:
+            # 소진 스플릿 재매수 — 판 수량을 판 가격(수수료 뺀 몫) 이하 종가에만 다시 산다 ('더 낮아진 가격으로').
+            # 판 돈 안에서 끝나게 상한을 판 돈 ÷ 수량으로 둔다. 맨 앞에 둬서 현금이 모자랄 때 가장 늦게 덜어낸다
+            legs.insert(0, {"leg": "스플릿 재매수", "units": int(sb["units"]), "limit": sb["limit"], "split": True})
         if self.pos.open:
             # 나무증권은 같은 종목에 걸린 내 매도보다 비싼 매수를 받지 않는다
             # (24174 '동일 종목 반대포지션 존재시 신규주문이 불가' — 2026-10-13 TQQQ 1.15 LOC $92.67 가
@@ -971,9 +979,12 @@ class TradingBot:
             # 모의투자: 종가를 모르니 현재가로, 상한이 현재가 이상인 다리만 체결시킨다
             got = [x for x in legs if x["limit"] >= price]
             self.loc_session = session
+            if self.split_budget and any(x.get("split") for x in legs):
+                self.split_budget["placed"] = True
             if got:
                 q = sum(x["units"] for x in got)
-                self._book_buy(q, price, reason + f" · {desc}", carry=False)
+                self._book_buy(q, price, reason + f" · {desc}", carry=False,
+                               count_turn=any(not x.get("split") for x in got))
             else:
                 self.last_decision = f"무매법(엑셀) 모의: 상한이 모두 현재가 아래 — 오늘 체결 없음 ({desc})"
                 self._persist()
@@ -999,7 +1010,9 @@ class TradingBot:
                 placed.append({"orderId": res.get("orderId"), "leg": x["leg"], "units": x["units"],
                                "limit": x["limit"], "session": session, "qtyBefore": qty_before,
                                "avgBefore": avg_before, "budget": plan["unitBudget"], "reason": reason,
-                               "mode": "excel"})
+                               "mode": "excel", "split": bool(x.get("split"))})
+                if x.get("split") and self.split_budget:
+                    self.split_budget["placed"] = True
                 self.log("ORDER", f"LOC 접수 {x['leg']} ${x['limit']:,.2f} × {x['units']}주 (주문번호 {res.get('orderId')})")
             except namuh.NamuhError as e:
                 rejected.append(e.message)
@@ -1085,17 +1098,60 @@ class TradingBot:
         return ""
 
     def _excel_quarter(self, session: str) -> None:
-        """무매법 엑셀 방식의 쿼터손절 — 보유의 quarterCutPct(25%)를 팔고 회차를 되돌린다 (하루 한 번)."""
+        """무매법 엑셀 방식의 소진 대응 (하루 한 번) — exhaustMode 에 따라 소진 스플릿 또는 쿼터손절."""
+        if self.split_budget and self.split_budget.get("session") != session:
+            self.split_budget = None            # 지난 세션 것 (재매수를 못 냈다) — 넘기지 않는다
         price = self.last_price or 0.0
         why = self._excel_exhausted(price)
         if not why:
             return
         self.quarter_session = session
+        if self.params.exhaustMode == "split":
+            self._excel_split(session, price, why)
+            return
         before = self.pos.units
         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
         self.last_decision = f"무매법(엑셀) 쿼터손절 — {why} ({pnl_pct:+.2f}%)"
         self.log("WARNING", f"{self.last_decision} · 보유 {before:g}주의 {self.params.quarterCutPct:.0f}% 를 팝니다")
         self._exit_quarter(price, self.last_decision)
+        self._persist()
+
+    def _excel_split(self, session: str, price: float, why: str) -> None:
+        """소진 스플릿 — 1회분할금만큼(반올림 주수 · 최소 1주)을 지금 팔고, 판 돈을 그날 종가 LOC 재매수 예산으로 둔다.
+
+        평균단가 장부에서 판 주식의 손실은 실현손익으로 빠지고 평단은 그대로다. 종가에 더 싸게 다시 사면
+        평단이 그만큼 내려가, 조금만 반등해도 평단 × (1+목표%) 익절선에 닿는다. 회차는 세지 않는다.
+        """
+        if price <= 0 or self.pos.units < 2:
+            return                              # 1주뿐이면 나눠 팔 수 없다 (소수점 매도 불가)
+        unit = self.initial_krw / max(1, self.params.splitCount)
+        n = max(1, int(muma_sheet.xround(unit / price)))
+        n = min(n, int(self.pos.units) - 1)
+        pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0 if self.pos.entryPrice > 0 else 0.0
+        reason = f"무매법(엑셀) 소진 스플릿 매도 — {why} ({pnl_pct:+.2f}%)"
+        fee = self.params.feePct / 100.0
+        if self.mode == "LIVE":
+            if not (self.namuh_account and self.namuh_account.configured):
+                return
+            self._fills = []
+            try:
+                res = self._nh_sell(self.coin, n)
+            except namuh.NamuhError as e:
+                self.log("ERROR", f"소진 스플릿 매도 실패: {e.message}")
+                return
+            sold = min(float(n), float(res.get("units") or n))
+            px = self._fill_avg(price)
+            self.log("ORDER", f"소진 스플릿 매도 접수 (주문번호 {res.get('orderId')})")
+        else:
+            sold, px = float(n), price
+        if sold < 1:
+            return
+        self._book_partial_sell(sold, px, reason, note=(
+            f"[소진 스플릿] {sold:g}주 @ ${px:,.2f} 매도 · 종가가 이 가격 이하면 {sold:g}주 LOC 재매수 | {why}"))
+        amount = round(sold * px * (1 - fee), 2)
+        self.split_budget = {"session": session, "amount": amount, "units": int(sold),
+                             "limit": math.floor(amount / sold * 100) / 100, "placed": False}
+        self.last_decision = reason
         self._persist()
 
     def _check_sell_fill(self, final: bool = False) -> None:
@@ -1183,7 +1239,7 @@ class TradingBot:
                           f"{cancel_err}")
         return False
 
-    def _book_buy(self, qty: float, px: float, reason: str, carry: bool = True) -> None:
+    def _book_buy(self, qty: float, px: float, reason: str, carry: bool = True, count_turn: bool = True) -> None:
         """체결된 매수를 장부에 적는다 (평단 · 회차 · 현금)."""
         fee = self.params.feePct / 100.0
         invest = qty * px
@@ -1192,7 +1248,8 @@ class TradingBot:
         self.pos.units = u_total
         self.pos.entryPrice = ((u0 * p0) + invest) / u_total if u_total > 0 else px
         self.pos.peakPrice = max(self.pos.peakPrice, px)
-        self.pos.turn += 1
+        if count_turn:                          # 소진 스플릿 재매수만 붙은 날은 회차를 세지 않는다
+            self.pos.turn += 1
         self.pos.totalInvested += invest
         self.cash = max(0.0, self.cash - invest * (1 + fee))
         if not carry:
@@ -1407,7 +1464,10 @@ class TradingBot:
         self.pos.units = u_total
         self.pos.entryPrice = ((u0 * p0) + invest) / u_total if u_total > 0 else fill_price
         self.pos.peakPrice = max(self.pos.peakPrice, fill_price)
-        self.pos.turn += 1
+        # 소진 스플릿 재매수만 붙은 날은 회차를 세지 않는다 (체결내역이 없으면 주문 구성으로 본다)
+        split_only = (by_order[2] < 1) if by_order is not None else all(o.get("split") for o in ripe)
+        if not (excel and split_only):
+            self.pos.turn += 1
         self.pos.totalInvested += invest
         if excel:
             self.budget_carryover = 0.0           # 엑셀은 1회분할금이 고정이라 남은 돈을 넘기지 않는다
@@ -1425,9 +1485,9 @@ class TradingBot:
                               f"평단 ${self.pos.entryPrice:,.2f}")
         self._persist()
 
-    def _loc_fills(self, orders: List[Dict[str, Any]]) -> Optional[Tuple[float, float]]:
-        """주문들의 체결 (수량 합, 체결금액 합). 하나라도 못 읽으면 None — 잔고로 정산한다."""
-        qty = amt = 0.0
+    def _loc_fills(self, orders: List[Dict[str, Any]]) -> Optional[Tuple[float, float, float]]:
+        """주문들의 체결 (수량 합, 체결금액 합, 소진 스플릿 재매수가 아닌 수량). 하나라도 못 읽으면 None."""
+        qty = amt = regular = 0.0
         for o in orders:
             oid = o.get("orderId")
             if not oid or str(oid).startswith(("UNKNOWN", "MOCK")):
@@ -1441,7 +1501,9 @@ class TradingBot:
                 return None
             qty += f["qty"]
             amt += f["qty"] * f["price"]
-        return qty, amt
+            if not o.get("split"):
+                regular += f["qty"]
+        return qty, amt, regular
 
     def _skip_turn(self, price: float, total_budget: float, chased: bool,
                    where: str, limit_desc: str, note: str = "") -> None:
@@ -1952,6 +2014,7 @@ class TradingBot:
             "sellOrder": dict(self.sell_order) if self.sell_order else None,
             "sellSession": self.sell_session,
             "quarterSession": self.quarter_session,
+            "splitBudget": self.split_budget,
             "locSession": self.loc_session,
             "orderHold": self.order_hold,
             "inflightOrder": self._inflight,
@@ -1987,6 +2050,7 @@ class TradingBot:
         bot.sell_order = d.get("sellOrder") or None
         bot.sell_session = d.get("sellSession")
         bot.quarter_session = d.get("quarterSession")
+        bot.split_budget = d.get("splitBudget") or None
         bot.loc_session = d.get("locSession")
         bot.order_hold = d.get("orderHold")
         if d.get("inflightOrder") and not bot.order_hold:

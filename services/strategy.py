@@ -57,6 +57,10 @@ class StrategyParams:
     #                   체결이 바로 확인되고 주문이 쌓이지 않는다.
     # "single"        : 단일 묶음 시장가.
     locMode: str = "half_half"
+    # 무매법 엑셀 방식에서 40회(또는 현금) 소진 때:
+    #   "split"   매일 1회분만 장중에 팔고 그 돈으로 그날 종가 LOC 재매수 (평단을 조금씩 끌어내린다)
+    #   "quarter" 라오어 쿼터손절 — 보유 25% 를 한 번에 팔고 회차 10 되돌림
+    exhaustMode: str = "split"
 
     # ── 라오어 밸류 리밸런싱 (VR) 파라미터 ──
 
@@ -180,6 +184,8 @@ class StrategyParams:
             self.raoerTrendMode = "off"
         if self.locMode not in ("half_half", "half_half_now", "single", "excel"):
             self.locMode = "half_half"
+        if self.exhaustMode not in ("split", "quarter"):
+            self.exhaustMode = "split"
         if self.locMode == "excel":
             # 무매법 엑셀 방식은 목표 · 1회분할금이 고정이다 — 기어 · AI 가 켜져 있다고 보이지 않게 끈다
             self.useMacroGear = False
