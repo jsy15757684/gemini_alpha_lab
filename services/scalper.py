@@ -179,6 +179,45 @@ def can_enter(q: Dict[str, Any], p: ScalpParams) -> bool:
     return o > 0 and px > o * (1 + p.breakoutPct / 100.0) and (q.get("changePct") or 0) <= p.maxChangePct
 
 
+# ── 그림자 기록 (2026-10-27) ──
+# 실제(모의) 매매는 그대로 두고, 같은 날 같은 종목에서 다른 진입 신호를 가상으로 함께 기록한다.
+# 청산 규칙(30초 타임컷 · 손절 · 트레일링 · 목표 · 1차 익절 · 09:30 청산) · 체결가(호가 잔량) · 호가 불균형 ·
+# 정적 VI 여유 · 같은 종목 하루 1번 · 종목 수 상한은 모두 같다. 불타기 · 하루 손실 한도는 쓰지 않는다.
+# 4거래일 8건 중 7건이 산 뒤 +0.9% 도 못 올라 '시가 +0.5% 돌파' 가 이미 오른 뒤에 사는 신호인지 보려고.
+SHADOWS = {
+    "A": "개장 5분 고가 돌파 (09:05~)",
+    "B": "VWAP 눌림 뒤 재돌파 (09:05~)",
+    "C": "지금 신호 · 09:03 이후만",
+}
+
+
+def shadow_signal(key: str, q: Dict[str, Any], st: Dict[str, Any], now: datetime, p: ScalpParams) -> str:
+    """그림자 신호 하나. 사면 그 사유, 아니면 빈 문자열. st 는 그 변형의 오늘 상태(고가 · 눌림 기억)."""
+    code, px, o = q["code"], q["price"], q.get("open") or 0
+    if key == "C":
+        if now >= _at(now, (9, 3, 0)) and can_enter(q, p):
+            return f"시가 {o:,} +{(px / o - 1) * 100:.2f}% 돌파 (09:03 이후)"
+        return ""
+    if now < _at(now, (9, 5, 0)):
+        return ""
+    if key == "A":
+        orh = st.setdefault("orHigh", {}).setdefault(code, q.get("high") or px)   # 09:05 첫 관측의 당일 고가
+        if px > orh and (q.get("changePct") or 0) <= p.maxChangePct:
+            return f"개장 5분 고가 {orh:,} 돌파"
+        return ""
+    if key == "B":
+        vw = q.get("vwap") or 0
+        if vw <= 0:
+            return ""
+        touched = st.setdefault("touched", {})
+        if px <= vw:
+            touched[code] = True
+            return ""
+        if touched.get(code) and px >= vw * 1.003 and px > o and (q.get("changePct") or 0) <= p.maxChangePct:
+            return f"VWAP {vw:,.0f} 눌림 뒤 +0.3% 재돌파"
+    return ""
+
+
 class Scalper:
     def __init__(self, namuh_account=None):
         self.acc = namuh_account
@@ -194,13 +233,15 @@ class Scalper:
         self.last_error = ""
         self._vol_seen: Dict[str, tuple] = {}
         self._err_streak = 0
+        self.shadow_trades: List[Dict[str, Any]] = []
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
 
     # ── 저장 ──
     def snapshot(self) -> Dict[str, Any]:
         return {"enabled": self.enabled, "params": asdict(self.params), "day": self.day,
-                "positions": self.positions, "trades": self.trades[-MAX_TRADES:], "days": self.days[-MAX_DAYS:]}
+                "positions": self.positions, "trades": self.trades[-MAX_TRADES:], "days": self.days[-MAX_DAYS:],
+                "shadowTrades": self.shadow_trades[-MAX_TRADES:]}
 
     def save(self) -> None:
         with self.lock:
@@ -217,6 +258,7 @@ class Scalper:
         self.positions = d.get("positions") or {}
         self.trades = d.get("trades") or []
         self.days = d.get("days") or []
+        self.shadow_trades = d.get("shadowTrades") or []
 
     def log(self, level: str, msg: str) -> None:
         self.logs.append({"time": datetime.now(KST).strftime("%m-%d %H:%M:%S"), "level": level, "message": msg})
@@ -292,7 +334,8 @@ class Scalper:
     # ── 하루 ──
     def _new_day(self, date: str) -> None:
         self.day = {"date": date, "phase": "wait", "prelist": [], "chosen": [], "selection": {}, "note": "",
-                    "done": False, "closed": []}
+                    "done": False, "closed": [],
+                    "shadow": {k: {"positions": {}, "entered": [], "closed": []} for k in SHADOWS}}
         self.quotes = {}
 
     def _finish_day(self, note: str) -> None:
@@ -305,7 +348,11 @@ class Scalper:
         self.days.append({"date": d["date"], "chosen": [c.get("name") for c in d.get("chosen") or []],
                           "pnl": round(sum(t["pnl"] for t in day_trades)),
                           "positions": len(closed), "wins": sum(1 for c in closed if c["pnl"] > 0),
-                          "stops": d.get("stops", 0), "halt": d.get("halt", ""), "note": note})
+                          "stops": d.get("stops", 0), "halt": d.get("halt", ""), "note": note,
+                          "shadow": {k: {"pnl": round(sum(c["pnl"] for c in st.get("closed", []))),
+                                         "positions": len(st.get("closed", [])),
+                                         "wins": sum(1 for c in st.get("closed", []) if c["pnl"] > 0)}
+                                     for k, st in (d.get("shadow") or {}).items()}})
         del self.days[:-MAX_DAYS]
         self.log("INFO", f"{d['date']} 마감 — {note}")
         self.save()
@@ -415,13 +462,21 @@ class Scalper:
             self._finish_day("조건에 맞는 대장주가 없어 오늘은 매매하지 않았습니다")
             return 600.0
         d["phase"] = "trade"
+        shadow = d.setdefault("shadow", {k: {"positions": {}, "entered": [], "closed": []} for k in SHADOWS})
+        sh_held = {c for st in shadow.values() for c in st["positions"]}
         if now >= t_close:
             for code in list(self.positions):
                 q = self.quotes.get(code) or self._quote(code)
                 if q:
                     self._sell(code, q, self.positions[code]["remaining"], "FORCE",
                                f"{p.forceClose} 강제 전량 청산", now)
-            if not self.positions:
+            for key, st in shadow.items():
+                for code in list(st["positions"]):
+                    q = self.quotes.get(code) or self._quote(code)
+                    if q:
+                        self._shadow_sell(key, code, q, st["positions"][code]["remaining"], "FORCE",
+                                          f"{p.forceClose} 강제 전량 청산", now)
+            if not self.positions and not any(st["positions"] for st in shadow.values()):
                 self._finish_day(f"{p.forceClose} 청산 완료")
             return 5.0
         # 들고 있는 종목 · 아직 살 수 있는 종목만 본다 — 3종목을 다 보면 한 바퀴 4초+, 줄이면 손절이 덜 미끄러진다
@@ -429,7 +484,11 @@ class Scalper:
         active = [c["code"] for c in d["chosen"]
                   if c["code"] in self.positions
                   or (can_buy and c["code"] not in d.get("entered", []) and c["code"] not in d.get("skipped", {}))]
-        if not active and not self.positions:
+        # 그림자 기록은 09:20 까지 고른 종목을 다 보고, 그 뒤에는 그림자 보유 종목만 본다
+        extra = [c["code"] for c in d["chosen"]
+                 if c["code"] not in active and (now < t_entry_end or c["code"] in sh_held)]
+        active = sorted(active, key=lambda c: c not in self.positions) + extra   # 실제 보유 종목을 먼저 조회
+        if not active and not self.positions and not sh_held:
             done_codes = set(d.get("entered", [])) | set(d.get("skipped", {}))
             if now >= t_entry_end or d.get("halt") or all(c["code"] in done_codes for c in d["chosen"]):
                 return max(1.0, min(60.0, (t_close - now).total_seconds()))    # 09:30 마감까지 쉰다
@@ -451,7 +510,74 @@ class Scalper:
                     self._skip(code, f"호가 불균형 {ratio}배 < {p.imbalanceMin}배 (매도잔량이 무겁지 않음)", False)
                     continue
                 self._buy(q, now)
+        for q in quotes:
+            self._shadow_step(q, now, t_entry_end)
         return 1.0
+
+    # ── 그림자 기록 ──
+    def _shadow_step(self, q: Dict[str, Any], now: datetime, t_entry_end: datetime) -> None:
+        p, code = self.params, q["code"]
+        for key, st in self.day["shadow"].items():
+            pos = st["positions"].get(code)
+            if pos:
+                px = q["price"]
+                pos["low"] = min(pos["low"], px)
+                pos["peak"] = max(pos["peak"], px)
+                if not pos["timeOk"]:
+                    if pos["peak"] >= pos["entry"] * (1 + p.timeStopPct / 100.0):
+                        pos["timeOk"] = True
+                    elif now.timestamp() - pos["atTs"] >= p.timeStopSec:
+                        self._shadow_sell(key, code, q, pos["remaining"], "TIME", "30초 타임컷", now)
+                        continue
+                act = decide_exit(pos, px, p)
+                if act:
+                    self._shadow_sell(key, code, q, act["qty"], act["kind"], act["reason"], now)
+                continue
+            if now >= t_entry_end or code in st["entered"] or len(st["positions"]) >= p.maxStocks:
+                continue
+            why = shadow_signal(key, q, st, now, p)
+            if not why:
+                continue
+            ratio = imbalance(q)
+            if p.imbalanceOn and ratio is not None and ratio < p.imbalanceMin:
+                continue
+            fill = walk_buy(q, p.positionKrw)
+            if not fill or not vi_room_ok(q, fill[1], p):
+                continue
+            qty, px = fill[0], round(fill[1], 2)
+            st["entered"].append(code)
+            st["positions"][code] = {"code": code, "name": q.get("name") or code, "entry": px, "qty": qty,
+                                     "remaining": qty, "peak": float(q["price"]), "low": float(q["price"]),
+                                     "partialDone": False, "pnl": 0.0, "atTs": now.timestamp(),
+                                     "timeOk": not p.timeStopOn}
+            self._shadow_record(key, code, q.get("name"), "BUY", px, qty, 0.0, 0.0, why, now)
+
+    def _shadow_sell(self, key: str, code: str, q: Dict[str, Any], qty: int, kind: str, reason: str,
+                     now: datetime) -> None:
+        st = self.day["shadow"][key]
+        pos = st["positions"][code]
+        px = round(walk_sell(q, qty), 2)
+        pnl = (px - pos["entry"]) * qty - px * qty * self.params.costPct / 100.0
+        pos["remaining"] -= qty
+        pos["pnl"] += pnl
+        if kind == "PARTIAL":
+            pos["partialDone"] = True
+        self._shadow_record(key, code, pos["name"], kind, px, qty, net_pct(pos["entry"], px, self.params.costPct),
+                            pnl, reason, now)
+        if pos["remaining"] <= 0:
+            mfe = (pos["peak"] / pos["entry"] - 1) * 100.0
+            mae = (pos["low"] / pos["entry"] - 1) * 100.0
+            self.shadow_trades[-1].update(mfePct=round(mfe, 2), maePct=round(mae, 2))
+            st["closed"].append({"code": code, "name": pos["name"], "pnl": round(pos["pnl"]),
+                                 "mfePct": round(mfe, 2), "maePct": round(mae, 2)})
+            del st["positions"][code]
+        self.save()
+
+    def _shadow_record(self, key, code, name, kind, price, qty, pct, pnl, reason, now) -> None:
+        self.shadow_trades.append({"variant": key, "date": now.strftime("%Y-%m-%d"), "time": now.strftime("%H:%M:%S"),
+                                   "code": code, "name": name or code, "kind": kind, "price": price, "qty": qty,
+                                   "pct": round(pct, 2), "pnl": round(pnl), "reason": reason})
+        del self.shadow_trades[:-MAX_TRADES]
 
     def _manage(self, code: str, q: Dict[str, Any], now: datetime) -> None:
         """보유 하나: 보존선 → 30초 타임컷 → 원래 청산 규칙 → 불타기 순서로 본다."""
@@ -583,7 +709,27 @@ class Scalper:
                                 "perPosition": round(total / pos_n) if pos_n else None,
                                 "avgMfePct": avg("mfePct"), "avgMaePct": avg("maePct"),
                                 "closedWithMfe": len(ex)},
-                    "logs": logs[::-1], "lastError": self.last_error}
+                    "logs": logs[::-1], "lastError": self.last_error,
+                    "shadow": self._shadow_summary(), "shadowTrades": list(self.shadow_trades[-60:])[::-1]}
+
+    def _shadow_summary(self) -> List[Dict[str, Any]]:
+        """그림자 변형별 누적 — 같은 날짜끼리 비교되도록, 그림자 기록이 있는 날의 실제 매매와 나란히 센다."""
+        days = [x for x in self.days if "shadow" in x]
+        closed = [t for t in self.shadow_trades if "mfePct" in t]
+        real_n = sum(x.get("positions", 0) for x in days)
+        real_pnl = sum(x["pnl"] for x in days)
+        rows = [{"key": "현재", "label": "지금 신호 (실제 모의 매매)", "days": len(days), "positions": real_n,
+                 "wins": sum(x.get("wins", 0) for x in days), "pnl": round(real_pnl),
+                 "perPosition": round(real_pnl / real_n) if real_n else None, "avgMfePct": None}]
+        for k, label in SHADOWS.items():
+            n = sum(x["shadow"].get(k, {}).get("positions", 0) for x in days)
+            pnl = sum(x["shadow"].get(k, {}).get("pnl", 0) for x in days)
+            ex = [t for t in closed if t["variant"] == k]
+            rows.append({"key": k, "label": label, "days": len(days), "positions": n,
+                         "wins": sum(x["shadow"].get(k, {}).get("wins", 0) for x in days), "pnl": round(pnl),
+                         "perPosition": round(pnl / n) if n else None,
+                         "avgMfePct": round(sum(t["mfePct"] for t in ex) / len(ex), 2) if ex else None})
+        return rows
 
 
 scalper: Optional[Scalper] = None

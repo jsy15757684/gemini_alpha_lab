@@ -81,6 +81,9 @@ def quote(acc: namuh.NamuhAccount, code: str) -> Dict[str, Any]:
         "totalBid": _i(o.get("total_bidp_rsqn")),     # 총 매수잔량
         "viDown": _i(o.get("vi_antc_llam")),
         "volume": _i(o.get("acml_vol")),
+        # 당일 가중평균가(VWAP). 비면 누적 거래대금(백만원) ÷ 누적 거래량
+        "vwap": round(_f(o.get("wghn_avrg_prc")) or (_f(o.get("acml_tr_pbmn")) * 1_000_000 / _i(o.get("acml_vol"))
+                                                       if _i(o.get("acml_vol")) else 0.0), 2),
         "prevVolume": _i(o.get("prdy_vol")),
         "expPrice": exp_price,
         "expChangePct": round(exp_pct, 2),

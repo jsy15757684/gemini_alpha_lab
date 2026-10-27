@@ -931,6 +931,16 @@ function renderScalper(s) {
   const days = (s.days || []).map(x => `<tr><td>${escapeHtml(x.date)}</td><td>${escapeHtml((x.chosen || []).join(", ") || "-")}</td>
     <td>${x.positions}</td><td>${x.wins}</td><td class="${x.pnl >= 0 ? "up" : "down"}">${x.pnl >= 0 ? "+" : ""}${won0(x.pnl)}</td><td class="muted small">${escapeHtml(x.note || "")}${x.halt ? ` · ${escapeHtml(x.halt)}` : ""}</td></tr>`).join("");
   $("scalperDays").innerHTML = days ? `<div class="tbl-wrap"><table><thead><tr><th>날짜</th><th>대장주</th><th>매매</th><th>이김</th><th>손익</th><th>메모</th></tr></thead><tbody>${days}</tbody></table></div>` : `<div class="empty">아직 기록한 날이 없습니다.</div>`;
+  const sh = (s.shadow || []).map(r => `<tr><td><b>${escapeHtml(r.key)}</b></td><td>${escapeHtml(r.label)}</td><td>${r.positions}</td><td>${r.wins}</td>
+    <td class="${r.pnl >= 0 ? "up" : "down"}">${r.pnl >= 0 ? "+" : ""}${won0(r.pnl)}</td>
+    <td>${r.perPosition == null ? "-" : (r.perPosition >= 0 ? "+" : "") + won0(r.perPosition)}</td><td>${r.avgMfePct == null ? "-" : "+" + r.avgMfePct + "%"}</td></tr>`).join("");
+  $("scalperShadow").innerHTML = sh ? `<div class="tbl-wrap"><table><thead><tr><th></th><th>진입 신호</th><th>매매</th><th>이김</th><th>손익</th><th>1건당</th><th>산 뒤 평균 최대 상승</th></tr></thead><tbody>${sh}</tbody></table></div>
+    <div class="muted small">그림자 기록을 시작한 날부터 셉니다. 불타기 · 하루 손실 한도는 그림자에 쓰지 않습니다.</div>` : "";
+  const st = (s.shadowTrades || []).map(t => `<tr><td>${escapeHtml(t.variant)}</td><td>${escapeHtml(t.date.slice(5))} ${escapeHtml(t.time)}</td><td>${escapeHtml(t.name)}</td>
+    <td>${escapeHtml(SCALP_KIND[t.kind] || t.kind)}</td><td>${won0(t.price)}</td><td>${t.qty.toLocaleString()}</td>
+    <td class="${t.pnl >= 0 ? "up" : "down"}">${t.kind === "BUY" ? "" : (t.pnl >= 0 ? "+" : "") + won0(t.pnl)}</td>
+    <td class="muted small">${escapeHtml(t.reason)}${t.mfePct != null ? ` · 최대 +${t.mfePct}% / ${t.maePct}%` : ""}</td></tr>`).join("");
+  $("scalperShadowTrades").innerHTML = st ? `<div class="tbl-wrap"><table><thead><tr><th>신호</th><th>시각</th><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>손익</th><th>사유</th></tr></thead><tbody>${st}</tbody></table></div>` : `<div class="empty">아직 그림자 체결이 없습니다.</div>`;
   const p = s.params;
   $("scalperRules").innerHTML = `종목 ${p.maxStocks}개 · 종목당 ${won0(p.positionKrw)} · 진입: 시가 +${p.breakoutPct}% 돌파 (등락률 ${p.maxChangePct}% 이하, ${escapeHtml(p.entryEnd)}까지) ·
     1차 익절 +${p.partialPct}% 절반 · 목표 +${p.targetPct}% · 손절 −${p.stopPct}% · 트레일링 고점 대비 −${p.trailPct}% · ${escapeHtml(p.forceClose)} 강제 청산 ·

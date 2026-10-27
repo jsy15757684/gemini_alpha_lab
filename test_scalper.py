@@ -186,11 +186,11 @@ check("VI 로 거른 종목은 그날 제외, 호가가 얇은 종목은 계속 
 CALLS.clear()
 Q["B2"] = mk(10_060, hoga="09:02:00", name="B2")
 s8.step(at(9, 2, day=30))
-check("다음 판단에는 제외한 종목을 조회하지 않고, 얇았던 종목은 다시 보고 산다",
-      "B1" not in CALLS and "B2" in s8.positions, f"{CALLS}")
+check("VI 로 제외한 종목은 실제로 사지 않고 (그림자 기록용으로만 조회), 얇았던 종목은 다시 보고 산다",
+      "B1" not in s8.positions and "B2" in s8.positions, f"{CALLS}")
 CALLS.clear()
 s8.step(at(9, 3, day=30))
-check("보유 · 아직 살 수 있는 종목만 조회한다", sorted(CALLS) == ["B2", "B3"], f"{CALLS}")
+check("실제 보유 종목을 먼저 조회한다 (손절 지연을 줄인다)", CALLS[0] == "B2" and sorted(CALLS) == ["B1", "B2", "B3"], f"{CALLS}")
 CALLS.clear()
 s8.step(at(9, 21, day=30))
 check("09:20 뒤에는 보유 종목만 조회한다", CALLS == ["B2"], f"{CALLS}")
@@ -262,6 +262,44 @@ check("연속 실패는 시각 · 횟수와 함께 보이고 로그에는 한 �
 krx.quote = orig_q
 ke._quote("000001")
 check("회복하면 오류 표시를 지운다 (예전에는 계속 떠 있었다)", ke.last_error == "" and "회복" in ke.logs[-1]["message"], "")
+
+print("── 그림자 기록 (A 5분 고가 돌파 · B VWAP 눌림 재돌파 · C 09:03 이후) ──")
+SEL["chosen"] = [{"code": "S1", "name": "S1", "gap": 3.0, "score": 1.0}]
+g = orig()
+g.step(at(8, 50, 5, day=14)); g.step(at(8, 57, 55, day=14))      # 2026-10-14 수
+def sq(px, t, high=None, vwap=10_050, hoga=None):
+    Q["S1"] = dict(mk(px, hoga=hoga or t, name="S1"), high=high or px, vwap=vwap)
+sq(10_060, "09:01:00")
+g.step(at(9, 1, day=14))
+check("실제 매매는 그대로 (09:01 시가 +0.6% → 매수)", "S1" in g.positions, "")
+check("C(09:03 이후)는 09:01 에 사지 않는다", not g.day["shadow"]["C"]["positions"], "")
+sq(10_070, "09:03:10")
+g.step(at(9, 3, 10, day=14))
+check("C 는 09:03 이후 같은 신호에 산다", "S1" in g.day["shadow"]["C"]["positions"], "")
+sq(10_000, "09:05:00", high=10_200, vwap=10_050)                    # 09:05: 5분 고가 10,200 · VWAP 아래로 눌림
+g.step(at(9, 5, day=14))
+check("A 는 09:05 의 당일 고가를 5분 고가로 기억", g.day["shadow"]["A"].get("orHigh", {}).get("S1") == 10_200, "")
+check("B 는 VWAP 아래로 내려온 것을 기억", g.day["shadow"]["B"].get("touched", {}).get("S1"), "")
+sq(10_090, "09:06:00", high=10_200, vwap=10_050)                    # VWAP +0.4% 재돌파 · 5분 고가는 아직
+g.step(at(9, 6, day=14))
+check("B: VWAP 눌림 뒤 +0.3% 재돌파에 산다 · A 는 아직", "S1" in g.day["shadow"]["B"]["positions"]
+      and "S1" not in g.day["shadow"]["A"]["positions"], "")
+sq(10_210, "09:07:00", high=10_210, vwap=10_080)
+g.step(at(9, 7, day=14))
+check("A: 5분 고가 10,200 을 넘자 산다", "S1" in g.day["shadow"]["A"]["positions"], "")
+sq(10_400, "09:30:01", high=10_400, vwap=10_150)
+g.step(at(9, 30, 1, day=14))
+check("09:30 에 그림자 보유도 전량 정리하고 하루를 닫는다", g.day["done"]
+      and not any(st["positions"] for st in g.day["shadow"].values()), g.day.get("note"))
+dd = g.days[-1]["shadow"]
+check("일별 결과에 변형별 손익 · 매매 · 이김이 남는다", set(dd) == {"A", "B", "C"} and all(dd[k]["positions"] == 1 for k in dd),
+      f"{dd}")
+summ = {r["key"]: r for r in g.status()["shadow"]}
+check("화면 요약: 지금 신호와 A · B · C 를 같은 날짜로 나란히", set(summ) == {"현재", "A", "B", "C"}
+      and summ["A"]["positions"] == 1 and summ["A"]["avgMfePct"] is not None, f"{ {k: v['pnl'] for k, v in summ.items()} }")
+check("그림자 체결은 실제 체결 기록과 섞이지 않는다", all("variant" not in t for t in g.trades)
+      and all(t["variant"] in "ABC" for t in g.shadow_trades), "")
+SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
 
 print("── 저장 · 끄기 ──")
 sc.save()
