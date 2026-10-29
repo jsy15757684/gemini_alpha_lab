@@ -49,7 +49,7 @@ LAUNCHER = r"""
 import os, sys
 sb = os.environ["SPLIT_SANDBOX"]
 sys.path.insert(0, os.environ["APP_DIR"])
-from services import roles, botstore, tradelog, keystore, gemini_service, namuh
+from services import roles, botstore, tradelog, keystore, namuh
 roles._DATA_DIR = sb
 roles._TOKEN_FILE = os.path.join(sb, ".internal_token")
 botstore._DATA_DIR = sb
@@ -59,7 +59,6 @@ tradelog.LEGACY_FILE = os.path.join(sb, "trades.json")
 tradelog.LOG_FILE = os.path.join(sb, "trades_namuh.json" if roles.ROLE == "namuh" else "trades.json")
 keystore.KEYS_FILE = os.path.join(sb, "bithumb_key.json")
 keystore.NAMUH_KEYS_FILE = os.path.join(sb, "namuh_key.json")
-gemini_service.GEMINI_KEY_FILE = os.path.join(sb, "gemini_key.json")
 namuh.TOKEN_FILE = os.path.join(sb, "namuh_token.json")
 import server, uvicorn
 uvicorn.run(server.app, host="127.0.0.1", port=int(os.environ["PORT"]), log_level="warning")

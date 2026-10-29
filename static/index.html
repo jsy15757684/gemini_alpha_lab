@@ -49,8 +49,7 @@
   </div>
 
   <nav class="tabs" id="tabs">
-    <button class="tab active" data-panel="panel-gemini">✨ Gemini AI 연구소</button>
-    <button class="tab" data-panel="panel-bots">🔄 무한매수 봇</button>
+    <button class="tab active" data-panel="panel-bots">🔄 무한매수 봇</button>
     <button class="tab" data-panel="panel-muma">📋 무매법 표</button>
     <button class="tab" data-panel="panel-scalper">🎯 국내 스캘퍼 (모의)</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
@@ -62,36 +61,8 @@
   <main class="container">
     <div class="alert alert-warn hidden" id="globalNotice"></div>
 
-    <!-- Gemini AI 연구소 -->
-    <section id="panel-gemini" class="panel">
-      <div class="card">
-        <div class="card-head">
-          <div>
-            <h2 class="card-title">✨ Gemini AI 실시간 코인 스캐너</h2>
-            <p class="muted small">Google Gemini AI가 빗썸 5개 코인의 시세, 다중 캔들, RSI, MACD, 볼린저밴드, 거래량을 실시간 종합 분석하여 최적의 매매 신호를 제시합니다.</p>
-          </div>
-          <div class="inline">
-            <select class="input input-sm" id="geminiScanInterval">
-              <option value="1m">1분봉</option>
-              <option value="5m">5분봉</option>
-              <option value="15m">15분봉</option>
-              <option value="30m">30분봉</option>
-              <option value="1h" selected>1시간봉</option>
-              <option value="4h">4시간봉</option>
-              <option value="24h">일봉(24h)</option>
-            </select>
-            <button class="btn btn-primary btn-sm" id="geminiScanBtn">⚡ 전체 AI 스캔</button>
-          </div>
-        </div>
-        <div id="geminiScanStatus" class="muted small" style="margin-bottom: 12px;"></div>
-        <div id="geminiCards" class="gemini-grid">
-          <div class="empty">Gemini AI 스캔 버튼을 누르면 실시간 분석이 시작됩니다.</div>
-        </div>
-      </div>
-    </section>
-
     <!-- 봇 -->
-    <section id="panel-bots" class="panel hidden">
+    <section id="panel-bots" class="panel">
       <div class="grid-2">
         <div class="card">
           <h2 class="card-title">봇 가동</h2>
@@ -205,43 +176,10 @@
                 </p>
               </div>
 
-              <!-- AI 스마트 무한매수 토글 -->
-              <div style="margin-top: 10px; padding: 10px; background: rgba(59, 130, 246, 0.08); border: 1px solid rgba(59, 130, 246, 0.25); border-radius: 6px;">
-                <label style="display: flex; align-items: center; gap: 8px; cursor: pointer; font-weight: 600; font-size: 0.88rem;">
-                  <input type="checkbox" id="bp_raoerUseAi" style="width: 16px; height: 16px; accent-color: var(--accent);">
-                  <span>✨ Gemini AI 스마트 조절 (동적 비중 + 가변 익절)</span>
-                </label>
-                <div id="raoerAiSubOptions" class="hidden" style="margin-top: 8px; padding-top: 8px; border-top: 1px dashed rgba(255,255,255,0.1);">
-                  <div class="form-grid">
-                    <div>
-                      <label class="label">약세장 조기 익절선 (%)</label>
-                      <input class="input" type="number" id="bp_raoerMinProfitPct" value="5.0" min="1.0" max="10.0" step="0.5">
-                    </div>
-                    <div>
-                      <label class="label">강세장 최대 익절선 (%)</label>
-                      <input class="input" type="number" id="bp_raoerMaxProfitPct" value="20.0" min="10.0" max="50.0" step="1.0">
-                    </div>
-                    <div>
-                      <label class="label">저점 집중 매수 배수</label>
-                      <input class="input" type="number" id="bp_raoerMaxMultiplier" value="2.0" min="1.2" max="3.0" step="0.1">
-                    </div>
-                  </div>
-                  <p class="muted small" style="margin-top: 6px;">⚡ 과매도·폭락 시 최대 N배 집중 매수하여 평단가를 급격히 낮추고, 시장 강도에 따라 목표 수익률을 5%~20%로 유연하게 자동 조절합니다.</p>
-                </div>
-              </div>
-
               <p class="muted small" style="margin-top: 8px;">💡 원금을 N회로 쪼개어 매 캔들마다 분할매수하고 목표 수익률 도달 시 전량 익절합니다.</p>
             </div>
 
 
-            <!-- Gemini AI 옵션 -->
-            <div id="geminiBotOptions" class="hidden" style="margin-top: 10px;">
-              <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 4px;">
-                <label class="label" style="margin: 0;">AI 진입 최소 신뢰도: <span id="geminiConfVal" style="color: var(--primary); font-weight: bold;">60%</span></label>
-              </div>
-              <input type="range" id="geminiMinConf" min="50" max="95" step="5" value="60" style="width: 100%;">
-              <p class="muted small" style="margin-top: 4px;">Gemini AI의 매수 확신도가 이 값 이상일 때만 진입합니다 (퀀트 권장: 55~65%).</p>
-            </div>
           </div>
 
           <div id="quantBotSettings" class="hidden">
@@ -588,29 +526,6 @@
         </div>
 
         <div class="card">
-          <h2 class="card-title">✨ Google Gemini API 설정</h2>
-          <div id="geminiStatus" class="kv"></div>
-
-          <div id="geminiKeyForm" style="margin-top: 16px;">
-            <label class="label">Gemini API Key</label>
-            <input class="input" id="geminiApiKeyInput" type="password" placeholder="AIzaSy..." spellcheck="false" autocomplete="off">
-            <label class="label">사용 모델</label>
-            <select class="input" id="geminiModelSelect">
-              <option value="gemini-flash-latest" selected>gemini-flash-latest (빠르고 정밀함 · 추천)</option>
-              <option value="gemini-pro-latest">gemini-pro-latest (심층 추론/분석용)</option>
-              <option value="gemini-flash-lite-latest">gemini-flash-lite-latest (경량/고속)</option>
-            </select>
-            <div class="btn-row">
-              <button class="btn btn-ghost" id="testGeminiBtn">연결 테스트</button>
-              <button class="btn btn-primary" id="saveGeminiBtn">저장</button>
-              <button class="btn btn-ghost btn-danger hidden" id="clearGeminiBtn">삭제</button>
-            </div>
-            <p class="muted small">Google AI Studio에서 무료로 발급받은 Gemini API 키를 등록하세요. 영구 보관은 <code>.env</code> 파일의 <code>GEMINI_API_KEY</code>를 권장합니다.</p>
-          </div>
-          <div class="alert hidden" id="geminiKeyResult"></div>
-
-          <hr style="border: 0; border-top: 1px solid var(--border); margin: 24px 0 16px 0;">
-
           <h3 class="card-title" style="font-size: 15px;">빗썸 계좌 잔고</h3>
           <div id="balanceBox"><div class="empty">빗썸 API 키를 등록하면 표시됩니다.</div></div>
         </div>
@@ -661,6 +576,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.18.0"></script>
+<script src="/static/js/app.js?v=5.19.0"></script>
 </body>
 </html>

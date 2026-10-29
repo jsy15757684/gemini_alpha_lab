@@ -45,7 +45,7 @@ r = run(f"import runpy,sys; sys.argv=['ui_preview','--check']; "
 check("정상 경로에서 격리 점검을 통과한다", r.returncode == 0,
       f"종료코드 {r.returncode}")
 check("빗썸 인증 API 를 차단한다", "빗썸 인증 API" in r.stdout, "4종")
-check("Gemini 호출을 차단한다", "Gemini 호출" in r.stdout, "3종")
+check("나무증권 호출을 차단한다", "나무증권 토큰" in r.stdout, "")
 check(".env 를 읽지 않는다", "APP_SKIP_DOTENV=1" in r.stdout, "server.py 가 건너뜀")
 check("운영 데이터 경로를 쓰지 않는다",
       "데이터 경로 격리" in r.stdout and "/opt/" not in r.stdout, "임시 디렉터리")
@@ -64,21 +64,6 @@ print('ERROR: 통과해버렸다')
 check("키가 다시 주입되면 기동을 멈춘다 (fail closed)",
       r.returncode != 0 and "기동을 중단" in (r.stdout + r.stderr),
       (r.stderr.strip().splitlines() or ["-"])[-1][:60])
-
-# ── gemini_service 의 두 번째 .env 리더 ──
-# server.py 와 별개로 .env 를 직접 읽는 경로가 있었다. 환경변수만 지우면
-# 빗썸 키는 사라지는데 Gemini 키만 살아 들어온다 — 실제로 그랬다.
-r = run(f"""
-import runpy, sys
-sys.path.insert(0, {APP_DIR!r})
-mod = runpy.run_path({SCRIPT!r})
-mod['isolate']()
-mod['block_live_calls']()
-from services import gemini_service as g
-print('CONFIGURED' if g.gemini_keystore.configured else 'CLEAN', g.gemini_keystore.source)
-""")
-check("gemini_service 도 .env 를 직접 읽지 않는다",
-      "CLEAN" in r.stdout, (r.stdout.strip() or r.stderr[:60]))
 
 # ── 차단이 뚫려 있으면? ──
 r = run(f"""

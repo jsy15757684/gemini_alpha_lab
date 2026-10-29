@@ -30,10 +30,10 @@ class StrategyParams:
     splitCount: int = 40          # 분할 매수 횟수 (20~60, 기본 40분할)
     targetProfitPct: float = 10.0 # 무한매수 목표 익절 수익률 (+10.0%)
     quarterCutPct: float = 25.0   # 40회차 소진 시 쿼터 매도 방어율 (25%)
-    raoerUseAi: bool = False      # ✨ Gemini AI 스마트 무한매수 (동적 비중 + 가변 익절)
-    raoerMinProfitPct: float = 5.0    # 약세장 조기 익절선 (%)
-    raoerMaxProfitPct: float = 20.0   # 강세장 최대 익절선 (%)
-    raoerMaxMultiplier: float = 2.0   # 저점 과매도 시 집중 매수 최대 배수 (1.5~2.5배)
+    # 1회 매수금 상한 배수(기본 분할금 × 이 값) · 추세 조절 boost_up 배수.
+    # Gemini AI 동적 조절(raoerUseAi · 가변 익절)은 2026-10-30 에 뺐다 — 백테스트에서 효과가
+    # 갈리지 않았고 하락장에서 배수를 키워 현금을 빨리 소진시켰다. 저장된 옛 값은 from_dict 가 무시한다.
+    raoerMaxMultiplier: float = 2.0
 
     # 추세에 따라 회차 매수를 조절한다. 기준은 재는 것이 아니라 먼저 정했다 —
     # 과거 데이터로 문턱을 고르면 그 순간 과최적화다(192조합 실험이 보여줬다).
@@ -92,14 +92,6 @@ class StrategyParams:
     macdFast: int = 12
     macdSlow: int = 26
     macdSignal: int = 9
-
-    # ── Gemini AI 퀀트 검증 파라미터 ──
-    useGemini: bool = True
-    # 화면에서 고를 수 있는 것은 "ai_only" 뿐이다. "hybrid" 는 제거했고
-    # 서버가 배포를 거부한다 — 예전에 만든 봇의 복원만 위해 값은 남겨둔다.
-    geminiMode: str = "ai_only"    # "ai_only" (순수 AI) | "hybrid" (제거됨)
-    geminiMinConfidence: int = 60  # 퀀트 최적 신뢰도 (60% 이상 승인)
-    geminiModel: str = "gemini-flash-latest"
 
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "StrategyParams":
@@ -187,18 +179,14 @@ class StrategyParams:
         if self.exhaustMode not in ("split", "quarter"):
             self.exhaustMode = "split"
         if self.locMode == "excel":
-            # 무매법 엑셀 방식은 목표 · 1회분할금이 고정이다 — 기어 · AI 가 켜져 있다고 보이지 않게 끈다
+            # 무매법 엑셀 방식은 목표 · 1회분할금이 고정이다 — 기어가 켜져 있다고 보이지 않게 끈다
             self.useMacroGear = False
-            self.raoerUseAi = False
         if self.strategyType not in ("quant_ai", "raoer_infinite"):
             self.strategyType = "quant_ai"
         self.splitCount = max(5, min(100, self.splitCount))
         self.targetProfitPct = max(0.5, min(100.0, self.targetProfitPct))
         self.quarterCutPct = max(5.0, min(50.0, self.quarterCutPct))
-        # AI 배수 · 가변 익절은 1회 매수금 상한과 AI 판단 범위에 그대로 들어간다
         self.raoerMaxMultiplier = max(1.0, min(3.0, self.raoerMaxMultiplier))
-        self.raoerMinProfitPct = max(0.5, min(50.0, self.raoerMinProfitPct))
-        self.raoerMaxProfitPct = max(self.raoerMinProfitPct, min(100.0, self.raoerMaxProfitPct))
         # 매수선이 매도선보다 높으면 사자마자 파는 무한 루프가 된다.
 
         self.rsiPeriod = max(2, min(100, self.rsiPeriod))
@@ -217,9 +205,6 @@ class StrategyParams:
         self.macdSlow = max(3, min(200, self.macdSlow))
         self.macdFast = max(2, min(self.macdSlow - 1, self.macdFast))
         self.macdSignal = max(2, min(100, self.macdSignal))
-        self.geminiMinConfidence = max(0, min(100, self.geminiMinConfidence))
-        if self.geminiMode not in ("ai_only", "hybrid"):
-            self.geminiMode = "ai_only"
 
         # ENTRY_RULES 는 파일 하단에 정의된다. validated() 는 인스턴스 생성 후에만
         # 호출되므로 이 시점에는 이미 모듈이 끝까지 로드돼 있다.

@@ -22,7 +22,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
 from services import backtest, bithumb, jsonfile, botstore, tradelog
-from services import gemini_service, namuh, macro_regime, muma_sheet
+from services import namuh, macro_regime, muma_sheet
 from services.namuh import NamuhAccount, NAMUH_STOCKS
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 from services.envconf import env_float, env_int
@@ -131,7 +131,6 @@ class TradingBot:
         self.last_price_at = 0.0
         self.last_rsi: Optional[float] = None
         self.last_decision = "가동 대기"
-        self.last_ai_analysis: Optional[Dict[str, Any]] = None
         self.last_macro_regime: Optional[Dict[str, Any]] = None
         self.price_failures = 0
 
@@ -261,10 +260,7 @@ class TradingBot:
                                  f"${self.initial_krw / self.params.splitCount:,.2f} 고정 · 1.15 LOC + 평단 LOC + 사다리 · "
                                  f"평단 +{self.params.targetProfitPct}% 전량 매도 · 40회/현금 소진 때 "
                                  + ("매일 1회분 스플릿(장중 매도 → 종가 재매수)" if self.params.exhaustMode == "split"
-                                    else f"쿼터손절 {self.params.quarterCutPct:.0f}%") + " (기어 · AI 없음)")
-            elif self.params.raoerUseAi:
-                self.log("INFO", f"🔄✨ [{v_title} AI 스마트 무한매수] {self.params.splitCount}분할 ({formula_desc} · AI 동적 0.5x~{self.params.raoerMaxMultiplier}x) | "
-                                 f"가변 익절 +{self.params.raoerMinProfitPct}%~+{self.params.raoerMaxProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
+                                    else f"쿼터손절 {self.params.quarterCutPct:.0f}%") + " (기어 없음)")
             else:
                 self.log("INFO", f"🔄 [{v_title} 무한매수법] {self.params.splitCount}분할 매수 ({formula_desc}) · "
                                  f"목표 익절 +{self.params.targetProfitPct}% · 리버스 쿼터방어 {self.params.quarterCutPct:.0f}%")
@@ -348,8 +344,6 @@ class TradingBot:
         candle_ttl = CANDLE_REFRESH_SECONDS.get(self.interval, 600)
         bars: List[Dict[str, Any]] = []
         bars_at = 0.0
-        last_ai_check = 0.0
-        ai_check_interval = 30.0  # AI 분석 갱신 주기 (30초)
 
         while self.is_running:
             try:
@@ -442,28 +436,6 @@ class TradingBot:
                         except Exception as e:
                             logger.warning(f"[{self.bot_id}] 매크로 국면 조회 실패: {e}")
 
-                    if (self.params.raoerUseAi and not self._excel()
-                            and (now - last_ai_check >= float(candle_ttl) or not self.last_ai_analysis)):
-                        try:
-                            ai_res = gemini_service.analyze_raoer_context(
-                                coin=self.coin,
-                                interval=self.interval,
-                                bars=bars,
-                                turn=max(1, self.pos.turn),
-                                split_count=self.params.splitCount,
-                                current_price=price,
-                                entry_price=self.pos.entryPrice if self.pos.open else None,
-                                min_profit_pct=self.params.raoerMinProfitPct,
-                                max_profit_pct=self.params.raoerMaxProfitPct,
-                                max_mult=self.params.raoerMaxMultiplier,
-                            )
-                            if ai_res.get("success"):
-                                self.last_ai_analysis = ai_res
-                                last_ai_check = now
-                                self.log("INFO", f"🤖 [AI 무한매수 분석] 비중 {ai_res.get('sizingMultiplier')}x 배수 | 가변 목표 +{ai_res.get('dynamicTargetProfitPct')}% ({ai_res.get('reason')})")
-                        except Exception as e:
-                            logger.warning(f"[{self.bot_id}] AI 무한매수 분석 실패: {e}")
-
                     target_tp = self.params.targetProfitPct
                     # 매크로 기어 목표 익절률 반영
                     if self.params.useMacroGear and self.last_macro_regime:
@@ -471,17 +443,15 @@ class TradingBot:
                         if rec_tp:
                             target_tp = float(rec_tp)
 
-                    if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
-                        target_tp = self.last_ai_analysis.get("dynamicTargetProfitPct", target_tp)
                     if self._excel():
-                        target_tp = self.params.targetProfitPct     # 엑셀: 목표 고정 (기어 · AI 를 쓰지 않는다)
+                        target_tp = self.params.targetProfitPct     # 엑셀: 목표 고정 (기어를 쓰지 않는다)
 
                     # 1) 목표 익절선 도달 시 즉시 전량 익절
                     #    (엑셀 방식 실계좌는 지정가 매도가 걸려 있으면 그 주문이 판다 — 두 번 팔지 않는다)
                     if self.pos.open and not (self.mode == "LIVE" and self._excel() and self.sell_order):
                         pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
                         if pnl_pct >= target_tp:
-                            ai_note = f" (가변목표 +{target_tp:.1f}%)" if (self.params.raoerUseAi or self.params.useMacroGear) else ""
+                            ai_note = f" (가변목표 +{target_tp:.1f}%)" if self.params.useMacroGear else ""
                             self.last_decision = f"무한매수 목표 익절 (+{pnl_pct:.2f}% ≥ +{target_tp:.1f}%){ai_note}"
                             self._exit(price, self.last_decision)
                             # 이 봉은 소비했다고 기록한다. 안 그러면 다음 틱(수초 뒤)에
@@ -555,9 +525,6 @@ class TradingBot:
                             sizing_mult *= gear_mult
                             gear_name = self.last_macro_regime.get("gearName", "")
                             ai_reason += f" [{gear_name} {gear_mult}x]"
-                        if self.params.raoerUseAi and self.last_ai_analysis and self.last_ai_analysis.get("success"):
-                            sizing_mult *= self.last_ai_analysis.get("sizingMultiplier", 1.0)
-                            ai_reason += f" [AI {self.last_ai_analysis.get('sizingMultiplier')}x: {self.last_ai_analysis.get('reason', '')}]"
 
                         # 추세 조절. 판정 기준은 strategy.py 에 적어둔 대로 고정이고,
                         # 백테스트(backtest._trend_of)와 같은 정의를 쓴다.
@@ -644,9 +611,8 @@ class TradingBot:
                     else:
                         if self.pos.open:
                             pnl_pct = (price - self.pos.entryPrice) / self.pos.entryPrice * 100.0
-                            ai_badge = f" · AI 목표 +{target_tp:.1f}%" if self.params.raoerUseAi else ""
                             ver_label = "V4 " if self.params.raoerVersion == "v4" else ""
-                            self.last_decision = f"{ver_label}무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%{ai_badge})"
+                            self.last_decision = f"{ver_label}무한매수 진행 중 (T={self.pos.turn}/{self.params.splitCount}, 평단 {self.pos.entryPrice:,.0f}원, 손익 {pnl_pct:+.2f}%)"
                         else:
                             self.last_decision = "무한매수 다음 캔들 1회차 대기 중"
 
@@ -2156,7 +2122,6 @@ class TradingBot:
             "priceAgeSec": round(time.time() - self.last_price_at, 1) if self.last_price_at else None,
             "pricePollSec": PRICE_POLL_SEC,
             "lastDecision": self.last_decision,
-            "lastAiAnalysis": self.last_ai_analysis,
             "macroRegime": self.last_macro_regime,
             "priceFailures": self.price_failures,
             "params": self.params.to_dict(),

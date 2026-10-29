@@ -195,16 +195,11 @@ function readParams(prefix) {
       p.splitCount = parseInt($("bp_splitCount")?.value || "40", 10);
       p.targetProfitPct = parseFloat($("bp_targetProfitPct")?.value || "10.0");
       p.quarterCutPct = parseFloat($("bp_quarterCutPct")?.value || "25.0");
-      p.raoerUseAi = $("bp_raoerUseAi") ? $("bp_raoerUseAi").checked : false;
-      p.raoerMinProfitPct = parseFloat($("bp_raoerMinProfitPct")?.value || "5.0");
-      p.raoerMaxProfitPct = parseFloat($("bp_raoerMaxProfitPct")?.value || "20.0");
-      p.raoerMaxMultiplier = parseFloat($("bp_raoerMaxMultiplier")?.value || "2.0");
       p.raoerTrendMode = $("bp_raoerTrendMode")?.value || "off";
       p.useMacroGear = $("bp_useMacroGear") ? $("bp_useMacroGear").checked : true;
       p.locMode = $("bp_locMode")?.value || "half_half";
     } else {
       p.strategyType = "quant_ai";
-      p.useGemini = false;
     }
   } else if (prefix === "tp_") {
     // 백테스트는 무한매수만 남았다 (지표 계열을 실매매에서 뺐으니 여기서도 뺐다).
@@ -403,8 +398,7 @@ async function deployBot() {
       summary.push(`1회분할금 : $${(Number($("botCapital").value || 0) / params.splitCount).toFixed(2)} (고정) · 기어 · AI 안 씀`);
     } else {
       if (isStock) summary.push(`매크로 기어: ${params.useMacroGear ? "켬 (목표·배수를 국면이 덮어씀)" : "끔"}`);
-      if (params.raoerUseAi) summary.push(`AI 동적   : 켬`);
-    }
+      }
   }
   summary.push("");
   summary.push(mode === "LIVE"
@@ -464,7 +458,7 @@ function botCard(b) {
     isNamuh ? "나무증권" : "빗썸",
     b.interval,
     b.strategyType === "raoer_infinite"
-      ? `무한매수 ${(b.raoerVersion || b.params?.raoerVersion || "v4").toUpperCase()}${b.params?.raoerUseAi ? " · AI" : ""}`
+      ? `무한매수 ${(b.raoerVersion || b.params?.raoerVersion || "v4").toUpperCase()}`
       : "",
   ].filter(Boolean).join(" · ");
 
@@ -994,178 +988,10 @@ function sparkline(values, label, forceMin, forceMax) {
     </svg></div>`;
 }
 
-// ───────── Gemini AI ─────────
-
-async function loadGeminiScan() {
-  const btn = $("geminiScanBtn");
-  const statusEl = $("geminiScanStatus");
-  const host = $("geminiCards");
-  const interval = $("geminiScanInterval") ? $("geminiScanInterval").value : "1h";
-
-  btn.disabled = true;
-  btn.textContent = "AI 분석 중…";
-  statusEl.innerHTML = `<span class="muted">Google Gemini AI가 5개 코인을 정밀 분석하고 있습니다. 잠시만 기다려주세요…</span>`;
-
-  try {
-    const data = await api(`/api/gemini/scan?interval=${interval}`);
-    statusEl.innerHTML = `<span class="muted">스캔 완료 시각: ${escapeHtml(data.scanned_at)} (모델: <code>${escapeHtml(data.model)}</code> · ${escapeHtml(interval)} 기준)</span>`;
-    
-    if (!data.results || !data.results.length) {
-      host.innerHTML = `<div class="empty">분석 결과가 없습니다.</div>`;
-      return;
-    }
-
-    host.innerHTML = data.results.map(r => {
-      const isBuy = r.action === "BUY";
-      const isSell = r.action === "SELL";
-      const badgeCls = isBuy ? "gemini-badge-BUY" : isSell ? "gemini-badge-SELL" : "gemini-badge-HOLD";
-      const barColor = isBuy ? "var(--up)" : isSell ? "var(--down)" : "var(--muted)";
-      const cardCls = isBuy ? "action-BUY" : isSell ? "action-SELL" : "action-HOLD";
-      const conf = r.confidence || 0;
-
-      const reasonsHtml = (r.reasons || []).map(re => `<li>${escapeHtml(re)}</li>`).join("");
-
-      return `
-        <div class="gemini-card ${cardCls}">
-          <div class="gemini-card-head">
-            <div>
-              <span class="gemini-coin-title">${escapeHtml(r.name || r.coin)} <span class="muted small">(${escapeHtml(r.coin)})</span></span>
-              <div class="muted small" style="margin-top:2px;">현재가: <b class="mono" style="color:var(--text);">${won(r.current_price)}원</b></div>
-            </div>
-            <div class="gemini-action-badge ${badgeCls}">${escapeHtml(r.action)}</div>
-          </div>
-
-          <div class="gemini-conf-wrap">
-            <div style="display:flex; justify-content:space-between; font-size:.78rem;">
-              <span class="stat-k">AI 신뢰도</span>
-              <span class="mono" style="font-weight:700; color:${barColor};">${conf}%</span>
-            </div>
-            <div class="gemini-conf-bar-bg">
-              <div class="gemini-conf-bar-fill" style="width:${conf}%; background:${barColor};"></div>
-            </div>
-          </div>
-
-          <div class="gemini-summary">
-            ${escapeHtml(r.summary || "분석 요약 없음")}
-          </div>
-
-          <ul class="gemini-reasons">
-            ${reasonsHtml}
-          </ul>
-
-          <div class="gemini-targets">
-            <div>권장 익절: <b class="up">+${r.target_profit_pct || 3.5}%</b></div>
-            <div>권장 손절: <b class="down">-${r.stop_loss_pct || 2.0}%</b></div>
-          </div>
-
-          <div class="gemini-card-foot">
-            <button class="btn btn-ghost btn-sm" id="btn-reanalyze-${r.coin}" onclick="analyzeSingleCoin('${r.coin}', '${interval}')" title="이 코인만 1초 만에 단독 재분석">
-              🔄 단독 분석
-            </button>
-          </div>
-        </div>
-      `;
-    }).join("");
-
-  } catch (err) {
-    statusEl.innerHTML = `<span class="down">스캔 실패: ${escapeHtml(err.message)}</span>`;
-    host.innerHTML = `<div class="alert alert-error">Gemini AI 스캔 중 오류가 발생했습니다: ${escapeHtml(err.message)}<br><small>Gemini API 키가 올바르게 설정되어 있는지 확인하세요.</small></div>`;
-  } finally {
-    btn.disabled = false;
-    btn.textContent = "⚡ 전체 AI 스캔";
-  }
-}
-
-async function analyzeSingleCoin(coin, interval) {
-  const btn = $(`btn-reanalyze-${coin}`);
-  if (btn) { btn.disabled = true; btn.textContent = "분석 중…"; }
-  try {
-    const res = await api("/api/gemini/analyze", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ coin, interval, forceRefresh: true })
-    });
-    // 스캔 결과 새로고침 없이 즉시 완료 안내
-    await loadGeminiScan();
-  } catch (err) {
-    alert(`${coin} 단독 분석 실패: ${err.message}`);
-  } finally {
-    if (btn) { btn.disabled = false; btn.textContent = "🔄 단독 분석"; }
-  }
-}
-
-
-async function loadGeminiStatus() {
-  try {
-    const s = await api("/api/gemini/status");
-    $("geminiStatus").innerHTML = [
-      ["연동 상태", s.configured ? "등록됨" : "미등록"],
-      ["API 키", escapeHtml(s.maskedKey || "-")],
-      ["보관 위치", s.source === "env" ? "환경변수 (.env)" : s.source === "disk" ? "서버 파일 (data/gemini_key.json)" : "-"],
-      ["기본 모델", `<code>${escapeHtml(s.model)}</code>`],
-    ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("");
-
-    if (s.model && $("geminiModelSelect")) {
-      $("geminiModelSelect").value = s.model;
-    }
-    if (s.configured && s.readOnly) {
-      $("geminiKeyForm").classList.add("hidden");
-    } else {
-      $("geminiKeyForm").classList.remove("hidden");
-    }
-    if (s.configured && !s.readOnly && $("clearGeminiBtn")) {
-      $("clearGeminiBtn").classList.remove("hidden");
-    } else if ($("clearGeminiBtn")) {
-      $("clearGeminiBtn").classList.add("hidden");
-    }
-  } catch (e) {
-    console.error("Gemini 상태 조회 실패:", e);
-  }
-}
-
-async function geminiKeyAction(save) {
-  const apiKey = $("geminiApiKeyInput").value.trim();
-  const model = $("geminiModelSelect").value;
-  if (!apiKey) return setAlert($("geminiKeyResult"), "Gemini API Key 를 입력하세요.");
-  const btn = save ? $("saveGeminiBtn") : $("testGeminiBtn");
-  btn.disabled = true;
-  setAlert($("geminiKeyResult"), null);
-  try {
-    const r = await api(save ? "/api/gemini/save" : "/api/gemini/test", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey, model }),
-    });
-    if (save || r.success) {
-      setAlert($("geminiKeyResult"), `연결 성공 — ${r.message || "정상 작동 확인"}` + (save ? " · 저장되었습니다." : ""), "ok");
-      $("geminiApiKeyInput").value = "";
-      await loadGeminiStatus();
-    } else {
-      setAlert($("geminiKeyResult"), r.message);
-    }
-  } catch (e) {
-    setAlert($("geminiKeyResult"), e.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
-
-async function clearGeminiKey() {
-  if (!confirm("저장된 Gemini API 키를 삭제하시겠습니까?")) return;
-  try {
-    await api("/api/gemini/clear", { method: "POST" });
-    setAlert($("geminiKeyResult"), "Gemini API 키가 삭제되었습니다.", "ok");
-    await loadGeminiStatus();
-  } catch (e) {
-    setAlert($("geminiKeyResult"), e.message);
-  }
-}
-
 function toggleStrategyUI() {
   const type = $("botStrategyType")?.value || "raoer_v4";
   const raoerOpts = $("raoerBotOptions");
-  const gemOptions = $("geminiBotOptions");
   const quantSettings = $("quantBotSettings");
-  const raoerAiSub = $("raoerAiSubOptions");
-  const raoerUseAiCheck = $("bp_raoerUseAi");
 
   // 캔들 간격 칸의 표시 여부는 체결 방식(원전 LOC 는 거래일 단위라 안 씀)이
   // 정한다. renderLocModeHint 가 그 판단을 한 곳에서 한다.
@@ -1173,16 +999,11 @@ function toggleStrategyUI() {
 
   const isRaoer = (type === "raoer_v4" || type === "raoer_v1");
   if (raoerOpts) raoerOpts.classList.toggle("hidden", !isRaoer);
-  // Gemini 매매 전략을 제거해 이 설정을 쓰는 전략이 없다. 항상 감춘다.
-  if (gemOptions) gemOptions.classList.add("hidden");
   // 진입 규칙·지표 설정을 쓰는 전략이 이 탭에 더는 없다. '전통 기술적 지표'
   // 와 '퀀트 하이브리드' 를 뺐고, 'AI 전용' 은 지표 조건을 보지 않는다
   // (trader.py 의 ai_only 분기는 decide() 를 부르지 않는다).
   // 보이면 '설정했는데 반영이 안 된다' 가 되므로 항상 감춘다.
   if (quantSettings) quantSettings.classList.add("hidden");
-  if (raoerAiSub && raoerUseAiCheck) {
-    raoerAiSub.classList.toggle("hidden", !raoerUseAiCheck.checked || !isRaoer);
-  }
 }
 
 // ───────── 계정 ─────────
@@ -1675,23 +1496,7 @@ async function boot() {
     $("botStrategyType").onchange = toggleStrategyUI;
     if ($("bp_locMode")) $("bp_locMode").onchange = renderLocModeHint;
   }
-  if ($("bp_raoerUseAi")) {
-    $("bp_raoerUseAi").onchange = toggleStrategyUI;
-  }
   toggleStrategyUI();
-  if ($("geminiMinConf")) {
-    $("geminiMinConf").oninput = () => {
-      $("geminiConfVal").textContent = $("geminiMinConf").value + "%";
-    };
-  }
-
-  // Gemini AI 스캐너 바인딩
-  if ($("geminiScanBtn")) $("geminiScanBtn").onclick = loadGeminiScan;
-  if ($("geminiScanInterval")) $("geminiScanInterval").onchange = loadGeminiScan;
-  if ($("testGeminiBtn")) $("testGeminiBtn").onclick = () => geminiKeyAction(false);
-  if ($("saveGeminiBtn")) $("saveGeminiBtn").onclick = () => geminiKeyAction(true);
-  if ($("clearGeminiBtn")) $("clearGeminiBtn").onclick = clearGeminiKey;
-
   // 매매 일지 바인딩
   if ($("refreshTradesBtn")) $("refreshTradesBtn").onclick = loadTradeHistory;
   if ($("exportTradesCsvBtn")) $("exportTradesCsvBtn").onclick = exportTradesToCsv;
@@ -1779,12 +1584,11 @@ async function boot() {
     tab.classList.add("active");
     document.querySelectorAll(".panel").forEach(p => p.classList.add("hidden"));
     $(tab.dataset.panel).classList.remove("hidden");
-    if (tab.dataset.panel === "panel-gemini") loadGeminiScan();
     if (tab.dataset.panel === "panel-trades") loadTradeHistory();
     if (tab.dataset.panel === "panel-muma") loadMuma();
     if (tab.dataset.panel === "panel-scalper") loadScalper();
     if (tab.dataset.panel === "panel-chart") loadChart();
-    if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadGeminiStatus(); loadEgressIp(); }
+    if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadEgressIp(); }
   });
 
   if ($("refreshMumaBtn")) $("refreshMumaBtn").onclick = () => loadMuma();
@@ -1804,7 +1608,7 @@ async function boot() {
   if ($("usMarketPill")) $("usMarketPill").onclick = () => loadUsMarketStatus();
   if ($("macroGearPill")) $("macroGearPill").onclick = () => loadMacroRegime();
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadMacroRegime(), loadGeminiStatus(), loadGeminiScan()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadMacroRegime()]);
   timers.push(
     setInterval(loadPrices, 10000),
     setInterval(loadBots, 8000),

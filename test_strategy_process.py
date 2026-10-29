@@ -343,14 +343,17 @@ check("USDT 환차익·차익거래가 코드에서 사라졌다",
       and "usdt" not in open("services/trader.py", encoding="utf-8").read()
       and "arbitrage" not in open("static/js/app.js", encoding="utf-8").read(),
       "server.py · trader.py · app.js 모두 0건")
-check("서버가 useGemini 배포를 막는다",
-      'get("useGemini")' in _srv2, "Gemini 전용 매매 거부")
-check("무한매수의 AI 스마트 조절은 그대로 살아 있다",
-      "analyze_raoer_context" in _trd and "raoerUseAi" in _trd,
-      "실전 봇이 쓰는 기능")
-check("Gemini AI 연구소(스캐너)는 남아 있다",
-      "gemini/scan" in _js and "scan_all_coins" in open("server.py", encoding="utf-8").read(),
-      "매매 전략만 뺐다")
+# Gemini 는 2026-10-30 에 통째로 뺐다 (AI 스마트 조절 · AI 연구소 · 키 설정)
+check("Gemini 가 엔진 · 서버 · 화면에서 모두 사라졌다",
+      not os.path.exists("services/gemini_service.py")
+      and "analyze_raoer_context" not in _trd and "raoerUseAi" not in _trd
+      and "/api/gemini" not in _srv2 and "gemini_keystore" not in _srv2
+      and "/api/gemini" not in _js and "panel-gemini" not in _html and "bp_raoerUseAi" not in _html,
+      "gemini_service.py 없음 · /api/gemini 0건 · AI 연구소 탭 없음")
+check("저장된 옛 AI 설정은 무시한다 (봇 복원이 깨지지 않는다)",
+      not hasattr(StrategyParams.from_dict({"raoerUseAi": True, "raoerMinProfitPct": 5, "useGemini": True,
+                                            "geminiMode": "hybrid"}), "raoerUseAi"),
+      "from_dict 가 모르는 칸을 버린다")
 check("옛 VR 체결 기록은 일지에서 여전히 읽힌다",
       "BUY_VR" in _js and "SELL_VR" in _js,
       "지난 장부를 못 읽게 만들지 않는다")
@@ -364,14 +367,6 @@ check("화면 선택지에 technical / gemini_hybrid 가 없다",
       'value="technical"' not in _html and 'value="gemini_hybrid"' not in _html
       and "gemini_hybrid" not in _js,
       "index.html · app.js 모두 0건")
-check("Gemini 기본 모드가 ai_only 다",
-      StrategyParams().geminiMode == "ai_only", StrategyParams().geminiMode)
-check("예전 hybrid 봇의 값은 보존한다 (복원용)",
-      StrategyParams.from_dict({"geminiMode": "hybrid"}).geminiMode == "hybrid", "hybrid")
-_srv = open("server.py", encoding="utf-8").read()
-check("서버가 hybrid 배포를 거부한다",
-      'get("geminiMode") == "hybrid"' in _srv and "제거됐습니다" in _srv,
-      "deploy 에 가드 있음")
 
 print()
 print("── 무한매수 추세 조절 (raoerTrendMode) ──")

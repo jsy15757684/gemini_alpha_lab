@@ -6,8 +6,8 @@
 UI 를 눈으로 확인하려고 개발 기계에서 서버를 띄운 적이 있다. 그때
 `os.environ.pop()` 으로 키를 지우고 시작했는데도 실계좌 인증 호출이 나갔다.
 server.py 가 import 시점에 `.env` 를 읽어 키를 다시 주입하기 때문이다.
-빗썸은 IP 화이트리스트가 막아줬지만, Gemini 는 IP 제한이 없어 호출이
-그대로 나가고 할당량을 썼다.
+빗썸은 IP 화이트리스트가 막아줬지만, (그때 쓰던) Gemini 는 IP 제한이 없어
+호출이 그대로 나가고 할당량을 썼다. Gemini 기능은 2026-10-30 에 뺐다.
 
 그래서 '지우는' 방식을 버리고 **네 겹으로 막는다.** 어느 하나가 뚫려도
 나머지가 남는다.
@@ -15,7 +15,7 @@ server.py 가 import 시점에 `.env` 를 읽어 키를 다시 주입하기 때�
   1) APP_SKIP_DOTENV=1  — server.py 가 .env 를 아예 읽지 않는다
   2) 환경변수 제거      — 셸에 남아 있던 키도 지운다
   3) 사전 점검(fail closed) — 그래도 키가 남아 있으면 **기동하지 않는다**
-  4) 호출 경로 차단     — 빗썸 인증 메서드와 Gemini 호출을 예외로 바꾼다.
+  4) 호출 경로 차단     — 빗썸 · 나무증권 인증 메서드를 예외로 바꾼다.
                           키가 어떻게든 들어와도 요청 자체가 나갈 수 없다
 
 데이터도 임시 디렉터리로 돌려, 로컬 실행이 운영·개발 장부를 건드리지 않는다.
@@ -78,7 +78,7 @@ def block_live_calls() -> None:
     키를 지우는 것만으로는 부족하다. 지우는 데 실패한 적이 있다.
     여기서 막으면 키가 들어와도 요청이 나갈 수 없다.
     """
-    from services import bithumb, gemini_service, keystore
+    from services import bithumb, keystore
 
     def refuse(what):
         def _inner(*_a, **_kw):
@@ -94,7 +94,6 @@ def block_live_calls() -> None:
     # 디스크에 저장된 키도 읽지 않도록 경로를 빈 임시 폴더로 돌린다.
     keys_dir = tempfile.mkdtemp(prefix="ui-preview-keys-")
     keystore.KEYS_FILE = os.path.join(keys_dir, "keys.json")
-    gemini_service.GEMINI_KEY_FILE = os.path.join(keys_dir, "gemini_key.json")
 
     # 나무증권: 키 파일 · 토큰 파일을 빈 폴더로 돌리고, 이미 올라온 키도 비운다.
     # 그다음 토큰 발급 · 주문 통로를 예외로 바꾼다.
@@ -106,11 +105,6 @@ def block_live_calls() -> None:
     for name in ("get_token", "market_buy", "market_sell", "cancel_order", "get_balance", "test_connection"):
         setattr(namuh.NamuhAccount, name, refuse(f"나무증권 API({name})"))
 
-    # Gemini: 할당량을 쓰는 호출 전부
-    for name in ("analyze_coin", "scan_all_coins", "analyze_raoer_context"):
-        if hasattr(gemini_service, name):
-            setattr(gemini_service, name, refuse(f"Gemini API({name})"))
-
 
 def verify() -> None:
     """차단이 실제로 걸렸는지 확인한다. 하나라도 뚫리면 기동하지 않는다.
@@ -118,7 +112,7 @@ def verify() -> None:
     **server.py 를 import 한 뒤에 부른다.** import 시점에 .env 를 읽어 키를
     다시 주입하는 것이 바로 지난번에 뚫린 지점이라, 그 뒤에 봐야 의미가 있다.
     """
-    from services import bithumb, gemini_service, keystore
+    from services import bithumb, keystore
 
     leaked = [k for k in SECRET_ENV if os.environ.get(k)]
     if leaked:
@@ -141,12 +135,6 @@ def verify() -> None:
         _fail(f"빗썸 키스토어가 실계좌 키를 들고 있습니다 "
               f"({keystore.keystore.account.masked_key()}, 출처 {keystore.keystore.source})")
 
-    # gemini_service 는 server.py 와 별개로 .env 를 직접 읽는 두 번째 경로가
-    # 있었다. 환경변수만 보면 놓친다 — 키스토어 자체를 확인한다.
-    if gemini_service.gemini_keystore.configured:
-        _fail(f"Gemini 키스토어가 키를 들고 있습니다 "
-              f"(출처 {gemini_service.gemini_keystore.source})")
-
     acct = bithumb.BithumbAccount("dummy-key", "dummy-secret")
     for call, label in ((lambda: acct.get_balance(), "빗썸 잔고"),
                         (lambda: acct.market_buy("BTC", 10000), "빗썸 매수"),
@@ -160,20 +148,7 @@ def verify() -> None:
             _fail(f"{label} 가 Blocked 가 아닌 예외로 실패했습니다 ({e!r}) — 차단이 아닙니다")
         _fail(f"{label} 호출이 막히지 않았습니다")
 
-    for name in ("analyze_coin", "scan_all_coins", "analyze_raoer_context"):
-        fn = getattr(gemini_service, name, None)
-        if fn is None:
-            continue
-        try:
-            fn("BTC")
-        except Blocked:
-            continue
-        except Exception as e:
-            _fail(f"Gemini {name} 가 Blocked 가 아닌 예외로 실패했습니다 ({e!r})")
-        _fail(f"Gemini {name} 호출이 막히지 않았습니다")
-
     print("  ✅ 빗썸 인증 API 4종 차단")
-    print("  ✅ Gemini 호출 3종 차단")
     print("  ✅ 나무증권 토큰 · 주문 · 국내 시세 · 실시간 차단")
     print("  ✅ 환경변수에 실키 없음")
     print("  ✅ .env 미로드 (APP_SKIP_DOTENV=1)")

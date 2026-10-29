@@ -36,7 +36,7 @@ def check(name, ok, detail=""):
 
 def params(**k):
     base = dict(strategyType="raoer_infinite", raoerVersion="v4", splitCount=40, targetProfitPct=10.0,
-                locMode="excel", feePct=0.0, useMacroGear=True, raoerUseAi=True)
+                locMode="excel", feePct=0.0, useMacroGear=True)
     base.update(k)
     return strategy.StrategyParams.from_dict(base)          # 배포 · 복원과 같은 길 (검증 포함)
 
@@ -73,7 +73,7 @@ def bot(fa, mode="LIVE", seed=4000.0, **pk):
 print("── 설정 ──")
 p = params()
 check("locMode='excel' 을 받는다", p.locMode == "excel", p.locMode)
-check("엑셀 방식이면 매크로 기어 · AI 를 끈다 (목표 · 1회분할금 고정)", not p.useMacroGear and not p.raoerUseAi, "")
+check("엑셀 방식이면 매크로 기어를 끈다 (목표 · 1회분할금 고정)", not p.useMacroGear, "")
 check("다른 방식은 기어 설정을 그대로 둔다", params(locMode="half_half").useMacroGear, "")
 
 print("── 오늘 낼 LOC ──")
@@ -191,7 +191,7 @@ with contextlib.redirect_stdout(io.StringIO()):
 rec = read_records(path, "bots", "")[0]
 m = trader.TradingBot.restore(rec, None, FakeAcct(qty=1.0, avg=82.26))
 check("--apply: 엑셀 방식 · 기어 · AI 끔 · 이월 0 · 오늘 LOC 다시 걸 수 있게",
-      rc == 0 and m._excel() and not m.params.useMacroGear and not m.params.raoerUseAi
+      rc == 0 and m._excel() and not m.params.useMacroGear
       and m.budget_carryover == 0.0 and m.loc_session is None, "")
 check("장부(수량 · 평단 · 회차 · 현금)는 그대로", (m.pos.units, m.pos.entryPrice, m.pos.turn, m.cash)
       == (1.0, 82.26, 1, 3917.71), "")

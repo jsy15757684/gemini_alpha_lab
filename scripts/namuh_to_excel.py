@@ -3,7 +3,7 @@
 
 장부(보유 수량 · 평단 · 회차 · 현금)는 그대로 두고 바꾸는 것은 이것뿐이다.
   · params.locMode      → "excel"
-  · params.useMacroGear → False,  params.raoerUseAi → False
+  · params.useMacroGear → False
   · budgetCarryover     → 0       (엑셀은 1회분할금이 고정이라 이월이 없다)
   · locSession          → 비움    (오늘 LOC 를 새 방식으로 걸 수 있게)
 
@@ -43,7 +43,7 @@ def migrate(rec: dict) -> list:
     """rec 를 고치고 바뀐 칸을 [(이름, 전, 후)] 로 돌려준다."""
     p = rec.setdefault("params", {})
     changes = []
-    for key, new in (("locMode", "excel"), ("useMacroGear", False), ("raoerUseAi", False)):
+    for key, new in (("locMode", "excel"), ("useMacroGear", False)):
         if p.get(key) != new:
             changes.append((f"params.{key}", p.get(key), new))
             p[key] = new

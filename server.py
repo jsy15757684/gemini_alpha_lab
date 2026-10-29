@@ -57,10 +57,9 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, gemini_service, spread_recorder, namuh, muma_sheet, tradelog, scalper
+from services import auth, backtest, bithumb, spread_recorder, namuh, muma_sheet, tradelog, scalper
 from services import roles, worker_client
 from services.worker_client import WorkerDown
-from services.gemini_service import gemini_keystore
 from services.keystore import keystore, namuh_keystore
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, LiquidationFailed, bot_manager
@@ -190,8 +189,6 @@ def _startup_log():
             logger.warning(f"나무증권 계좌 종류 확인 실패: {e}")
     else:
         logger.info("나무증권 키: 미등록")
-    gs = gemini_keystore.status()
-    logger.info(f"Gemini 키: {'등록됨(' + gs['source'] + ', ' + gs['model'] + ')' if gs['configured'] else '미등록'}")
 
     # 저장된 봇을 복원한다. LIVE 포지션은 거래소 실제 보유량과 대조한 뒤에만 재가동한다.
     global RESTORE_SUMMARY
@@ -438,7 +435,7 @@ def deploy_bot(req: DeployRequest):
     # 화면에서 고를 수 있는 전략만 배포를 허용한다.
     #
     # 제거한 전략(기술적 지표 · 퀀트 하이브리드 · 밸류리밸런싱 VR ·
-    # Gemini AI 전용)은 설정 화면도 함께 없앴다. API 로 들어오면 사용자가
+    # Gemini AI)은 설정 화면도 함께 없앴다. API 로 들어오면 사용자가
     # 본 적 없는 기본값으로 실매매가 나간다. 그 함정을 만들지 않는다.
     _allowed = ("raoer_infinite",)
     _st = (req.params or {}).get("strategyType")
@@ -446,20 +443,6 @@ def deploy_bot(req: DeployRequest):
         raise HTTPException(400,
             f"'{_st}' 전략은 제거됐습니다. 사용 가능: {', '.join(_allowed)} "
             f"(화면에서는 무한매수 V4/V1 · USDT 환차익 으로 보입니다).")
-    if (req.params or {}).get("useGemini"):
-        raise HTTPException(400,
-            "Gemini AI 전용 매매는 제거됐습니다. 무한매수의 'AI 스마트 조절' "
-            "옵션으로 AI 판단을 쓸 수 있습니다.")
-
-    # 하이브리드(지표 신호 + AI 승인)는 화면에서 없앴다. 진입 규칙·지표
-    # 설정을 보여주는 칸도 함께 뺐으므로, API 로 이 모드를 만들면 사용자가
-    # 본 적 없는 기본 진입조건으로 매매하게 된다. 그 함정을 만들지 않는다.
-    # 지표 엔진 자체는 백테스트에 남아 있다.
-    if (req.params or {}).get("geminiMode") == "hybrid":
-        raise HTTPException(400,
-            "퀀트 하이브리드 모드는 제거됐습니다. Gemini 는 'ai_only' 로만 가동합니다 "
-            "(진입 규칙 설정 화면이 없어 사용자가 보지 못한 조건으로 매매하게 됩니다).")
-
     mode = req.mode.upper()
     if mode not in ("PAPER", "LIVE"):
         raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
@@ -848,91 +831,6 @@ def namuh_scalper_enable(req: ScalperEnableRequest):
     sc = scalper.get(namuh_keystore.account)
     sc.set_enabled(req.on)
     return sc.status()
-
-
-# ───────────────────────── Gemini AI ─────────────────────────
-
-class GeminiKeyRequest(BaseModel):
-    apiKey: str
-    model: Optional[str] = None
-
-
-class GeminiAnalyzeRequest(BaseModel):
-    coin: str = "BTC"
-    interval: str = "1h"
-    forceRefresh: bool = True
-
-
-@app.get("/api/gemini/status")
-def gemini_status():
-    """Gemini API 키 및 설정 상태."""
-    return gemini_keystore.status()
-
-
-@app.post("/api/gemini/save")
-def gemini_save(req: GeminiKeyRequest):
-    """Gemini API 키 및 모델 저장."""
-    test = gemini_keystore.test_connection(req.apiKey, req.model)
-    if not test.get("success"):
-        raise HTTPException(400, test.get("message", "Gemini API 키 연결 실패"))
-    try:
-        gemini_keystore.save(req.apiKey.strip(), req.model)
-    except PermissionError as e:
-        raise HTTPException(409, str(e))
-    _sync_worker_gemini()
-    return {"success": True, **gemini_keystore.status()}
-
-
-@app.post("/api/gemini/clear")
-def gemini_clear():
-    """Gemini API 키 삭제."""
-    try:
-        gemini_keystore.clear()
-    except PermissionError as e:
-        raise HTTPException(409, str(e))
-    _sync_worker_gemini()
-    return {"success": True, **gemini_keystore.status()}
-
-
-@app.post("/api/internal/gemini_reload")
-def internal_gemini_reload():
-    """디스크의 Gemini 키를 다시 읽는다. 키는 crypto 쪽이 저장한 파일에 있다."""
-    gemini_keystore._disk_key = ""
-    gemini_keystore._load_disk()
-    return {"success": True, **gemini_keystore.status()}
-
-
-def _sync_worker_gemini() -> None:
-    # 워커의 AI 스마트 조절도 같은 키를 쓴다. 키를 바꿨는데 워커만 옛 키를
-    # 들고 있으면 나무증권 봇의 AI 판단이 조용히 실패한다.
-    if roles.ROLE != "crypto":
-        return
-    try:
-        worker_client.call("POST", "/api/internal/gemini_reload", timeout=10)
-    except WorkerDown as e:
-        logger.warning(f"워커에 Gemini 키 변경을 알리지 못했습니다 (워커 재시작 때 반영): {e}")
-
-
-@app.post("/api/gemini/test")
-def gemini_test(req: GeminiKeyRequest):
-    """Gemini API 연결 테스트."""
-    return gemini_keystore.test_connection(req.apiKey, req.model)
-
-
-@app.post("/api/gemini/analyze")
-def gemini_analyze(req: GeminiAnalyzeRequest):
-    """특정 코인 실시간 Gemini AI 분석."""
-    coin = bithumb.normalize_coin(req.coin)
-    if not coin:
-        raise HTTPException(400, f"지원하지 않는 코인: {req.coin}")
-    res = gemini_service.analyze_coin(coin, req.interval, force_refresh=req.forceRefresh)
-    return res
-
-
-@app.get("/api/gemini/scan")
-def gemini_scan(interval: str = "1h"):
-    """5종 코인 전체 실시간 AI 스캔 및 추천 순위."""
-    return gemini_service.scan_all_coins(interval=interval)
 
 
 # ───────────────────────── 정적 파일 ─────────────────────────
