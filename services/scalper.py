@@ -188,12 +188,21 @@ SHADOWS = {
     "A": "개장 5분 고가 돌파 (09:05~)",
     "B": "VWAP 눌림 뒤 재돌파 (09:05~)",
     "C": "지금 신호 · 09:03 이후만",
+    # 2026-11-04 청산 실험: 9거래일 18건의 산 뒤 평균 최대 상승이 +0.36% 로 비용(약 0.35%)을 못 넘었고,
+    # 15건이 30초 타임컷이었다. '더 들고 있었으면?' 을 보려고 진입은 A 와 같게, 청산만 바꾼다.
+    "D": "A 진입 · 타임컷 · 익절선 없이 손절/트레일링 · 09:30 청산",
+    "E": "A 진입 · 타임컷 · 익절선 없이 손절/트레일링 · 15:15 청산 (장중 보유)",
 }
+# 청산을 바꾼 변형: {키: (진입 신호, 강제 청산 시각)}. 손절(−stopPct) · 트레일링(고점이 +partialPct 를 넘은 뒤
+# −trailPct)만 쓰고, 30초 타임컷 · 1차 익절 · 목표 익절은 쓰지 않는다 (오른 종목은 끝까지 따라간다).
+SHADOW_RUN = {"D": ("A", (9, 30, 0)), "E": ("A", (15, 15, 0))}
+LATE_POLL_SEC = 10.0          # 09:30 뒤 장중 보유 그림자(E)는 10초마다 본다 (해외 봇 호출과 나눠 쓴다)
 
 
 def shadow_signal(key: str, q: Dict[str, Any], st: Dict[str, Any], now: datetime, p: ScalpParams) -> str:
     """그림자 신호 하나. 사면 그 사유, 아니면 빈 문자열. st 는 그 변형의 오늘 상태(고가 · 눌림 기억)."""
     code, px, o = q["code"], q["price"], q.get("open") or 0
+    key = SHADOW_RUN.get(key, (key,))[0]          # D · E 는 A 와 같은 진입 신호 (상태는 따로)
     if key == "C":
         if now >= _at(now, (9, 3, 0)) and can_enter(q, p):
             return f"시가 {o:,} +{(px / o - 1) * 100:.2f}% 돌파 (09:03 이후)"
@@ -462,7 +471,9 @@ class Scalper:
             self._finish_day("조건에 맞는 대장주가 없어 오늘은 매매하지 않았습니다")
             return 600.0
         d["phase"] = "trade"
-        shadow = d.setdefault("shadow", {k: {"positions": {}, "entered": [], "closed": []} for k in SHADOWS})
+        shadow = d.setdefault("shadow", {})
+        for k in SHADOWS:                       # 진행 중인 날에 새 변형이 생겨도 이어지게
+            shadow.setdefault(k, {"positions": {}, "entered": [], "closed": []})
         sh_held = {c for st in shadow.values() for c in st["positions"]}
         if now >= t_close:
             for code in list(self.positions):
@@ -471,14 +482,26 @@ class Scalper:
                     self._sell(code, q, self.positions[code]["remaining"], "FORCE",
                                f"{p.forceClose} 강제 전량 청산", now)
             for key, st in shadow.items():
+                end = _at(now, SHADOW_RUN[key][1]) if key in SHADOW_RUN else t_close
+                if now < end:
+                    continue                    # 장중 보유 그림자(E)는 제 시각까지 든다
                 for code in list(st["positions"]):
                     q = self.quotes.get(code) or self._quote(code)
                     if q:
                         self._shadow_sell(key, code, q, st["positions"][code]["remaining"], "FORCE",
-                                          f"{p.forceClose} 강제 전량 청산", now)
-            if not self.positions and not any(st["positions"] for st in shadow.values()):
-                self._finish_day(f"{p.forceClose} 청산 완료")
-            return 5.0
+                                          f"{end.strftime('%H:%M')} 강제 전량 청산", now)
+            late = {c for st in shadow.values() for c in st["positions"]}
+            if not self.positions and not late:
+                self._finish_day(f"{p.forceClose} 청산 완료"
+                                 + (" · 장중 보유 그림자 15:15 청산" if any(k in shadow for k in SHADOW_RUN) else ""))
+                return 5.0
+            if self.positions:
+                return 5.0
+            for code in sorted(late):
+                q = self._quote(code)
+                if q:
+                    self._shadow_step(q, now, t_entry_end)
+            return LATE_POLL_SEC
         # 들고 있는 종목 · 아직 살 수 있는 종목만 본다 — 3종목을 다 보면 한 바퀴 4초+, 줄이면 손절이 덜 미끄러진다
         can_buy = now < t_entry_end and not d.get("halt") and len(self.positions) < p.maxStocks
         active = [c["code"] for c in d["chosen"]
@@ -523,6 +546,16 @@ class Scalper:
                 px = q["price"]
                 pos["low"] = min(pos["low"], px)
                 pos["peak"] = max(pos["peak"], px)
+                if key in SHADOW_RUN:
+                    # 손절 · 트레일링만 — 오른 종목은 끝까지 따라간다
+                    if net_pct(pos["entry"], px, p.costPct) <= -p.stopPct:
+                        self._shadow_sell(key, code, q, pos["remaining"], "STOP_LOSS", f"손절 (−{p.stopPct}%)", now)
+                    elif pos["peak"] > pos["entry"] * (1 + p.partialPct / 100.0):
+                        dd = (pos["peak"] - px) / pos["peak"] * 100.0
+                        if dd >= p.trailPct:
+                            self._shadow_sell(key, code, q, pos["remaining"], "TRAIL",
+                                              f"트레일링 (고점 대비 −{dd:.1f}%)", now)
+                    continue
                 if not pos["timeOk"]:
                     if pos["peak"] >= pos["entry"] * (1 + p.timeStopPct / 100.0):
                         pos["timeOk"] = True

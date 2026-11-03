@@ -287,18 +287,36 @@ check("B: VWAP 눌림 뒤 +0.3% 재돌파에 산다 · A 는 아직", "S1" in g.
 sq(10_210, "09:07:00", high=10_210, vwap=10_080)
 g.step(at(9, 7, day=14))
 check("A: 5분 고가 10,200 을 넘자 산다", "S1" in g.day["shadow"]["A"]["positions"], "")
+check("D · E 는 A 와 같은 신호로 같이 산다 (상태는 따로)",
+      all("S1" in g.day["shadow"][k]["positions"] for k in ("D", "E")), "")
 sq(10_400, "09:30:01", high=10_400, vwap=10_150)
 g.step(at(9, 30, 1, day=14))
-check("09:30 에 그림자 보유도 전량 정리하고 하루를 닫는다", g.day["done"]
-      and not any(st["positions"] for st in g.day["shadow"].values()), g.day.get("note"))
+check("09:30: 실제 · A~D 는 정리하고, E(장중 보유)는 계속 든다", not g.day["done"]
+      and not any(g.day["shadow"][k]["positions"] for k in "ABCD") and "S1" in g.day["shadow"]["E"]["positions"],
+      g.day.get("note"))
+sq(10_900, "11:00:00", high=10_900, vwap=10_400)
+check("09:30 뒤에는 10초마다 장중 보유 종목만 본다", g.step(at(11, 0, day=14)) == S.LATE_POLL_SEC
+      and "S1" in g.day["shadow"]["E"]["positions"], "")
+sq(10_950, "15:15:00", high=10_950, vwap=10_500)
+g.step(at(15, 15, 0, day=14))
+check("E 는 15:15 에 정리하고 하루를 닫는다 · 그때까지 오른 만큼 먹는다", g.day["done"]
+      and not g.day["shadow"]["E"]["positions"]
+      and [t for t in g.shadow_trades if t["variant"] == "E" and t["kind"] == "FORCE"][0]["pnl"] > 0, g.day.get("note"))
 dd = g.days[-1]["shadow"]
-check("일별 결과에 변형별 손익 · 매매 · 이김이 남는다", set(dd) == {"A", "B", "C"} and all(dd[k]["positions"] == 1 for k in dd),
-      f"{dd}")
+check("일별 결과에 변형별 손익 · 매매 · 이김이 남는다", set(dd) == {"A", "B", "C", "D", "E"}
+      and all(dd[k]["positions"] == 1 for k in dd), f"{dd}")
+d2 = S.Scalper(namuh_account=object())
+pos = {"entry": 10_000.0, "peak": 10_000.0, "low": 10_000.0, "remaining": 10, "qty": 10, "pnl": 0.0, "name": "x"}
+d2.day = {"date": "2026-10-15", "shadow": {"D": {"positions": {"S1": dict(pos)}, "entered": ["S1"], "closed": []}}}
+d2._shadow_step(dict(mk(10_030), code="S1"), at(9, 10, day=15), at(9, 20, day=15))
+check("D 는 30초가 지나도 +1.5% 를 못 찍었다고 팔지 않는다 (타임컷 없음)", "S1" in d2.day["shadow"]["D"]["positions"], "")
+d2._shadow_step(dict(mk(9_840, bid=9_830), code="S1"), at(9, 11, day=15), at(9, 20, day=15))
+check("D 는 손절선에서는 판다", not d2.day["shadow"]["D"]["positions"] and d2.shadow_trades[-1]["kind"] == "STOP_LOSS", "")
 summ = {r["key"]: r for r in g.status()["shadow"]}
-check("화면 요약: 지금 신호와 A · B · C 를 같은 날짜로 나란히", set(summ) == {"현재", "A", "B", "C"}
+check("화면 요약: 지금 신호와 A~E 를 같은 날짜로 나란히", set(summ) == {"현재", "A", "B", "C", "D", "E"}
       and summ["A"]["positions"] == 1 and summ["A"]["avgMfePct"] is not None, f"{ {k: v['pnl'] for k, v in summ.items()} }")
 check("그림자 체결은 실제 체결 기록과 섞이지 않는다", all("variant" not in t for t in g.trades)
-      and all(t["variant"] in "ABC" for t in g.shadow_trades), "")
+      and all(t["variant"] in "ABCDE" for t in g.shadow_trades), "")
 SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
 
 print("── 저장 · 끄기 ──")
