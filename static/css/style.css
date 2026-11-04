@@ -285,3 +285,75 @@ select.input{text-overflow:ellipsis; padding-right:1.8rem}
 .muma-note{font-size:.74rem; color:var(--faint); margin-top:.4rem; line-height:1.5}
 td.flag{color:var(--warn); font-weight:700}
 tr.muma-sum td{font-weight:700; background:var(--surface-2)}
+
+/* 국내 200일선 · PEAD 5슬롯 보드 & 추천 기업 카드 */
+.pead-regime-bar{display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between;
+  gap:.5rem 1rem; margin-top:.7rem; padding:.65rem .85rem; border:1px solid var(--line);
+  border-radius:10px; background:var(--surface-2); font-size:.82rem}
+.pead-regime-items{display:flex; flex-wrap:wrap; align-items:center; gap:.45rem .9rem}
+.pead-sec-head{display:flex; justify-content:space-between; align-items:baseline;
+  flex-wrap:wrap; gap:.4rem .8rem; margin:1.25rem 0 .6rem}
+.pead-sec-title{margin:0; font-size:.98rem; font-weight:700; letter-spacing:-.01em;
+  display:flex; align-items:center; gap:.45rem; flex-wrap:wrap}
+.pead-count-pill{font-size:.74rem; font-weight:600; color:#93c5fd;
+  background:rgba(59,130,246,.14); border:1px solid rgba(59,130,246,.32);
+  border-radius:999px; padding:.14rem .6rem}
+
+.pead-slot-grid{display:grid; grid-template-columns:repeat(5, minmax(0, 1fr)); gap:.65rem}
+@media (max-width:1180px){.pead-slot-grid{grid-template-columns:repeat(auto-fit, minmax(205px, 1fr))}}
+.pead-slot{border-radius:11px; padding:.8rem .85rem; display:flex; flex-direction:column;
+  gap:.45rem; min-height:158px; position:relative}
+.pead-slot.filled{background:var(--surface-2); border:1px solid rgba(59,130,246,.38)}
+.pead-slot.empty{background:rgba(255,255,255,.015); border:1px dashed var(--line);
+  justify-content:center; align-items:center; text-align:center; color:var(--muted)}
+.pead-slot-top{display:flex; justify-content:space-between; align-items:center; gap:.35rem}
+.pead-slot-num{font-size:.68rem; font-weight:700; color:var(--muted); letter-spacing:.04em}
+.pead-slot-name{font-size:.95rem; font-weight:700; white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+.pead-slot-pnl{font-family:var(--mono); font-size:1.05rem; font-weight:700; font-variant-numeric:tabular-nums}
+.pead-slot-rows{display:flex; flex-direction:column; gap:.2rem; font-size:.75rem;
+  padding-top:.35rem; border-top:1px solid var(--line)}
+.pead-slot-row{display:flex; justify-content:space-between; gap:.4rem}
+.pead-slot-row span:last-child{font-family:var(--mono); font-variant-numeric:tabular-nums}
+
+.pead-rec-grid{display:grid; grid-template-columns:repeat(2, minmax(0, 1fr)); gap:.85rem}
+@media (max-width:920px){.pead-rec-grid{grid-template-columns:1fr}}
+.pead-rec-card{background:var(--surface-2); border:1px solid var(--line); border-radius:12px;
+  padding:.95rem 1rem; display:flex; flex-direction:column; gap:.65rem; transition:border-color .15s}
+.pead-rec-card.is-pass{border-color:rgba(34,197,94,.48); box-shadow:0 0 18px rgba(34,197,94,.07)}
+.pead-rec-card:hover{border-color:var(--accent)}
+.pead-rec-head{display:flex; justify-content:space-between; align-items:flex-start; gap:.5rem}
+.pead-rank{display:inline-grid; place-items:center; min-width:24px; height:24px; padding:0 .35rem;
+  border-radius:6px; background:var(--bg); border:1px solid var(--line);
+  font-family:var(--mono); font-size:.75rem; font-weight:700; color:var(--muted)}
+.pead-rec-card.is-pass .pead-rank{background:rgba(34,197,94,.16); border-color:rgba(34,197,94,.4); color:var(--up)}
+.pead-stock-title{font-size:1.04rem; font-weight:700; letter-spacing:-.01em}
+.pead-status-badge{font-size:.73rem; font-weight:700; padding:.2rem .55rem; border-radius:999px; white-space:nowrap}
+.pead-status-pass{background:rgba(34,197,94,.16); color:#86efac; border:1px solid rgba(34,197,94,.38)}
+.pead-status-near{background:rgba(245,158,11,.13); color:#fcd34d; border:1px solid rgba(245,158,11,.32)}
+
+.pead-catalyst{background:var(--bg); border:1px solid var(--line); border-radius:8px;
+  padding:.55rem .7rem; font-size:.83rem; line-height:1.45}
+.pead-warn-line{margin-top:.3rem; font-size:.76rem; color:#fcd34d}
+
+.pead-kv3{display:grid; grid-template-columns:repeat(3, minmax(0, 1fr)); gap:.45rem}
+@media (max-width:520px){.pead-kv3{grid-template-columns:1fr}}
+.pead-kv-box{background:var(--bg); border:1px solid var(--line); border-radius:8px; padding:.45rem .6rem}
+.pead-kv-k{font-size:.69rem; color:var(--muted)}
+.pead-kv-v{font-family:var(--mono); font-size:.9rem; font-weight:600; font-variant-numeric:tabular-nums; margin-top:.1rem}
+.pead-kv-sub{font-size:.7rem; color:var(--faint)}
+
+.pead-chips{display:flex; flex-wrap:wrap; gap:.35rem}
+.pead-chip{font-size:.72rem; padding:.15rem .48rem; border-radius:6px;
+  background:rgba(255,255,255,.03); border:1px solid var(--line); color:var(--muted)}
+.pead-chip.ok{color:#86efac; border-color:rgba(34,197,94,.28); background:rgba(34,197,94,.07)}
+.pead-chip.miss{color:var(--faint); border-color:var(--line)}
+
+.pead-rec-actions{display:flex; gap:.5rem; margin-top:auto; padding-top:.15rem}
+.pead-rec-actions .btn-buy{flex:1}
+.pead-fold{margin-top:1rem; border:1px solid var(--line); border-radius:10px; background:var(--surface-2)}
+.pead-fold > summary{cursor:pointer; padding:.65rem .85rem; font-size:.85rem; font-weight:600;
+  color:var(--muted); list-style:none; display:flex; align-items:center; gap:.4rem}
+.pead-fold > summary::-webkit-details-marker{display:none}
+.pead-fold > summary::before{content:"▸"; color:var(--faint)}
+.pead-fold[open] > summary::before{content:"▾"}
+.pead-fold-body{padding:0 .85rem .85rem}

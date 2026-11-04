@@ -7,7 +7,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Sans+KR:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;600&display=swap">
-<link rel="stylesheet" href="/static/css/style.css?v=5.2.1">
+<link rel="stylesheet" href="/static/css/style.css?v=5.3.0">
 </head>
 <body>
 
@@ -405,30 +405,52 @@
       <div class="card">
         <div class="card-head" style="flex-wrap:wrap">
           <div>
-            <h2 class="card-title">📈 국내 200일선 · PEAD 실적모멘텀 <span class="pill">모의 · 주문 없음</span></h2>
-            <p class="muted small">① 지수·종목 <b>200일선 정배열</b> 추세 방패 위에서 ② <b>실적 서프라이즈(PEAD)</b> +
-              ③ <b>거래량 300% 폭발 · 장대양봉 · 외인·기관 순매수</b>가 동시에 확인된 종목만 슬롯에 담고,
-              ④ <b>기준봉 시가 이탈 즉시 손절 · 20일선 종가 이탈 추세 익절</b>로 운용합니다. 유휴 현금은 KOFR 파킹 이자가 적립됩니다.</p>
+            <h2 class="card-title">📈 국내 200일선 · PEAD 5슬롯 스윙 <span class="pill">모의 · 주문 없음</span></h2>
+            <p class="muted small">자본금을 <b>5개 슬롯</b>으로 나누어 비어 있는 슬롯 수의 <b>2배수 기업만 엄선</b>해 보여줍니다.
+              빈 슬롯 현금은 KOFR 금리로 파킹되며, 담은 종목은 <b>기준봉 시가 이탈 시 자동 손절 · 20일선 이탈 시 추세 익절</b>됩니다.</p>
           </div>
           <div class="inline" style="flex-wrap:wrap">
-            <label class="inline small" style="white-space:nowrap"><input type="checkbox" id="peadEnabled"> 켜기</label>
+            <label class="inline small" style="white-space:nowrap"><input type="checkbox" id="peadEnabled"> 자동 감시</label>
             <button class="btn btn-primary btn-sm" id="peadScanBtn" style="white-space:nowrap">🔍 지금 전종목 스캔</button>
             <button class="btn btn-ghost btn-sm" id="refreshPeadBtn" style="white-space:nowrap">🔄 새로고침</button>
           </div>
         </div>
 
         <div id="peadAlert"></div>
-        <div id="peadRegimeBox" class="notice" style="margin-top:.6rem">시장 200일선 신호등 불러오는 중…</div>
-        <div id="peadSummary" style="margin-top:.8rem"></div>
+        <div id="peadRegimeBox" class="pead-regime-bar">시장 200일선 신호등 불러오는 중…</div>
+        <div id="peadSummary" style="margin-top:.75rem"></div>
 
-        <details class="note note-info" style="margin-top:.9rem">
-          <summary>⚙️ 전략 모드(반자동 승인 / 100% 자동) 및 4단계 필터 기준 설정</summary>
+        <!-- Zone 2: 내 5개 슬롯 보드 -->
+        <div class="pead-sec-head">
+          <h3 class="pead-sec-title" id="peadSlotsHead">💼 내 5개 슬롯 현황</h3>
+          <span class="muted small">손절: 기준봉 시가 이탈 즉시 · 익절: 20일선 종가 이탈</span>
+        </div>
+        <div id="peadSlotsBoard"></div>
+
+        <!-- Zone 3: 남은 슬롯 × 2배수 추천 기업 카드 -->
+        <div class="pead-sec-head" style="margin-top:1.4rem">
+          <h3 class="pead-sec-title" id="peadRecHead">🎯 추천 기업 선택</h3>
+          <span class="muted small" id="peadRecSub">남은 빈 슬롯의 2배수 기업만 점수순으로 추려서 표시합니다</span>
+        </div>
+        <div id="peadRecommendations"></div>
+
+        <!-- 접이식 설정 / 체결 내역 / 로그 -->
+        <details class="note note-info" style="margin-top:1.3rem">
+          <summary>⚙️ 슬롯 수 · 추천 배수 · 필터 기준 설정</summary>
           <div class="form-grid" style="margin-top:.4rem">
             <div>
               <label class="label">매수 실행 모드</label>
               <select class="input input-sm" id="peadApprovalMode" style="width:100%">
-                <option value="SEMI">반자동 · 시그널 포착 후 1클릭 승인 (권장)</option>
-                <option value="AUTO">100% 자동 · 평일 15:18 빈 슬롯 자동 모의매수</option>
+                <option value="SEMI">반자동 · 카드에서 직접 선택해 담기 (권장)</option>
+                <option value="AUTO">100% 자동 · 평일 15:18 통과 종목 자동 매수</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">추천 기업 표시 배수 (빈 슬롯 대비)</label>
+              <select class="input input-sm" id="peadCandidateMult" style="width:100%">
+                <option value="1">남은 슬롯 × 1배수 (예: 5칸 비면 5개)</option>
+                <option value="2" selected>남은 슬롯 × 2배수 (권장 · 5칸 비면 10개)</option>
+                <option value="3">남은 슬롯 × 3배수 (예: 5칸 비면 15개)</option>
               </select>
             </div>
             <div>
@@ -455,28 +477,24 @@
               <label class="label">추세 익절 이동평균선 (일)</label>
               <input class="input input-sm" type="number" id="peadExitMa" value="20" min="5" max="60" step="5" style="width:100%">
             </div>
-            <div style="display:flex;align-items:flex-end;gap:.6rem;padding-top:.4rem">
+            <div class="span-2" style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding-top:.55rem">
               <label class="inline small" style="color:var(--text)"><input type="checkbox" id="peadRequireSmart" checked> 외인·기관 순매수 필수</label>
-              <button class="btn btn-primary btn-sm" id="savePeadParamsBtn" style="margin-left:auto;white-space:nowrap">설정 저장</button>
+              <button class="btn btn-primary btn-sm" id="savePeadParamsBtn" style="white-space:nowrap">설정 저장</button>
             </div>
           </div>
         </details>
 
-        <h3 class="card-title" style="margin-top:1.1rem">🔔 포착된 PEAD 시그널 (승인 대기)</h3>
-        <div id="peadPending"></div>
+        <details class="pead-fold">
+          <summary>📜 가상 체결 기록 <span class="muted small" id="peadTradesCount"></span></summary>
+          <div class="pead-fold-body" id="peadTrades"></div>
+        </details>
 
-        <h3 class="card-title" style="margin-top:1.1rem">💼 슬롯 보유 포지션 <span class="muted small">(손절: 실적 기준봉 시가 이탈 · 익절: 20일선 종가 이탈)</span></h3>
-        <div id="peadPositions"></div>
-
-        <h3 class="card-title" style="margin-top:1.1rem">🔭 전종목 스캔 상위 관심주 <span class="muted small">(코스피200 ∪ 코스닥150 중 200일선 정배열 상위 · 아깝게 미달한 사유 표시)</span></h3>
-        <div id="peadWatchlist"></div>
-
-        <h3 class="card-title" style="margin-top:1.1rem">📜 가상 체결 기록</h3>
-        <div id="peadTrades"></div>
-
-        <details style="margin-top:1rem"><summary class="muted small">규칙 요약 · 실행 로그</summary>
-          <div id="peadRules" class="muted small" style="margin-top:.4rem"></div>
-          <div id="peadLogs" class="muted small mono" style="margin-top:.5rem;max-height:180px;overflow-y:auto"></div>
+        <details class="pead-fold" style="margin-top:.6rem">
+          <summary>📋 운용 규칙 요약 · 실행 로그</summary>
+          <div class="pead-fold-body">
+            <div id="peadRules" class="muted small" style="padding-top:.2rem"></div>
+            <div id="peadLogs" class="muted small mono" style="margin-top:.5rem;max-height:180px;overflow-y:auto"></div>
+          </div>
         </details>
       </div>
     </section>
@@ -658,6 +676,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.20.0"></script>
+<script src="/static/js/app.js?v=5.21.0"></script>
 </body>
 </html>

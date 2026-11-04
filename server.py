@@ -847,6 +847,7 @@ def namuh_scalper_enable(req: ScalperEnableRequest):
 class PeadParamsRequest(BaseModel):
     seedKrw: Optional[float] = None
     maxSlots: Optional[int] = None
+    candidateMultiplier: Optional[int] = None
     approvalMode: Optional[str] = None
     minOpYoyPct: Optional[float] = None
     minRevYoyPct: Optional[float] = None

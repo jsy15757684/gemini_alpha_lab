@@ -87,6 +87,7 @@ def _active_store() -> botstore.JsonStore:
 class PeadParams:
     seedKrw: float = 10_000_000       # 총 가상 운용 시드 (원)
     maxSlots: int = 5                 # 최대 슬롯 수 (5종목 = 슬롯당 20%)
+    candidateMultiplier: int = 2      # 추천 기업 조회 배수 (남은 빈 슬롯 수 × 2배수만 엄선 노출)
     approvalMode: str = "SEMI"        # "SEMI"(90% 자동 + 1클릭 승인) | "AUTO"(100% 자동 모의매수)
     parkingRatePct: float = 3.25      # 유휴 현금 KOFR 파킹 연환산 수익률 (%)
     indexSmaPeriod: int = 200         # 시장 신호등 이동평균선 (200일)
@@ -115,6 +116,7 @@ class PeadParams:
                 else:
                     setattr(p, k, target_type(v))
         p.maxSlots = max(1, min(10, int(p.maxSlots)))
+        p.candidateMultiplier = max(1, min(5, int(p.candidateMultiplier)))
         p.seedKrw = max(500_000.0, float(p.seedKrw))
         p.approvalMode = "AUTO" if str(p.approvalMode).upper() == "AUTO" else "SEMI"
         p.minVolRatio = max(1.0, min(20.0, float(p.minVolRatio)))
@@ -765,8 +767,10 @@ class PeadEngine:
         self.lock = threading.Lock()
 
         self.positions: Dict[str, Dict[str, Any]] = {}
-        self.pending: List[Dict[str, Any]] = []          # SEMI 모드 승인 대기 종목
-        self.watchlist: List[Dict[str, Any]] = []        # 최근 스캔 상위 관심 종목 (아깝게 탈락 포함)
+        self.candidates_pool: List[Dict[str, Any]] = []  # 스캔 평가 풀 (제외·슬롯 변동 시 재조회 없이 2배수 슬라이싱)
+        self.dismissed: List[str] = []                   # 사용자가 [제외]를 누른 종목 코드
+        self.pending: List[Dict[str, Any]] = []          # SEMI 모드 승인 대기 종목 (남은 슬롯 × 2배수 이하)
+        self.watchlist: List[Dict[str, Any]] = []        # 최근 스캔 추천 종목 (남은 슬롯 × 2배수 엄선)
         self.after_hours_queue: List[Dict[str, Any]] = []  # 장후 실적공시 → 익일 감시 대기열
         self.trades: List[Dict[str, Any]] = []
         self.logs: List[Dict[str, Any]] = []
@@ -830,6 +834,8 @@ class PeadEngine:
         self.enabled = bool(s.get("enabled", True))
         self.params = PeadParams.from_dict(s.get("params"))
         self.positions = dict(s.get("positions") or {})
+        self.candidates_pool = list(s.get("candidatesPool") or s.get("watchlist") or [])
+        self.dismissed = list(s.get("dismissed") or [])
         self.pending = list(s.get("pending") or [])
         self.watchlist = list(s.get("watchlist") or [])
         self.after_hours_queue = list(s.get("afterHoursQueue") or [])
@@ -843,14 +849,44 @@ class PeadEngine:
             self.scan_meta.update(s["scanMeta"])
             self.scan_meta["scanning"] = False
 
+    def _sync_recommendations_locked(self) -> List[Dict[str, Any]]:
+        """보유 슬롯을 뺀 '남은 빈 슬롯 × 배수(기본 2배수)' 만큼만 추천 목록을 엄선한다."""
+        idle_slots = max(0, self.params.maxSlots - len(self.positions))
+        limit = idle_slots * self.params.candidateMultiplier
+        blocked = set(self.positions.keys()) | set(self.dismissed)
+        pool = self.candidates_pool if self.candidates_pool else self.watchlist
+        filtered = [dict(c) for c in pool if c.get("code") not in blocked]
+        selected = filtered[:limit] if limit > 0 else []
+
+        slot_budget = self.params.slot_budget()
+        enriched: List[Dict[str, Any]] = []
+        for idx, item in enumerate(selected, start=1):
+            px = float(item.get("price") or 0)
+            checks = item.get("checks") or {}
+            enriched.append({
+                **item,
+                "rank": idx,
+                "slotBudgetKrw": round(slot_budget),
+                "estQty": max(1, int(slot_budget // px)) if px > 0 and slot_budget >= px else 0,
+                "passedChecks": sum(1 for v in checks.values() if v),
+                "totalChecks": max(5, len(checks)),
+            })
+
+        self.watchlist = enriched
+        self.pending = [c for c in enriched if c.get("passed")]
+        return enriched
+
     def save(self) -> None:
         with self.lock:
+            self._sync_recommendations_locked()
             snap = {
                 "enabled": self.enabled,
                 "params": asdict(self.params),
                 "positions": dict(self.positions),
-                "pending": list(self.pending[:30]),
-                "watchlist": list(self.watchlist[:25]),
+                "candidatesPool": list(self.candidates_pool[:30]),
+                "dismissed": list(self.dismissed[:50]),
+                "pending": list(self.pending[:20]),
+                "watchlist": list(self.watchlist[:20]),
                 "afterHoursQueue": list(self.after_hours_queue[:30]),
                 "trades": list(self.trades[-MAX_TRADES:]),
                 "logs": list(self.logs[-MAX_LOGS:]),
@@ -955,12 +991,16 @@ class PeadEngine:
                     ):
                         stage1.append((r, tech))
 
-            # 거래량 배수 · 당일 상승률 순으로 최대 40종목까지 2차 심층(수급+재무+공시) 판독
+            # 남은 빈 슬롯의 배수(기본 2배수) + 제외 대비 소량 예비분만 2차 심층(수급+재무+공시) 판독
             stage1.sort(key=lambda x: (x[1]["volRatio"] * 2.0 + max(0.0, x[1]["dayGainPct"])), reverse=True)
-            deep_targets = stage1[:40]
+            with self.lock:
+                idle_now = max(0, self.params.maxSlots - len(self.positions))
+                rec_want = idle_now * self.params.candidateMultiplier
+            deep_cap = max(10, min(30, rec_want + 8))
+            deep_targets = stage1[:deep_cap]
             self.scan_meta["stage1Passed"] = len(deep_targets)
 
-            dart_map = fetch_dart_today_earnings(ref)
+            dart_map = fetch_dart_today_earnings(ref) if deep_targets else {}
             evaluated: List[Dict[str, Any]] = []
 
             def _deep_one(item: Tuple[Dict[str, Any], Dict[str, Any]]) -> Dict[str, Any]:
@@ -982,34 +1022,31 @@ class PeadEngine:
                     disc["earnings"] = dart_map[code]
                 return evaluate_candidate(code, r["name"], r["market"], tech, trend, fin, disc, regime, self.params)
 
-            with ThreadPoolExecutor(max_workers=6) as pool:
-                for fut in as_completed([pool.submit(_deep_one, it) for it in deep_targets]):
-                    try:
-                        evaluated.append(fut.result())
-                    except Exception as e:
-                        logger.debug(f"심층 분석 오류: {e}")
+            if deep_targets:
+                with ThreadPoolExecutor(max_workers=6) as pool:
+                    for fut in as_completed([pool.submit(_deep_one, it) for it in deep_targets]):
+                        try:
+                            evaluated.append(fut.result())
+                        except Exception as e:
+                            logger.debug(f"심층 분석 오류: {e}")
 
             evaluated.sort(key=lambda c: (1 if c["passed"] else 0, c["score"], c["volRatio"]), reverse=True)
-            passed = [c for c in evaluated if c["passed"] and c["code"] not in self.positions]
-            near_miss = [c for c in evaluated if not c["passed"]][:15]
+            passed_all = [c for c in evaluated if c["passed"] and c["code"] not in self.positions]
 
             with self.lock:
-                # 이미 승인 대기 중인 종목을 유지하면서 새 통과 종목을 병합
-                existing_by_code = {p["code"]: p for p in self.pending if p["code"] not in self.positions}
-                for c in passed:
-                    existing_by_code[c["code"]] = c
-                self.pending = list(existing_by_code.values())
-                self.watchlist = (passed + near_miss)[:20]
+                self.dismissed = []                  # 새 스캔 시 제외 목록 초기화
+                self.candidates_pool = evaluated[:30]
+                recs = self._sync_recommendations_locked()
                 self.scan_meta.update({
                     "lastScanAt": ref.strftime("%Y-%m-%d %H:%M:%S"),
                     "lastScanDate": ref.strftime("%Y-%m-%d"),
-                    "passedCount": len(passed),
+                    "passedCount": len(passed_all),
                 })
 
             self.log(
                 "INFO",
-                f"전종목 스캔 완료: {total}종목 → 1차 추세·거래량 {len(deep_targets)}종목 → "
-                f"최종 PEAD 통과 {len(passed)}종목 ({regime.get('gateLabel', '')})",
+                f"전종목 스캔 완료: {total}종목 → 추천 {len(recs)}종목 엄선 "
+                f"(남은 슬롯 {idle_now}개 × {self.params.candidateMultiplier}배수 · 전관문 통과 {len(passed_all)}종목)",
             )
             if ref.weekday() < 5:
                 self.accrue_parking(ref.strftime("%Y-%m-%d"))
@@ -1044,6 +1081,8 @@ class PeadEngine:
             cand = next((x for x in self.pending if x["code"] == code), None)
             if not cand:
                 cand = next((x for x in self.watchlist if x["code"] == code), None)
+            if not cand:
+                cand = next((x for x in self.candidates_pool if x["code"] == code), None)
             if not cand:
                 return False, f"최근 스캔 목록에 없는 종목입니다 ({code}). 먼저 스캔을 실행하세요."
             if not force:
@@ -1090,7 +1129,7 @@ class PeadEngine:
         reason = f"{cand.get('peadBadge', 'PEAD')} · 거래량 {cand.get('volRatio', 0)}배 · 손절선 {stop_px:,.0f}원"
         with self.lock:
             self.positions[code] = pos
-            self.pending = [x for x in self.pending if x["code"] != code]
+            self._sync_recommendations_locked()
             self._record_trade(code, cand["name"], "BUY", round(avg_px, 2), int(qty), 0.0, 0.0, 0, reason, ref)
         self.log("BUY", f"슬롯 모의매수 {cand['name']}({code}) {qty:,}주 @ {avg_px:,.0f}원 (손절선 {stop_px:,.0f}원)")
         self.save()
@@ -1098,12 +1137,18 @@ class PeadEngine:
 
     def reject_candidate(self, code: str) -> None:
         code = str(code or "").strip()
+        if not code:
+            return
+        target_name = code
         with self.lock:
-            removed = [x for x in self.pending if x["code"] == code]
-            self.pending = [x for x in self.pending if x["code"] != code]
-        if removed:
-            self.log("INFO", f"승인 대기 제외: {removed[0]['name']}({code})")
-            self.save()
+            hit = next((x for x in (self.watchlist + self.candidates_pool) if x.get("code") == code), None)
+            if hit:
+                target_name = hit.get("name") or code
+            if code not in self.dismissed:
+                self.dismissed.append(code)
+            self._sync_recommendations_locked()
+        self.log("INFO", f"추천 목록 제외: {target_name}({code}) — 다음 순위 후보로 대체")
+        self.save()
 
     # ── 포지션 청산 ──
     def close_position(
@@ -1375,6 +1420,8 @@ class PeadEngine:
             parking_krw = round(float(self.parking.get("accruedKrw") or 0.0))
             idle_cash = max(0.0, self.params.seedKrw - invested_total)
             idle_slots = max(0, self.params.maxSlots - len(held))
+            rec_limit = idle_slots * self.params.candidateMultiplier
+            recs = self._sync_recommendations_locked()
             total_equity = round(self.params.seedKrw + realized_pnl + unrealized_total + parking_krw)
             total_return_pct = round((total_equity / self.params.seedKrw - 1.0) * 100.0, 2) if self.params.seedKrw else 0.0
 
@@ -1389,6 +1436,7 @@ class PeadEngine:
                 "scanMeta": dict(self.scan_meta),
                 "summary": {
                     "seedKrw": round(self.params.seedKrw),
+                    "slotBudgetKrw": round(self.params.slot_budget()),
                     "totalEquityKrw": total_equity,
                     "totalReturnPct": total_return_pct,
                     "realizedPnlKrw": realized_pnl,
@@ -1397,12 +1445,14 @@ class PeadEngine:
                     "usedSlots": len(held),
                     "maxSlots": self.params.maxSlots,
                     "idleSlots": idle_slots,
+                    "recommendationLimit": rec_limit,
                     "idleCashKrw": round(idle_cash),
                     "closedTrades": len(exits),
                     "wins": wins,
                     "winRate": round(wins / len(exits) * 100.0, 1) if exits else None,
                 },
                 "positions": held,
+                "recommendations": recs,
                 "pending": list(self.pending),
                 "watchlist": list(self.watchlist),
                 "afterHoursQueue": list(self.after_hours_queue),

@@ -215,6 +215,51 @@ restored.load()
 check("재시작 후에도 체결 기록과 KOFR 파킹 이자가 그대로 복원된다",
       len(restored.trades) == len(eng.trades) and restored.parking["accruedKrw"] == eng.parking["accruedKrw"], "")
 
+print("── 4-B단계: 남은 빈 슬롯 × 2배수 추천 상한 & [제외] 후보 승격 검증 ──")
+UNIVERSE_15 = []
+for idx in range(1, 16):
+    cd = f"001{idx:03d}"
+    UNIVERSE_15.append({"code": cd, "name": f"실적우량{idx:02d}", "market": "kospi", "kospi200": True, "kosdaq150": False})
+    BARS_DB[cd] = make_bars(last_vol=350_000 + idx * 10_000)
+    TREND_DB[cd] = good_trend
+    FIN_DB[cd] = dict(good_fin, opYoyPct=30.0 + idx * 3.0)
+    DISC_DB[cd] = clean_disc
+
+krx_master.load = lambda: UNIVERSE_15
+eng_cap = P.PeadEngine(namuh_account=None)
+st0 = eng_cap.run_scan(datetime(2026, 11, 4, 15, 11, 0, tzinfo=P.KST))
+check("빈 슬롯 5칸일 때 전종목 후보가 15개여도 정확히 10개(5칸 × 2배수)만 조회된다",
+      st0["summary"]["idleSlots"] == 5 and len(st0["recommendations"]) == 10 and st0["summary"]["recommendationLimit"] == 10,
+      f"조회 {len(st0['recommendations'])}개 / 한도 {st0['summary']['recommendationLimit']}개")
+
+for pick in [r["code"] for r in st0["recommendations"][:3]]:
+    eng_cap.buy_candidate(pick, now=datetime(2026, 11, 4, 15, 13, 0, tzinfo=P.KST))
+st3 = eng_cap.status()
+check("3개 슬롯을 채우면(남은 슬롯 2칸) 추천 기업 수가 자동으로 4개(2칸 × 2배수)로 줄어든다",
+      st3["summary"]["usedSlots"] == 3 and st3["summary"]["idleSlots"] == 2 and len(st3["recommendations"]) == 4,
+      f"보유 {st3['summary']['usedSlots']}칸 · 남은 {st3['summary']['idleSlots']}칸 → 추천 {len(st3['recommendations'])}개")
+
+drop_code = st3["recommendations"][0]["code"]
+eng_cap.reject_candidate(drop_code)
+st_rej = eng_cap.status()
+check("[제외] 클릭 시 해당 기업이 빠지고 예비 풀의 다음 순위 후보가 올라와 4개를 유지한다",
+      len(st_rej["recommendations"]) == 4 and all(r["code"] != drop_code for r in st_rej["recommendations"]),
+      f"제외 {drop_code} → 새 1순위 {st_rej['recommendations'][0]['code']}")
+
+for pick in [r["code"] for r in st_rej["recommendations"][:2]]:
+    eng_cap.buy_candidate(pick, now=datetime(2026, 11, 4, 15, 15, 0, tzinfo=P.KST))
+st5 = eng_cap.status()
+check("5개 슬롯이 모두 차면(남은 슬롯 0칸) 추천 기업 조회 수는 0개가 된다",
+      st5["summary"]["idleSlots"] == 0 and len(st5["recommendations"]) == 0,
+      f"보유 {st5['summary']['usedSlots']}/5칸 → 추천 {len(st5['recommendations'])}개")
+
+one_held = st5["positions"][0]["code"]
+eng_cap.close_position(one_held, now=datetime(2026, 11, 4, 15, 17, 0, tzinfo=P.KST))
+st4 = eng_cap.status()
+check("보유 종목 1개를 청산해 빈 슬롯 1칸이 생기면 재스캔 없이도 즉시 2개(1칸 × 2배수)가 다시 열린다",
+      st4["summary"]["idleSlots"] == 1 and len(st4["recommendations"]) == 2,
+      f"남은 {st4['summary']['idleSlots']}칸 → 추천 {len(st4['recommendations'])}개")
+
 print("── 5단계: FastAPI 엔드포인트 · 인증 · CSRF 검증 ──")
 import socket  # noqa: E402
 import threading  # noqa: E402
@@ -258,9 +303,12 @@ try:
           r_st.status_code == 200 and st_json["paper"] is True and st_json["summary"]["closedTrades"] == 1,
           f"자산 {st_json['summary']['totalEquityKrw']:,}원")
 
-    r_pm = sess.post(f"{base}/api/namuh/pead/params", json={"maxSlots": 4, "minVolRatio": 2.5}, timeout=5)
-    check("POST /api/namuh/pead/params 파라미터 변경 반영",
-          r_pm.status_code == 200 and r_pm.json()["params"]["maxSlots"] == 4 and r_pm.json()["params"]["minVolRatio"] == 2.5, "")
+    r_pm = sess.post(f"{base}/api/namuh/pead/params", json={"maxSlots": 4, "candidateMultiplier": 3, "minVolRatio": 2.5}, timeout=5)
+    check("POST /api/namuh/pead/params 슬롯·추천배수 파라미터 변경 반영",
+          r_pm.status_code == 200
+          and r_pm.json()["params"]["maxSlots"] == 4
+          and r_pm.json()["params"]["candidateMultiplier"] == 3
+          and r_pm.json()["summary"]["recommendationLimit"] == 12, "")
 finally:
     _srv.should_exit = True
     _th.join(timeout=3)
