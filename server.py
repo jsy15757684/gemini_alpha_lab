@@ -57,7 +57,7 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, spread_recorder, namuh, muma_sheet, tradelog, scalper
+from services import auth, backtest, bithumb, spread_recorder, namuh, muma_sheet, tradelog, scalper, pead
 from services import roles, worker_client
 from services.worker_client import WorkerDown
 from services.keystore import keystore, namuh_keystore
@@ -201,6 +201,14 @@ def _startup_log():
             scalper.get(namuh_keystore.account).start()
         except Exception as e:
             logger.error(f"국내 스캘퍼 시작 실패 (서버는 계속 뜹니다): {e}")
+
+    # 국내 200일선 + PEAD 스윙 엔진 (모의 전용 · 주문 없음). APP_PEAD=0 으로 끈다.
+    if roles.owns("namuh") and \
+            (os.getenv("APP_PEAD") or "1").strip().lower() not in ("0", "false", "no", "off"):
+        try:
+            pead.get(namuh_keystore.account).start()
+        except Exception as e:
+            logger.error(f"국내 PEAD 시작 실패 (서버는 계속 뜹니다): {e}")
 
     # 거래소 간 괴리를 계속 기록한다. 주문은 내지 않고 공개 호가만 읽는다.
     # 무전송 양방향을 구현할지 판단할 근거를 자금 0원으로 모으기 위한 것이다.
@@ -831,6 +839,84 @@ def namuh_scalper_enable(req: ScalperEnableRequest):
     sc = scalper.get(namuh_keystore.account)
     sc.set_enabled(req.on)
     return sc.status()
+
+
+# ───────────────────────── 국내 200일선 · PEAD 스윙 (모의) ─────────────────────────
+
+
+class PeadParamsRequest(BaseModel):
+    seedKrw: Optional[float] = None
+    maxSlots: Optional[int] = None
+    approvalMode: Optional[str] = None
+    minOpYoyPct: Optional[float] = None
+    minRevYoyPct: Optional[float] = None
+    minVolRatio: Optional[float] = None
+    minDayGainPct: Optional[float] = None
+    maxDayGainPct: Optional[float] = None
+    maxWickRatio: Optional[float] = None
+    maxPrior20dGainPct: Optional[float] = None
+    requireSmartMoney: Optional[bool] = None
+    exitMaPeriod: Optional[int] = None
+    maxHoldDays: Optional[int] = None
+    indexBearBufferPct: Optional[float] = None
+
+
+class PeadCodeRequest(BaseModel):
+    code: str
+    force: bool = False
+
+
+@app.get("/api/namuh/pead")
+def namuh_pead_status():
+    """국내 200일선 + PEAD 스윙(모의) 상태 조회."""
+    return pead.get(namuh_keystore.account).status()
+
+
+@app.post("/api/namuh/pead/enable")
+def namuh_pead_enable(req: ScalperEnableRequest):
+    eng = pead.get(namuh_keystore.account)
+    eng.set_enabled(req.on)
+    return eng.status()
+
+
+@app.post("/api/namuh/pead/params")
+def namuh_pead_params(req: PeadParamsRequest):
+    eng = pead.get(namuh_keystore.account)
+    eng.update_params(req.model_dump(exclude_none=True))
+    return eng.status()
+
+
+@app.post("/api/namuh/pead/scan")
+def namuh_pead_scan():
+    """코스피200 ∪ 코스닥150 전종목 즉시 백그라운드 스캔 시작."""
+    eng = pead.get(namuh_keystore.account)
+    return eng.start_scan_async()
+
+
+@app.post("/api/namuh/pead/approve")
+def namuh_pead_approve(req: PeadCodeRequest):
+    """포착된 시그널(또는 관심 종목)을 빈 슬롯에 모의 매수."""
+    eng = pead.get(namuh_keystore.account)
+    ok, msg = eng.buy_candidate(req.code, force=req.force)
+    if not ok:
+        raise HTTPException(400, msg)
+    return eng.status()
+
+
+@app.post("/api/namuh/pead/reject")
+def namuh_pead_reject(req: PeadCodeRequest):
+    eng = pead.get(namuh_keystore.account)
+    eng.reject_candidate(req.code)
+    return eng.status()
+
+
+@app.post("/api/namuh/pead/close")
+def namuh_pead_close(req: PeadCodeRequest):
+    eng = pead.get(namuh_keystore.account)
+    ok, msg = eng.close_position(req.code, kind="MANUAL", reason="사용자 수동 청산")
+    if not ok:
+        raise HTTPException(400, msg)
+    return eng.status()
 
 
 # ───────────────────────── 정적 파일 ─────────────────────────

@@ -946,6 +946,300 @@ function renderScalper(s) {
   $("scalperLogs").innerHTML = (s.logs || []).map(l => `${escapeHtml(l.time)} ${escapeHtml(l.message)}`).join("<br>");
 }
 
+// ───────── 국내 200일선 · PEAD 스윙 (모의) ─────────
+
+const PEAD_KIND = {
+  BUY: "슬롯 매수",
+  STOP_LOSS: "시가이탈 손절",
+  TRAIL_MA20: "20일선 추세익절",
+  TIME_EXIT: "만기 청산",
+  MANUAL: "수동 청산",
+};
+let peadPollFast = null;
+
+async function loadPead() {
+  try {
+    renderPead(await api("/api/namuh/pead"));
+  } catch (e) {
+    setAlert($("peadAlert"), `국내 PEAD 상태를 불러오지 못했습니다: ${e.message}`, "error");
+  }
+}
+
+function renderPead(s) {
+  if (!$("panel-pead")) return;
+  if ($("peadEnabled")) $("peadEnabled").checked = !!s.enabled;
+
+  const sm = s.scanMeta || {};
+  const scanBtn = $("peadScanBtn");
+  if (scanBtn) {
+    scanBtn.disabled = !!sm.scanning;
+    scanBtn.textContent = sm.scanning
+      ? `⏳ 스캔 중 (${sm.done || 0}/${sm.total || "?"})`
+      : "🔍 지금 전종목 스캔";
+  }
+  if (sm.scanning) {
+    if (!peadPollFast) peadPollFast = setInterval(() => {
+      if (!$("panel-pead").classList.contains("hidden")) loadPead();
+    }, 1500);
+  } else if (peadPollFast) {
+    clearInterval(peadPollFast);
+    peadPollFast = null;
+  }
+
+  setAlert(
+    $("peadAlert"),
+    !s.running ? "PEAD 엔진이 돌고 있지 않습니다 (APP_PEAD 확인)" : (s.lastError ? s.lastError : ""),
+    s.running ? "warn" : "error"
+  );
+
+  // 설정 입력칸 동기화 (사용자가 입력 중일 때는 덮어쓰지 않는다)
+  const p = s.params || {};
+  const activeId = document.activeElement?.id || "";
+  const syncVal = (id, val) => {
+    const el = $(id);
+    if (el && activeId !== id && val != null) el.value = val;
+  };
+  syncVal("peadApprovalMode", p.approvalMode || "SEMI");
+  syncVal("peadSeedKrw", Math.round(p.seedKrw || 10000000));
+  syncVal("peadMaxSlots", p.maxSlots || 5);
+  syncVal("peadMinOpYoy", p.minOpYoyPct ?? 25);
+  syncVal("peadMinVolRatio", p.minVolRatio ?? 3.0);
+  syncVal("peadMinDayGain", p.minDayGainPct ?? 4.0);
+  syncVal("peadExitMa", p.exitMaPeriod ?? 20);
+  if ($("peadRequireSmart") && activeId !== "peadRequireSmart") {
+    $("peadRequireSmart").checked = p.requireSmartMoney !== false;
+  }
+
+  // 1단계: 시장 200일선 신호등 + KOFR 파킹 현황
+  const reg = s.regime || {};
+  const fmtIdx = (idx) => {
+    if (!idx) return `<span class="muted">수신 전</span>`;
+    const c = idx.bull ? "up" : "down";
+    return `<b>${Number(idx.price).toLocaleString("ko-KR")}</b> `
+      + `<span class="muted">(200일선 ${Number(idx.sma200).toLocaleString("ko-KR")})</span> `
+      + `<span class="${c}" style="font-weight:700">${pct(idx.diffPct)} · ${idx.bull ? "정배열 통과" : "역배열 방어"}</span>`;
+  };
+  const kofr = reg.kofr
+    ? `${escapeHtml(reg.kofr.name)} <b>${won(reg.kofr.price)}원</b> (연 ~${p.parkingRatePct || 3.25}%)`
+    : `연 ${p.parkingRatePct || 3.25}% 파킹 금리 적용`;
+  $("peadRegimeBox").innerHTML = `
+    <div style="display:flex;justify-content:space-between;flex-wrap:wrap;gap:.5rem">
+      <div><b>1단계 시장 신호등:</b> ${escapeHtml(reg.gateLabel || "-")}</div>
+      <div class="muted small">${sm.lastScanAt ? `최근 스캔: ${escapeHtml(sm.lastScanAt)}` : "아직 스캔 전"}</div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:.4rem 1.4rem;margin-top:.35rem" class="small">
+      <div>· 코스피: ${fmtIdx(reg.kospi)}</div>
+      <div>· 코스닥: ${fmtIdx(reg.kosdaq)}</div>
+      <div>· 유휴 파킹 기준: ${kofr}</div>
+    </div>`;
+
+  // 포트폴리오 요약 메트릭
+  const m = s.summary || {};
+  const won0 = (v) => `${Math.round(v || 0).toLocaleString("ko-KR")}원`;
+  $("peadSummary").innerHTML = `<div class="metrics">
+    <div class="metric"><div class="metric-k">총 가상 평가자산</div>
+      <div class="metric-v ${cls(m.totalReturnPct)}">${won0(m.totalEquityKrw)} <span class="small">(${pct(m.totalReturnPct)})</span></div></div>
+    <div class="metric"><div class="metric-k">누적 실현 손익</div>
+      <div class="metric-v ${cls(m.realizedPnlKrw)}">${(m.realizedPnlKrw || 0) >= 0 ? "+" : ""}${won0(m.realizedPnlKrw)}</div></div>
+    <div class="metric"><div class="metric-k">보유 평가 손익</div>
+      <div class="metric-v ${cls(m.unrealizedPnlKrw)}">${(m.unrealizedPnlKrw || 0) >= 0 ? "+" : ""}${won0(m.unrealizedPnlKrw)}</div></div>
+    <div class="metric"><div class="metric-k">KOFR 파킹 이자 · 유휴현금</div>
+      <div class="metric-v up">+${won0(m.parkingInterestKrw)} <span class="muted small">(${won0(m.idleCashKrw)})</span></div></div>
+    <div class="metric"><div class="metric-k">가동 슬롯</div>
+      <div class="metric-v">${m.usedSlots || 0} / ${m.maxSlots || 5} <span class="muted small">(빈 ${m.idleSlots || 0})</span></div></div>
+    <div class="metric"><div class="metric-k">청산 건수 · 승률</div>
+      <div class="metric-v">${m.closedTrades || 0}건 · ${m.winRate == null ? "-" : m.winRate + "%"}</div></div>
+  </div>`;
+
+  // 승인 대기 시그널 카드
+  const pend = s.pending || [];
+  if (!pend.length) {
+    $("peadPending").innerHTML = `<div class="empty">현재 4단계 전 관문을 모두 통과한 승인 대기 종목이 없습니다. 평일 15:10 자동 스캔되거나 상단 <b>[🔍 지금 전종목 스캔]</b>으로 즉시 탐색할 수 있습니다.</div>`;
+  } else {
+    $("peadPending").innerHTML = `<div class="gemini-grid">${pend.map(c => `
+      <div class="gemini-card action-BUY">
+        <div class="gemini-card-head">
+          <div>
+            <span class="gemini-coin-title">${escapeHtml(c.name)}</span>
+            <span class="muted small">(${escapeHtml(c.code)} · ${escapeHtml((c.market || "").toUpperCase())})</span>
+          </div>
+          <span class="gemini-action-badge gemini-badge-BUY">점수 ${c.score} · ${pct(c.dayGainPct)}</span>
+        </div>
+        <div class="gemini-summary">${escapeHtml(c.peadBadge || "PEAD 서프라이즈")}
+          ${c.disclosure ? `<div class="muted small" style="font-weight:400;margin-top:.2rem">📄 ${escapeHtml(c.disclosure)}</div>` : ""}
+        </div>
+        <div class="gemini-targets">
+          <div>현재가: <b>${won0(c.price)}</b> (200일선 ${pct(c.sma200DiffPct)})</div>
+          <div>거래량 폭발: <b class="up">${Number(c.volRatio).toFixed(1)}배</b></div>
+          <div>수급: 외인 <b>${Number(c.foreignNet).toLocaleString()}</b> · 기관 <b>${Number(c.instNet).toLocaleString()}</b></div>
+          <div>손절선(기준시가): <b class="down">${won0(c.stopPrice)} (${pct(c.stopPct)})</b></div>
+        </div>
+        <div class="gemini-card-foot">
+          <button class="btn btn-primary btn-sm" style="flex:1" data-pead-approve="${escapeHtml(c.code)}">✅ 슬롯 모의매수 승인</button>
+          <button class="btn btn-ghost btn-sm" data-pead-reject="${escapeHtml(c.code)}">패스</button>
+        </div>
+      </div>`).join("")}</div>`;
+    $("peadPending").querySelectorAll("[data-pead-approve]").forEach(b => {
+      b.onclick = () => approvePead(b.dataset.peadApprove, false);
+    });
+    $("peadPending").querySelectorAll("[data-pead-reject]").forEach(b => {
+      b.onclick = () => rejectPead(b.dataset.peadReject);
+    });
+  }
+
+  // 슬롯 보유 포지션 표
+  const held = s.positions || [];
+  if (!held.length) {
+    $("peadPositions").innerHTML = `<div class="empty">보유 중인 PEAD 슬롯 포지션이 없습니다 — 전액 KOFR 무위험 파킹 중입니다.</div>`;
+  } else {
+    const rows = held.map(h => `<tr>
+      <td><b>${escapeHtml(h.name)}</b> <span class="muted small">(${escapeHtml(h.code)})</span>
+        <div class="muted small">${escapeHtml(h.peadBadge || "")}</div></td>
+      <td>${escapeHtml(h.entryDate || "-")} <span class="muted small">(${h.holdDays || 0}일)</span></td>
+      <td>${Number(h.qty).toLocaleString()}주</td>
+      <td>${won0(h.entry)}</td>
+      <td>${won0(h.price)}</td>
+      <td class="${cls(h.netPct)}"><b>${pct(h.netPct)}</b><div class="small">${h.unrealizedPnl >= 0 ? "+" : ""}${won0(h.unrealizedPnl)}</div></td>
+      <td class="down">${won0(h.stopPrice)} <span class="muted small">(${h.stopGapPct != null ? pct(h.stopGapPct) : "-"})</span></td>
+      <td>${h.sma20 ? won0(h.sma20) : "-"} <span class="muted small">(${h.sma20GapPct != null ? pct(h.sma20GapPct) : "-"})</span></td>
+      <td><button class="btn btn-ghost btn-danger btn-sm" data-pead-close="${escapeHtml(h.code)}" data-pead-name="${escapeHtml(h.name)}">청산</button></td>
+    </tr>`).join("");
+    $("peadPositions").innerHTML = `<div class="tbl-wrap"><table>
+      <thead><tr><th>종목 · 실적근거</th><th>진입일(보유)</th><th>수량</th><th>매수가</th><th>현재가</th><th>순수익률(손익)</th><th>손절선(기준시가)</th><th>익절선(20일선)</th><th>관리</th></tr></thead>
+      <tbody>${rows}</tbody></table></div>`;
+    $("peadPositions").querySelectorAll("[data-pead-close]").forEach(b => {
+      b.onclick = () => closePeadPos(b.dataset.peadClose, b.dataset.peadName);
+    });
+  }
+
+  // 상위 관심주 (5단계 관문 체크표)
+  const watch = s.watchlist || [];
+  if (!watch.length) {
+    $("peadWatchlist").innerHTML = `<div class="empty">스캔을 실행하면 코스피200 · 코스닥150 중 200일선 정배열 상위 후보와 통과/미달 사유가 표시됩니다.</div>`;
+  } else {
+    const ck = (ok) => ok ? `<span class="up">✔</span>` : `<span class="down">✕</span>`;
+    const wRows = watch.map(w => {
+      const c = w.checks || {};
+      const note = w.passed
+        ? `<span class="up"><b>전 관문 통과</b></span>`
+        : escapeHtml((w.failReasons || []).slice(0, 2).join(" · "));
+      return `<tr>
+        <td><b>${escapeHtml(w.name)}</b> <span class="muted small">(${escapeHtml(w.code)})</span></td>
+        <td><b>${w.score}</b></td>
+        <td>${won0(w.price)} <span class="${cls(w.dayGainPct)}">(${pct(w.dayGainPct)})</span></td>
+        <td style="font-family:inherit">${escapeHtml(w.peadBadge || "-")}</td>
+        <td>${Number(w.volRatio).toFixed(1)}배</td>
+        <td>외인 ${Number(w.foreignNet).toLocaleString()} / 기관 ${Number(w.instNet).toLocaleString()}</td>
+        <td>${ck(c.market200)} ${ck(c.stock200)} ${ck(c.pead)} ${ck(c.volume)} ${ck(c.smartMoney)}</td>
+        <td class="reason">${note}</td>
+        <td><button class="btn btn-ghost btn-sm" data-pead-testbuy="${escapeHtml(w.code)}">모의매수</button></td>
+      </tr>`;
+    }).join("");
+    $("peadWatchlist").innerHTML = `<div class="tbl-wrap"><table>
+      <thead><tr><th>종목</th><th>점수</th><th>현재가(등락)</th><th>분기실적(PEAD)</th><th>거래량</th><th>당일 수급(주)</th><th title="시장200 · 종목200 · 실적 · 거래량/양봉 · 외인/기관">5관문</th><th>판정 / 미달 사유</th><th>시험</th></tr></thead>
+      <tbody>${wRows}</tbody></table></div>`;
+    $("peadWatchlist").querySelectorAll("[data-pead-testbuy]").forEach(b => {
+      b.onclick = () => approvePead(b.dataset.peadTestbuy, true);
+    });
+  }
+
+  // 가상 체결 내역
+  const tr = s.trades || [];
+  $("peadTrades").innerHTML = tr.length ? `<div class="tbl-wrap"><table>
+    <thead><tr><th>일시</th><th>종목</th><th>구분</th><th>체결가</th><th>수량</th><th>보유일</th><th>손익(수익률)</th><th>사유</th></tr></thead>
+    <tbody>${tr.map(t => `<tr>
+      <td>${escapeHtml(t.date.slice(5))} ${escapeHtml(t.time)}</td>
+      <td><b>${escapeHtml(t.name)}</b> <span class="muted small">(${escapeHtml(t.code)})</span></td>
+      <td>${escapeHtml(PEAD_KIND[t.kind] || t.kind)}</td>
+      <td>${won0(t.price)}</td>
+      <td>${Number(t.qty).toLocaleString()}주</td>
+      <td>${t.kind === "BUY" ? "-" : (t.holdDays || 0) + "일"}</td>
+      <td class="${cls(t.pnl)}">${t.kind === "BUY" ? "-" : `${t.pnl >= 0 ? "+" : ""}${won0(t.pnl)} (${pct(t.pct)})`}</td>
+      <td class="reason">${escapeHtml(t.reason || "")}${t.mfePct != null ? ` · 최고 +${t.mfePct}% / 최저 ${t.maePct}%` : ""}</td>
+    </tr>`).join("")}</tbody></table></div>` : `<div class="empty">아직 가상 체결 기록이 없습니다.</div>`;
+
+  // 규칙 요약 및 로그
+  $("peadRules").innerHTML =
+    `운용 모드: <b>${p.approvalMode === "AUTO" ? "100% 자동(15:18)" : "반자동 1클릭 승인"}</b> · `
+    + `시드 ${won0(p.seedKrw)} (${p.maxSlots}슬롯 · 슬롯당 ${won0((p.seedKrw || 0) / (p.maxSlots || 5))}) · `
+    + `1단계 지수·종목 ${p.indexSmaPeriod}일선 위 & 발표 전 20일 상승률 +${p.maxPrior20dGainPct}% 이하 · `
+    + `2단계 영업이익 흑자 & YoY +${p.minOpYoyPct}% 이상(또는 흑자전환·잠정공시, 유상증자/CB 자동 제외) · `
+    + `3단계 거래량 ${p.minVolRatio}배 이상 & 양봉(+${p.minDayGainPct}~+${p.maxDayGainPct}%, 윗꼬리 ${Math.round((p.maxWickRatio || 0.38) * 100)}% 이하) & ${p.requireSmartMoney ? "외인·기관 순매수 필수" : "수급 무관"} · `
+    + `4단계 기준봉 시가 이탈 즉시 손절 / ${p.exitMaPeriod}일선 종가 이탈 익절 / 최대 ${p.maxHoldDays}거래일 보유 · 매도 제비용 ${p.costPct}% 차감`;
+  $("peadLogs").innerHTML = (s.logs || []).map(l => `${escapeHtml(l.time)} [${escapeHtml(l.level)}] ${escapeHtml(l.message)}`).join("<br>");
+}
+
+async function triggerPeadScan() {
+  try {
+    setAlert($("peadAlert"), null);
+    renderPead(await api("/api/namuh/pead/scan", { method: "POST" }));
+  } catch (e) {
+    setAlert($("peadAlert"), `스캔 시작 실패: ${e.message}`, "error");
+  }
+}
+
+async function savePeadParams() {
+  try {
+    const body = {
+      approvalMode: $("peadApprovalMode")?.value || "SEMI",
+      seedKrw: parseFloat($("peadSeedKrw")?.value || "10000000"),
+      maxSlots: parseInt($("peadMaxSlots")?.value || "5", 10),
+      minOpYoyPct: parseFloat($("peadMinOpYoy")?.value || "25"),
+      minVolRatio: parseFloat($("peadMinVolRatio")?.value || "3.0"),
+      minDayGainPct: parseFloat($("peadMinDayGain")?.value || "4.0"),
+      exitMaPeriod: parseInt($("peadExitMa")?.value || "20", 10),
+      requireSmartMoney: !!$("peadRequireSmart")?.checked,
+    };
+    renderPead(await api("/api/namuh/pead/params", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }));
+    setAlert($("peadAlert"), "PEAD 전략 설정을 저장했습니다.", "ok");
+  } catch (e) {
+    setAlert($("peadAlert"), `설정 저장 실패: ${e.message}`, "error");
+  }
+}
+
+async function approvePead(code, force) {
+  if (force && !confirm(`관심 종목(${code})을 미달 조건을 무시하고 빈 슬롯에 시험 모의매수하시겠습니까?`)) return;
+  try {
+    setAlert($("peadAlert"), null);
+    renderPead(await api("/api/namuh/pead/approve", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code, force: !!force }),
+    }));
+  } catch (e) {
+    setAlert($("peadAlert"), `모의매수 실패: ${e.message}`, "error");
+  }
+}
+
+async function rejectPead(code) {
+  try {
+    renderPead(await api("/api/namuh/pead/reject", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }));
+  } catch (e) {
+    setAlert($("peadAlert"), `제외 실패: ${e.message}`, "error");
+  }
+}
+
+async function closePeadPos(code, name) {
+  if (!confirm(`${name}(${code}) 가상 보유 물량을 현재 호가로 전량 청산하시겠습니까?`)) return;
+  try {
+    renderPead(await api("/api/namuh/pead/close", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ code }),
+    }));
+  } catch (e) {
+    setAlert($("peadAlert"), `청산 실패: ${e.message}`, "error");
+  }
+}
+
 // ───────── 차트 ─────────
 
 async function loadChart() {
@@ -1587,12 +1881,25 @@ async function boot() {
     if (tab.dataset.panel === "panel-trades") loadTradeHistory();
     if (tab.dataset.panel === "panel-muma") loadMuma();
     if (tab.dataset.panel === "panel-scalper") loadScalper();
+    if (tab.dataset.panel === "panel-pead") loadPead();
     if (tab.dataset.panel === "panel-chart") loadChart();
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadEgressIp(); }
   });
 
   if ($("refreshMumaBtn")) $("refreshMumaBtn").onclick = () => loadMuma();
   if ($("refreshScalperBtn")) $("refreshScalperBtn").onclick = () => loadScalper();
+  if ($("refreshPeadBtn")) $("refreshPeadBtn").onclick = () => loadPead();
+  if ($("peadScanBtn")) $("peadScanBtn").onclick = () => triggerPeadScan();
+  if ($("savePeadParamsBtn")) $("savePeadParamsBtn").onclick = () => savePeadParams();
+  if ($("peadEnabled")) $("peadEnabled").onchange = async (e) => {
+    try {
+      renderPead(await api("/api/namuh/pead/enable", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ on: e.target.checked }),
+      }));
+    } catch (err) { setAlert($("peadAlert"), `켜기/끄기 실패: ${err.message}`, "error"); loadPead(); }
+  };
   document.querySelectorAll(".scalper-skill").forEach(el => el.onchange = async () => {
     try {
       renderScalper(await api("/api/namuh/scalper/skills", { method: "POST", headers: { "Content-Type": "application/json" },
@@ -1619,6 +1926,7 @@ async function boot() {
     setInterval(renderFreshness, 1000),
     setInterval(() => { if (!$("panel-muma").classList.contains("hidden")) loadMuma(); }, 30000),
     setInterval(() => { if (!$("panel-scalper").classList.contains("hidden")) loadScalper(); }, 10000),
+    setInterval(() => { if ($("panel-pead") && !$("panel-pead").classList.contains("hidden")) loadPead(); }, 12000),
   );
 
   document.addEventListener("visibilitychange", () => {
