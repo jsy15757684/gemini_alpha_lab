@@ -423,6 +423,8 @@ tradelog._loaded = True        # 운영 일지를 읽지 않는다
 
 from services import market_schedule as _ms_mod      # noqa: E402
 from services.trader import TradingBot              # noqa: E402
+import services.trader as _trader_mod                 # noqa: E402
+_trader_mod.SETTLE_RETRY_SEC = 0.0   # 체결내역을 못 읽는 시험 — 기다리지 않고 바로 정산
 from services.strategy import StrategyParams        # noqa: E402
 
 

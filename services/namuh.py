@@ -837,15 +837,23 @@ class NamuhAccount:
                 raise NamuhError(f"주문체결내역 응답을 읽지 못했습니다 (HTTP {res.status_code})")
             if res.status_code != 200:
                 raise NamuhError(f"주문체결내역 조회 실패 ({body.get('rsp_cd')}): {body.get('rsp_msg')}", body)
+            cancel = None
             for r in body.get("Output_0") or []:
                 try:
-                    if int(r.get("orr_no")) != want:
-                        continue
+                    orr, org = int(r.get("orr_no")), int(r.get("org_orr_no") or 0)
                 except (TypeError, ValueError):
                     continue
-                return {"qty": float(r.get("cns_qty") or 0), "price": float(r.get("cns_pr") or 0),
-                        "unfilled": float(r.get("ny_cns_orr_qty") or 0), "canceled": float(r.get("can_qty") or 0),
-                        "limit": float(r.get("fc_orr_uit_pr") or 0), "date": str(r.get("orr_dt") or dt)}
+                if orr == want:
+                    return {"qty": float(r.get("cns_qty") or 0), "price": float(r.get("cns_pr") or 0),
+                            "unfilled": float(r.get("ny_cns_orr_qty") or 0), "canceled": float(r.get("can_qty") or 0),
+                            "limit": float(r.get("fc_orr_uit_pr") or 0), "date": str(r.get("orr_dt") or dt)}
+                if org == want and str(r.get("cor_can_dit_cd") or "") == "2":
+                    # 앱 등에서 취소하면 원주문 줄이 목록에서 빠지고 '취소' 줄(org_orr_no = 원주문)만 남는다
+                    # (2026-10-30 SOXL: LOC 5건 · 지정가 매도 1건). 원주문 줄이 없으면 체결 0 · 전량 취소로 본다.
+                    cancel = {"qty": 0.0, "price": 0.0, "unfilled": 0.0, "canceled": float(r.get("orr_qty") or 0),
+                              "limit": 0.0, "date": str(r.get("orr_dt") or dt), "canceledBy": str(orr)}
+            if cancel:
+                return cancel
         return None
 
     def _fill_price(self, order_id: Any, filled: float) -> Optional[float]:

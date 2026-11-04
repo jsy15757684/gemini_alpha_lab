@@ -75,6 +75,8 @@ class TooManyBots(Exception):
 # LOC 접수 전 잔고 조회가 실패했을 때 다시 시도하기까지 기다리는 시간(초).
 # 매 틱(10초) 두드리면 호출 한도를 더 빨리 태운다.
 LOC_RETRY_SEC = env_float("APP_LOC_RETRY_SEC", 60.0)
+# 마감 뒤 LOC 정산에서 주문 체결내역을 못 읽으면 이만큼 다시 조회한 뒤에야 추정으로 적는다
+SETTLE_RETRY_SEC = env_float("APP_SETTLE_RETRY_SEC", 1800.0)
 # 무매법 엑셀 방식: 걸어 둔 평단×(1+목표%) 지정가 매도의 체결을 몇 초마다 주문번호로 확인하나.
 # 시세가 지정가 근처면 SELL_CHECK_NEAR_SEC, 멀면 SELL_CHECK_FAR_SEC (조회 건수를 아낀다).
 SELL_CHECK_NEAR_SEC = env_float("APP_SELL_CHECK_NEAR_SEC", 60.0)
@@ -173,6 +175,8 @@ class TradingBot:
         self._sell_check_at = 0.0
         self._sell_retry_after = 0.0
         self.quarter_session: Optional[str] = None     # 쿼터손절 · 소진 스플릿을 한 미국 세션 (하루 한 번)
+        self._settle_wait: Dict[str, float] = {}       # {세션: 체결내역을 처음 못 읽은 시각}
+        self._settle_wait_logged = False
         # 소진 스플릿: 오늘 판 돈 {session, amount, placed} — 그날 종가 LOC 재매수 예산
         self.split_budget: Optional[Dict[str, Any]] = None
         self._quarter_checked: Optional[str] = None    # 쿼터손절 판단을 마친 세션 — 그 전에는 매수 LOC 를 내지 않는다
@@ -257,7 +261,7 @@ class TradingBot:
             formula_desc = "잔금비례: 잔여현금 ÷ 잔여회차" if self.params.raoerVersion == "v4" else f"고정 1회 {self.initial_krw / self.params.splitCount:,.2f}{curr_lbl}"
             if self._excel():
                 self.log("INFO", f"🔄 [무매법 엑셀 방식] {self.params.splitCount}분할 · 1회분할금 "
-                                 f"${self.initial_krw / self.params.splitCount:,.2f} 고정 · 1.15 LOC + 평단 LOC + 사다리 · "
+                                 f"${self.initial_krw / self.params.splitCount:,.2f} 고정 · 1.15 LOC + 평단 LOC · "
                                  f"평단 +{self.params.targetProfitPct}% 전량 매도 · 40회/현금 소진 때 "
                                  + ("매일 1회분 스플릿(장중 매도 → 종가 재매수)" if self.params.exhaustMode == "split"
                                     else f"쿼터손절 {self.params.quarterCutPct:.0f}%") + " (기어 없음)")
@@ -882,18 +886,18 @@ class TradingBot:
 
           1회분할금 = SEED(운용자본) ÷ 분할수 (고정 · V4 잔금비례 아님)
           보유 없음  1회분할금으로 살 수 있는 만큼 · 현재가 × 1.05 LOC
-          보유 있음  0.5회분 현재가 × 1.15 LOC(큰수) + 0.5회분 평단 LOC + 사다리(1주씩 LOC)
+          보유 있음  0.5회분 현재가 × 1.15 LOC(큰수) + 0.5회분 평단 LOC (사다리는 2026-11-04 에 뺐다)
           수량은 엑셀처럼 ROUND (0.5회분이 1주 값의 절반 이상이면 1주)
 
-        봇 현금으로 '전부 체결될 때' 의 금액을 낼 수 있어야 한다. 모자라면 사다리 아래 단부터,
-        그다음 평단 LOC, 1.15 LOC 순으로 덜어낸다 (엑셀은 현금 검사가 없다 — 사람이 봤다).
+        봇 현금으로 '전부 체결될 때' 의 금액을 낼 수 있어야 한다. 모자라면 평단 LOC,
+        1.15 LOC 순으로 덜어낸다 (엑셀은 현금 검사가 없다 — 사람이 봤다).
         """
         plan = muma_sheet.order_plan(self.initial_krw, self.pos.units, self.pos.entryPrice, price,
                                      self.params.splitCount, self.params.targetProfitPct)
         legs = [{"leg": b["leg"], "units": int(b["units"]), "limit": round(float(b["price"]), 2)}
                 for b in plan["buys"] if int(b["units"]) > 0]
-        legs += [{"leg": f"사다리 {l['level']}단", "units": int(l["units"]), "limit": round(float(l["price"]), 2)}
-                 for l in plan["ladder"] if int(l["units"]) > 0]
+        # 사다리(1주씩 현재가의 50% 이하 LOC)는 내지 않는다 — 하루 매수 주문이 5~7건으로 늘지만
+        # 하루에 반토막 나지 않는 한 붙지 않는다 (사용자 결정 2026-11-04). 무매법 표에는 그대로 보인다.
         sb = self.split_budget
         if sb and not sb.get("placed") and sb.get("units", 0) >= 1 and sb.get("limit", 0) > 0:
             # 소진 스플릿 재매수 — 판 수량을 판 가격(수수료 뺀 몫) 이하 종가에만 다시 산다 ('더 낮아진 가격으로').
@@ -1393,6 +1397,34 @@ class TradingBot:
                 self.log("WARNING", f"[LOC 정산] 주문 체결 {by_order[0]:g}주 ≠ 잔고 변화 {filled:g}주 — "
                                     f"주문 체결내역으로 적습니다 (봇 밖의 매매가 있었는지 확인하세요).")
             filled = by_order[0]
+        else:
+            # 체결내역을 못 읽었다. 잔고 변화를 그대로 믿으면 같은 날 직접 한 매매까지 봇 몫으로 적는다
+            # (2026-10-30 SOXL: 봇 LOC 는 앱에서 취소돼 0주였는데, 직접 산 순증 10주를 $55.15 에 산 것으로 적었다
+            # — 그날 최저가는 $70.23). 먼저 SETTLE_RETRY_SEC 동안 다시 조회해 보고, 그래도 못 읽으면
+            # 종가(LOC 는 종가에 붙는다)에 붙었을 다리 수량을 넘지 않게만 적는다.
+            first = self._settle_wait.setdefault(ripe[0].get("session", ""), time.time())
+            if time.time() - first < SETTLE_RETRY_SEC:
+                if not self._settle_wait_logged:
+                    self.log("WARNING", f"[LOC 정산] 주문 체결내역을 읽지 못해 정산을 미룹니다 — "
+                                        f"{SETTLE_RETRY_SEC / 60:.0f}분 동안 다시 조회합니다.")
+                    self._settle_wait_logged = True
+                return
+            close_px = float(self.last_price or 0.0)
+            could = (sum(int(o.get("units") or 0) for o in ripe if float(o.get("limit") or 0) >= close_px)
+                     if close_px > 0 else sum(int(o.get("units") or 0) for o in ripe))
+            est = max(0.0, min(filled, float(could)))
+            if est < filled and close_px > 0:
+                # 잔고가 봇 주문으로 설명되는 것보다 많이 늘었다 — 봇 밖의 매수가 섞였다. 종가로 적는다
+                self.log("WARNING", f"[LOC 정산] 체결내역을 끝내 못 읽어 추정합니다 — 잔고 변화 {filled:g}주 중 "
+                                    f"종가 ${close_px:,.2f} 에 붙을 수 있던 봇 주문 {could}주까지만 {est:g}주 @ "
+                                    f"${close_px:,.2f} 로 적습니다. 나무증권 체결내역과 맞는지 확인하세요.")
+                by_order = (est, est * close_px, est)
+            else:
+                self.log("WARNING", f"[LOC 정산] 체결내역을 끝내 못 읽어 잔고 변화 {est:g}주로 적습니다 "
+                                    f"(봇 주문으로 설명되는 수량). 나무증권 체결내역과 맞는지 확인하세요.")
+            filled = est
+        self._settle_wait.pop(ripe[0].get("session", ""), None)
+        self._settle_wait_logged = False
 
         # 정산했으니 목록에서 뺀다. 실패해도 같은 주문을 두 번 반영하지 않는다.
         self.pending_orders = [o for o in self.pending_orders if o not in ripe]
@@ -1416,6 +1448,12 @@ class TradingBot:
             fill_price = by_order[1] / filled
         elif filled > 0 and qty_now > 0:
             fill_price = ((qty_now * avg_now) - (qty_before * avg_before)) / filled
+            close_px = float(self.last_price or 0.0)
+            if close_px > 0 and not (0.8 * close_px <= fill_price <= 1.2 * close_px):
+                # 역산값이 종가와 동떨어졌다 (같은 날 봇 밖의 매매가 평단을 흔들었다) — LOC 는 종가에 붙는다
+                self.log("WARNING", f"[LOC 정산] 역산 체결가 ${fill_price:,.2f} 가 종가 ${close_px:,.2f} 와 "
+                                    f"동떨어져 종가로 적습니다.")
+                fill_price = close_px
         else:
             fill_price = self.last_price or self.pos.entryPrice
         if fill_price <= 0:

@@ -58,6 +58,27 @@ write_records(botstore.STORE_FILE, "bots", recs)
 rc, _ = run("SOL", "--interval", "6h", "--apply")
 check("결과를 모르는 주문이 있으면 바꾸지 않는다", rc == 1, "")
 
+print("── scripts/namuh_ledger_fix.py (잘못 적힌 매수 한 건 되돌리기) ──")
+import namuh_ledger_fix as lf                          # noqa: E402
+lf.TRADE_LOG = os.path.join(_SANDBOX, "trades_namuh.json")
+row = {"id": "t-1", "action": "BUY_CHUNK", "time": "2026-10-30 20:05:12", "units": 10.0, "price": 55.15, "amountKrw": 551.5}
+keep = {"id": "t-2", "action": "BUY_CHUNK", "time": "2026-11-02 21:05:22", "units": 2.0, "price": 68.17, "amountKrw": 136.34}
+write_records(botstore.namuh_store_file(), "bots", [{
+    "botId": "SOXL-1", "coin": "SOXL", "broker": "namuh", "units": 41.0, "totalInvested": 3606.01, "entryPrice": 87.9515,
+    "turn": 18, "cash": 2390.7446, "params": {"feePct": 0.09}, "tradeHistory": [keep, row]}])
+write_records(lf.TRADE_LOG, "trades", [dict(keep), dict(row)])
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = lf.main(["SOXL", "2026-10-30", "--remove-buy", "--apply"])
+r = read_records(botstore.namuh_store_file(), "bots", "")[0]
+check("10/30 매수 한 건을 되돌린다 (31주 · 평단 $98.53 · 17회차 · 현금 +$552.00)",
+      rc == 0 and r["units"] == 31.0 and abs(r["entryPrice"] - 98.5326) < 1e-3 and r["turn"] == 17
+      and abs(r["cash"] - 2942.7409) < 1e-3, f"{r['units']}주 · ${r['entryPrice']:.2f} · T={r['turn']} · ${r['cash']:.2f}")
+check("봇 체결 기록 · 체결 일지에서 그 한 건만 지운다",
+      [t["id"] for t in r["tradeHistory"]] == ["t-2"] and [t["id"] for t in read_records(lf.TRADE_LOG, "trades", "")] == ["t-2"], "")
+with contextlib.redirect_stdout(io.StringIO()):
+    rc = lf.main(["SOXL", "2026-10-30", "--remove-buy", "--apply"])
+check("두 번 돌려도 또 빼지 않는다 (그날 기록이 없으면 거부)", rc == 1, "")
+
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")
 sys.exit(1 if FAIL else 0)

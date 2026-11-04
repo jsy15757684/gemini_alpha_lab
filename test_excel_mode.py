@@ -24,6 +24,7 @@ tradelog._rows.clear()
 tradelog._loaded = True
 
 from services import namuh, trader, strategy, muma_sheet   # noqa: E402
+trader.SETTLE_RETRY_SEC = 0.0   # 체결내역을 못 읽는 시험 — 기다리지 않고 바로 정산
 from services.namuh import OrderUnknown                     # noqa: E402
 
 PASS, FAIL = [], []
@@ -92,9 +93,9 @@ pv = bot(FakeAcct())
 pv.pos.units, pv.pos.entryPrice, pv.pos.turn, pv.cash = 1.0, 82.26, 1, 3917.74
 check("매도가보다 낮은 다리는 그대로", all(x["limit"] < 90.49 for x in pv._excel_targets(70.0)["legs"])
       and pv._excel_targets(70.0)["legs"][0]["limit"] == 80.5, f"{pv._excel_targets(70.0)['legs'][0]}")
-check("사다리 단도 엑셀 계산 그대로 1주씩",
-      [x["limit"] for x in t["legs"][2:]] == [round(l["price"], 2) for l in plan["ladder"]]
-      and all(x["units"] == 1 for x in t["legs"][2:]), f"{[x['limit'] for x in t['legs'][2:]]}")
+check("사다리(현재가 50% 이하 1주씩)는 주문하지 않는다 — 1.15 LOC · 평단 LOC 두 건만 (2026-11-04)",
+      len(t["legs"]) == 2 and plan["ladder"] and not any(x["leg"].startswith("사다리") for x in t["legs"]),
+      f"{[x['leg'] for x in t['legs']]} · 엑셀 표 사다리 {len(plan['ladder'])}단")
 b.cash = 150.0
 t = b._excel_targets(81.0)
 check("현금이 모자라면 사다리부터 덜어낸다 (1.15 LOC 는 남긴다)",
@@ -231,6 +232,72 @@ with contextlib.redirect_stdout(io.StringIO()):
     rc = namuh_fee_fix.main(["--apply"])
 check("두 번 돌려도 현금을 또 빼지 않는다", {r["coin"]: round(r["cash"], 2) for r in read_records(path, "bots", "")}
       == {"TQQQ": 3754.96, "SOXL": 5860.11}, "")
+
+print("── 앱에서 취소한 주문 · 체결내역을 못 읽을 때 (2026-10-30 SOXL 재현) ──")
+import requests as _rq                                   # noqa: E402
+_OUT = {"rows": []}
+
+
+class _R:
+    status_code = 200
+
+    def json(self):
+        return {"Output_0": _OUT["rows"]}
+
+
+namuh._NH_MIN_INTERVAL = 0.0
+_orig_post = _rq.post
+_rq.post = lambda url, **kw: _R()
+acc = namuh.NamuhAccount("APPKEY", "SECRET", "12345678901")
+acc._token, acc._token_expires_at = "FAKE", time.time() + 9999
+_OUT["rows"] = [{"orr_no": "215954", "org_orr_no": "149428", "cor_can_dit_cd": "2", "orr_qty": "1", "cns_qty": "0"},
+                {"orr_no": "204327", "org_orr_no": "0", "cor_can_dit_cd": "0", "orr_qty": "10", "cns_qty": "10",
+                 "cns_pr": "78.44"}]
+f = acc.order_fill("149428")
+check("앱에서 취소한 주문은 '취소' 줄(원주문 번호)로 찾아 체결 0 · 전량 취소로 본다",
+      f and f["qty"] == 0 and f["canceled"] == 1 and f["canceledBy"] == "215954", f"{f}")
+check("원주문 줄이 남아 있으면 그 줄이 우선", acc.order_fill("204327")["qty"] == 10, "")
+_rq.post = _orig_post
+
+
+class _SettleAcct:
+    configured = True
+
+    def __init__(self, qty, avg, fills):
+        self.qty, self.avg, self.fills = qty, avg, fills
+
+    def get_balance(self, fresh=False):
+        return {"qtyByTicker": {"TQQQ": self.qty}, "holdings": {"TQQQ": {"avgPrice": self.avg}}}
+
+    def order_fill(self, oid):
+        return self.fills.get(str(oid))
+
+
+def _settle_bot(acct):
+    b = bot(acct)
+    b.pos.units, b.pos.entryPrice, b.pos.turn, b.pos.totalInvested, b.cash = 27.0, 102.66, 15, 2771.82, 2700.0
+    b.last_price = 77.05
+    b.pending_orders = [
+        {"orderId": "149428", "leg": "1.15증가 LOC", "units": 1, "limit": 93.96, "session": "2000-01-01",
+         "qtyBefore": 30.0, "avgBefore": 100.0, "budget": 150.0, "reason": "엑셀", "mode": "excel"},
+        {"orderId": "149891", "leg": "평단 LOC", "units": 1, "limit": 102.66, "session": "2000-01-01",
+         "qtyBefore": 30.0, "avgBefore": 100.0, "budget": 150.0, "reason": "엑셀", "mode": "excel"}]
+    return b
+
+
+cancelled = {"149428": {"qty": 0.0, "price": 0.0, "canceled": 1.0}, "149891": {"qty": 0.0, "price": 0.0, "canceled": 1.0}}
+s1 = _settle_bot(_SettleAcct(qty=40.0, avg=95.0, fills=cancelled))      # 직접 산 순증 +10주
+s1._settle_pending_loc()
+check("봇 주문이 앱에서 취소된 날, 같은 날 직접 산 10주를 봇 몫으로 적지 않는다", s1.pos.units == 27.0 and s1.pos.turn == 15,
+      f"{s1.pos.units:g}주 · T={s1.pos.turn}")
+trader.SETTLE_RETRY_SEC = 1800.0
+s2 = _settle_bot(_SettleAcct(qty=40.0, avg=95.0, fills={}))             # 체결내역을 못 읽는다
+s2._settle_pending_loc()
+check("체결내역을 못 읽으면 바로 잔고로 적지 않고 기다린다", s2.pos.units == 27.0 and len(s2.pending_orders) == 2, "")
+trader.SETTLE_RETRY_SEC = 0.0
+s2._settle_pending_loc()
+check("끝내 못 읽으면 종가에 붙을 수 있던 봇 주문 수량(2주)까지만 · 종가로 적는다 (예전: 10주 @ $55.15)",
+      s2.pos.units == 29.0 and abs(s2.pos.totalInvested - (2771.82 + 2 * 77.05)) < 1e-6, f"{s2.pos.units:g}주")
 
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")
