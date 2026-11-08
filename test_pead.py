@@ -136,6 +136,18 @@ retail_trend = {"foreignNet": -60_000, "instNet": -40_000, "retailNet": 100_000}
 c_retail = P.evaluate_candidate("000106", "개미단독매수", "kospi", good_tech, retail_trend, good_fin, clean_disc, reg, params)
 check("외인·기관 동반 순매도(개인 단독 매수) 종목 차단", not c_retail["passed"], c_retail["failReasons"][0])
 
+# 분기·반기·사업보고서는 모든 상장사가 내는 정기 공시 — 실적 서프라이즈 신호가 아니다 (2026-11-08 점검)
+check("정기보고서(분기·반기·사업보고서) 제목은 실적 공시로 치지 않는다",
+      not any(any(kw in t for kw in P.EARNINGS_KEYWORDS)
+              for t in ("분기보고서 (2026.09)", "반기보고서 (2026.06)", "사업보고서 (2025.12)")), "")
+decline_fin = dict(good_fin, opYoyPct=-40.0, revYoyPct=-15.0, opQoqPct=-20.0)
+c_decline = P.evaluate_candidate("000107", "실적역성장", "kospi", good_tech, good_trend, decline_fin, clean_disc, reg, params)
+check("실적 공시가 있어도 영업이익이 YoY · QoQ 모두 줄었으면 차단", not c_decline["passed"],
+      (c_decline["failReasons"] or ["(통과됨)"])[0])
+lag_fin = dict(good_fin, opYoyPct=None, revYoyPct=None, opQoqPct=None)
+c_lag = P.evaluate_candidate("000108", "재무미반영", "kospi", good_tech, good_trend, lag_fin, clean_disc, reg, params)
+check("재무 데이터가 아직 갱신 전(증감률 없음)이면 잠정실적 공시만으로 통과한다", c_lag["passed"], c_lag["peadBadge"])
+
 print("── 4단계: 슬롯 포트폴리오 · KOFR 파킹 · 시가 손절 · 20일선 추세 익절 ──")
 UNIVERSE = [
     {"code": "000100", "name": "우량반도체", "market": "kospi", "kospi200": True, "kosdaq150": False},

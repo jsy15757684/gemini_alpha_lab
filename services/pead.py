@@ -55,9 +55,10 @@ MAX_LOGS = 200
 
 HEADERS = {"User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36"}
 
+# 분기·반기·사업보고서는 넣지 않는다 — 모든 상장사가 기한(11/14 등)에 맞춰 내는 정기 공시라
+# 넣으면 보고서 시즌마다 거의 모든 종목이 '실적공시 포착' 으로 관문을 지나간다 (2026-11-08 점검)
 EARNINGS_KEYWORDS = (
-    "영업(잠정)실적", "잠정실적", "매출액또는손익구조", "분기보고서",
-    "반기보고서", "사업보고서", "결산실적",
+    "영업(잠정)실적", "잠정실적", "매출액또는손익구조", "결산실적",
 )
 CATALYST_KEYWORDS = ("단일판매", "공급계약", "수주")
 TOXIC_KEYWORDS = (
@@ -596,6 +597,10 @@ def evaluate_candidate(
         strong_qoq = (op_qoq is not None and op_qoq >= max(30.0, params.minOpYoyPct))
         strong_cons = (cons_yoy is not None and cons_yoy >= params.minOpYoyPct and (fin.get("consOpEok") or 0) > 0)
         rev_ok = (rev_yoy is None) or (rev_yoy >= params.minRevYoyPct) or turnaround
+        # 공시만으로 통과시킬 때: 아는 증감률(YoY · QoQ)이 하나라도 플러스이거나, 아직 재무에 반영 전이라 모를 때만.
+        # '매출액또는손익구조 30% 변경' 공시는 감소일 때도 나온다 — 재무가 감소를 보여 주면 막는다
+        known_growth = [x for x in (op_yoy, op_qoq) if x is not None]
+        not_declining = not known_growth or any(x > 0 for x in known_growth)
 
         if turnaround:
             pead_ok = True
@@ -607,7 +612,7 @@ def evaluate_candidate(
         elif strong_qoq and rev_ok:
             pead_ok = True
             pead_badge = f"{fin.get('quarter')} 영업이익 QoQ {op_qoq:+.1f}%"
-        elif earn_disc and (op_eok is None or op_eok > 0):
+        elif earn_disc and (op_eok is None or op_eok > 0) and not_declining:
             pead_ok = True
             pead_badge = f"실적공시 포착 ({earn_disc['date'][5:]})"
         elif cat_disc and strong_cons:
