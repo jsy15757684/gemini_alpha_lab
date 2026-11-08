@@ -215,14 +215,24 @@ def vwap_wick_check(q: Dict[str, Any], p: ScalpParams) -> tuple:
     return True, ""
 
 
-def update_signal_state(q: Dict[str, Any], st: Dict[str, Any], now: datetime) -> None:
-    """실제 매매용 종목별 장중 상태(VWAP 눌림 여부 · 09:05 개장 5분 고가)를 갱신한다."""
+def update_signal_state(q: Dict[str, Any], st: Dict[str, Any], now: datetime,
+                        bounce_pct: float = 0.3) -> None:
+    """실제 매매용 종목별 장중 상태(VWAP 눌림 여부 · 09:05 개장 5분 고가)를 갱신한다.
+
+    눌림은 'VWAP 위로 +bounce_pct% 넘게 올랐다가(armed) VWAP 까지 내려온 것' 만 센다.
+    개장 직후에는 VWAP ≈ 현재가라, 그냥 'VWAP 근처' 를 세면 첫 시세에서 모든 종목이 터치로 잡히고
+    눌림 없이 오른 종목도 09:03 에 '눌림 반등' 으로 샀다 (2026-11-08 점검).
+    """
     code = q.get("code") or ""
     px, vw = q.get("price") or 0, q.get("vwap") or 0
     if not code or px <= 0:
         return
-    if vw > 0 and px <= vw * 1.001:
-        st.setdefault("touched", {})[code] = True
+    if vw > 0:
+        armed = st.setdefault("armed", {})
+        if px >= vw * (1 + bounce_pct / 100.0):
+            armed[code] = True
+        elif armed.get(code) and px <= vw * 1.001:
+            st.setdefault("touched", {})[code] = True
     if now >= _at(now, (9, 5, 0)):
         st.setdefault("orHigh", {}).setdefault(code, q.get("high") or px)
 
@@ -233,7 +243,7 @@ def evaluate_entry_signal(q: Dict[str, Any], st: Dict[str, Any], now: datetime, 
     px, o = q.get("price") or 0, q.get("open") or 0
     vw = q.get("vwap") or 0
     chg = q.get("changePct") or 0
-    update_signal_state(q, st, now)
+    update_signal_state(q, st, now, p.pullbackBouncePct)
     if o <= 0 or px <= 0 or chg > p.maxChangePct:
         return "", []
 
@@ -632,7 +642,7 @@ class Scalper:
         for q in quotes:
             code = q["code"]
             if code in self.positions:
-                update_signal_state(q, sig_state, now)
+                update_signal_state(q, sig_state, now, p.pullbackBouncePct)
                 self._manage(code, q, now)
             elif (now < t_entry_end and len(self.positions) < p.maxStocks
                   and code not in d.get("entered", []) and not self._day_halt()):
@@ -649,7 +659,7 @@ class Scalper:
                     continue
                 self._buy(q, now, reason=sig_reason, extra_skills=sig_tags)
             else:
-                update_signal_state(q, sig_state, now)
+                update_signal_state(q, sig_state, now, p.pullbackBouncePct)
         for q in quotes:
             self._shadow_step(q, now, t_entry_end)
         return 1.0

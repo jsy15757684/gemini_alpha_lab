@@ -359,6 +359,18 @@ check("VWAP_PULLBACK: 당일 VWAP 눌림 지지 후 +0.3% 재돌파 시 추격 �
       "P1" in sp.positions and "VWAP눌림반등" in sp.positions["P1"]["skills"],
       f"매수가 {sp.positions['P1']['entry']:,.0f}원 · 태그 {sp.positions['P1']['skills']}")
 
+# 2-b) 개장 직후엔 VWAP ≈ 현재가라 첫 시세에서 '터치' 로 잡혔다 → 눌림 없이 오른 종목도 09:03 에 '눌림 반등' 으로 샀다 (2026-11-08 점검)
+vp = S.ScalpParams(entryMode="VWAP_PULLBACK")
+vst = {}
+vq = lambda px, vw: {"code": "V1", "price": px, "open": 10_000, "vwap": vw, "high": px, "changePct": 3.0}
+S.evaluate_entry_signal(vq(10_000, 10_000), vst, at(9, 0, 2, day=15), vp)          # 첫 체결: 현재가 = 시가 = VWAP
+sig_nopb, _ = S.evaluate_entry_signal(vq(10_200, 10_100), vst, at(9, 3, 1, day=15), vp)  # 눌림 없이 꾸준히 상승
+check("VWAP_PULLBACK: 개장 직후 VWAP 과 같은 가격은 눌림이 아니다 (눌림 없이 오른 종목은 사지 않는다)",
+      sig_nopb == "", sig_nopb or "신호 없음")
+S.evaluate_entry_signal(vq(10_105, 10_110), vst, at(9, 4, day=15), vp)              # VWAP 위에 있다가 VWAP 으로 내려옴
+sig_pb, _ = S.evaluate_entry_signal(vq(10_160, 10_115), vst, at(9, 5, 30, day=15), vp)
+check("VWAP_PULLBACK: VWAP 위로 올랐다가 VWAP 까지 내려온 뒤 다시 오르면 산다", sig_pb != "", sig_pb)
+
 # 3) ⑤ 본전 보존선(breakevenOn): +1.2% 도달 시 수수료 포함 본전가(floor) 잠금
 Q["P1"] = dict(mk(10_180, hoga="09:03:50", name="P1"), vwap=10_080, high=10_190)  # 매수가 10,050 대비 +1.29%
 sp.step(at(9, 3, 50, day=15))
