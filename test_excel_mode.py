@@ -290,6 +290,8 @@ s1 = _settle_bot(_SettleAcct(qty=40.0, avg=95.0, fills=cancelled))      # 직접
 s1._settle_pending_loc()
 check("봇 주문이 앱에서 취소된 날, 같은 날 직접 산 10주를 봇 몫으로 적지 않는다", s1.pos.units == 27.0 and s1.pos.turn == 15,
       f"{s1.pos.units:g}주 · T={s1.pos.turn}")
+check("취소된 날은 '종가가 상한 위' 가 아니라 '취소됨' 으로 알린다", "취소" in s1.last_decision
+      and any("취소됐습니다" in l["message"] for l in s1.logs if isinstance(l, dict)), s1.last_decision)
 trader.SETTLE_RETRY_SEC = 1800.0
 s2 = _settle_bot(_SettleAcct(qty=40.0, avg=95.0, fills={}))             # 체결내역을 못 읽는다
 s2._settle_pending_loc()

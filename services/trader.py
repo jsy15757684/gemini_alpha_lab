@@ -1430,8 +1430,14 @@ class TradingBot:
         self.pending_orders = [o for o in self.pending_orders if o not in ripe]
 
         if excel and filled < 1:
-            self.last_decision = f"무매법(엑셀) LOC 미체결 (종가가 모든 상한 위) · 회차 유지 {self.pos.turn}"
-            self.log("INFO", f"[LOC 정산] {legs} 미체결 — 종가가 상한을 넘었습니다. 이월 없이 다음 거래일에 다시 냅니다.")
+            if by_order is not None and getattr(self, "_last_canceled", 0):
+                # 같은 종목을 앱에서 직접 매매하려면 봇 주문을 먼저 취소해야 한다 (나무증권 24174)
+                self.last_decision = f"무매법(엑셀) LOC 가 취소돼 오늘 매수 없음 · 회차 유지 {self.pos.turn}"
+                self.log("WARNING", f"[LOC 정산] {legs} — {self._last_canceled}건이 취소됐습니다 (앱에서 직접 "
+                                    f"매매하며 취소한 것으로 보입니다). 오늘은 사지 않은 것으로 적습니다.")
+            else:
+                self.last_decision = f"무매법(엑셀) LOC 미체결 (종가가 모든 상한 위) · 회차 유지 {self.pos.turn}"
+                self.log("INFO", f"[LOC 정산] {legs} 미체결 — 종가가 상한을 넘었습니다. 이월 없이 다음 거래일에 다시 냅니다.")
             self._persist()
             return
         if filled < 1:
@@ -1492,6 +1498,7 @@ class TradingBot:
     def _loc_fills(self, orders: List[Dict[str, Any]]) -> Optional[Tuple[float, float, float]]:
         """주문들의 체결 (수량 합, 체결금액 합, 소진 스플릿 재매수가 아닌 수량). 하나라도 못 읽으면 None."""
         qty = amt = regular = 0.0
+        self._last_canceled = 0
         for o in orders:
             oid = o.get("orderId")
             if not oid or str(oid).startswith(("UNKNOWN", "MOCK")):
@@ -1505,6 +1512,8 @@ class TradingBot:
                 return None
             qty += f["qty"]
             amt += f["qty"] * f["price"]
+            if f.get("canceledBy") or (float(f.get("canceled") or 0) > 0 and f["qty"] <= 0):
+                self._last_canceled += 1
             if not o.get("split"):
                 regular += f["qty"]
         return qty, amt, regular
