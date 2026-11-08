@@ -70,10 +70,12 @@ class ScalpParams:
     maxDayStops: int = 2          # 하루 손절 이 횟수면 그날 신규 진입 끝 (0 = 끔)
     maxDayLossPct: float = 1.0    # 하루 실현 손실이 시드의 이 %면 그날 신규 진입 끝 (0 = 끔)
     # ── 진입 기법 모드 & 추가 스킬 (하나씩 켜고 끌 수 있다) ──
-    entryMode: str = "HYBRID_PRO" # 진입 기법: HYBRID_PRO · VWAP_ORB · VWAP_PULLBACK · ORB_5M · OPEN_BREAK
-    timeStopOn: bool = True       # ② 30초 타임컷: 산 뒤 timeStopSec 안에 +timeStopPct 를 못 찍으면 판다
-    timeStopSec: float = 30.0
-    timeStopPct: float = 1.5      #   매수가 대비 (비용 빼기 전)
+    # 기본 VWAP_ORB (2026-11-08): HYBRID_PRO 는 09:00 부터 옛 시초가 +0.5% 돌파가 섞여, 초반 진입이 수익이 안 났던
+    # 예전 방식과 거의 같았다. 새 기법(VWAP 눌림 · 5분 고가 돌파)만 보려고 기본을 바꿨다. 화면에서 고를 수 있다.
+    entryMode: str = "VWAP_ORB"   # 진입 기법: HYBRID_PRO · VWAP_ORB · VWAP_PULLBACK · ORB_5M · OPEN_BREAK
+    timeStopOn: bool = True       # ② 타임컷: 산 뒤 timeStopSec 안에 +timeStopPct 를 못 찍으면 판다
+    timeStopSec: float = 60.0     #   2026-11-08: 30초 · +1.5% → 60초 · +0.8%. 산 뒤 평균 최대 상승이 +0.36% 라
+    timeStopPct: float = 0.8      #   18건 중 15건이 타임컷으로 끝나 ⑤ 본전선 · ⑦ 추세 홀딩이 일할 기회가 없었다
     imbalanceOn: bool = True      # ③ 호가 불균형: 총매도잔량 ÷ 총매수잔량 ≥ imbalanceMin 일 때만 산다
     imbalanceMin: float = 2.0
     vwapFilterOn: bool = True     # ④ VWAP 정배열·윗꼬리 필터: 현재가 ≥ VWAP 이고 윗꼬리 ≤ maxWickRatio 일 때만 산다
@@ -81,6 +83,7 @@ class ScalpParams:
     pullbackBouncePct: float = 0.3  # VWAP 눌림 뒤 재돌파 기준 (+0.3%)
     breakevenOn: bool = True      # ⑤ 본전 보존선 잠금: +breakevenPct 도달 또는 1차 익절 뒤 손절선을 본전 위로 격상
     breakevenPct: float = 1.2     #   매수가 대비 +1.2% 이상 오르면 수수료 포함 본전가(floor) 자동 설정
+    breakevenBufferPct: float = 0.15  # 보존선에 더하는 호가 차이 몫 — 팔 때는 매수1호가에 붙어 비용만 넣으면 0.1~0.2% 손실
     pyramidOn: bool = True        # ⑥ 불타기: +pyramidPct 를 넘고 거래량이 몰리면 처음 수량의 pyramidAddPct% 를 더 산다
     pyramidPct: float = 1.5       #   그 뒤 평단(비용 포함) 아래로 내려오면 전량 — 수익 보존선
     pyramidAddPct: float = 30.0
@@ -88,6 +91,7 @@ class ScalpParams:
     trendHoldOn: bool = True      # ⑦ 대장주 추세 홀딩: 09:30 에 수익권 & VWAP 위면 15:15 까지 트레일링으로 추세 극대화
     trendHoldMinPct: float = 0.5  #   09:30 추세 홀딩 전환 최소 순수익률(%)
     trendClose: str = "15:15"     #   장중 추세 홀딩 종목 최종 강제 청산 시각
+    paramsV2: bool = True         # 2026-11-08 기본값 변경(기법 · 타임컷)을 옛 저장분에 한 번만 적용했다는 표시
     gapMinPct: float = 1.5        # 선정: 동시호가 예상 갭 하한 (원본 MIN_GAP_UP_PCT)
     gapMaxPct: float = 7.0        # 선정: 상한 (원본 MAX_GAP_UP_PCT)
     minExpTurnoverEok: float = 0.5
@@ -95,11 +99,20 @@ class ScalpParams:
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "ScalpParams":
         p = cls()
-        for k, v in (d or {}).items():
+        raw = d or {}
+        for k, v in raw.items():
             if hasattr(p, k) and v is not None:
                 setattr(p, k, type(getattr(p, k))(v))
+        if raw and "paramsV2" not in raw:
+            # 옛 저장분: 기본 기법 · 타임컷 기준을 새 기본으로 한 번만 바꾼다 (켜고 끈 스킬은 그대로)
+            p.entryMode, p.timeStopSec, p.timeStopPct = cls.entryMode, cls.timeStopSec, cls.timeStopPct
+            p.paramsV2 = True
         p.maxStocks = max(1, min(10, p.maxStocks))
         return p
+
+    def breakeven_floor(self, entry: float) -> float:
+        """비용(세금 · 수수료) + 호가 차이까지 넣은 본전 보존선 — 이 아래로 오면 판다."""
+        return round(entry * (1 + (self.costPct + self.breakevenBufferPct) / 100.0), 2)
 
     def selector(self) -> kr_selector.SelectParams:
         return kr_selector.SelectParams(topN=self.maxStocks, gapMinPct=self.gapMinPct, gapMaxPct=self.gapMaxPct,
@@ -287,6 +300,10 @@ SHADOWS = {
 # 청산을 바꾼 변형: {키: (진입 신호, 강제 청산 시각)}. 손절(−stopPct) · 트레일링(고점이 +partialPct 를 넘은 뒤
 # −trailPct)만 쓰고, 30초 타임컷 · 1차 익절 · 목표 익절은 쓰지 않는다 (오른 종목은 끝까지 따라간다).
 SHADOW_RUN = {"D": ("A", (9, 30, 0)), "E": ("A", (15, 15, 0))}
+# 그림자 A~C 의 타임컷은 기록을 쌓기 시작한 규칙(30초 · +1.5% · 늘 켬)으로 고정한다 — 실제(모의) 타임컷을
+# 바꾸거나 꺼도 지금까지 쌓인 그림자 기록과 같은 기준으로 비교되게 (2026-11-08)
+SHADOW_TIME_STOP_SEC = 30.0
+SHADOW_TIME_STOP_PCT = 1.5
 LATE_POLL_SEC = 10.0          # 09:30 뒤 장중 보유 그림자(E)는 10초마다 본다 (해외 봇 호출과 나눠 쓴다)
 
 
@@ -586,7 +603,7 @@ class Scalper:
                     if not pos.get("trendHold"):
                         pos["trendHold"] = True
                         pos["timeOk"] = True
-                        min_fl = round(pos["entry"] * (1 + p.costPct / 100.0), 2)
+                        min_fl = p.breakeven_floor(pos["entry"])
                         pos["floor"] = max(pos.get("floor") or 0.0, min_fl)
                         if "15:15추세홀딩" not in pos.get("skills", []):
                             pos.setdefault("skills", []).append("15:15추세홀딩")
@@ -684,9 +701,9 @@ class Scalper:
                                               f"트레일링 (고점 대비 −{dd:.1f}%)", now)
                     continue
                 if not pos["timeOk"]:
-                    if pos["peak"] >= pos["entry"] * (1 + p.timeStopPct / 100.0):
+                    if pos["peak"] >= pos["entry"] * (1 + SHADOW_TIME_STOP_PCT / 100.0):
                         pos["timeOk"] = True
-                    elif now.timestamp() - pos["atTs"] >= p.timeStopSec:
+                    elif now.timestamp() - pos["atTs"] >= SHADOW_TIME_STOP_SEC:
                         self._shadow_sell(key, code, q, pos["remaining"], "TIME", "30초 타임컷", now)
                         continue
                 act = decide_exit(pos, px, p)
@@ -709,7 +726,7 @@ class Scalper:
             st["positions"][code] = {"code": code, "name": q.get("name") or code, "entry": px, "qty": qty,
                                      "remaining": qty, "peak": float(q["price"]), "low": float(q["price"]),
                                      "partialDone": False, "pnl": 0.0, "atTs": now.timestamp(),
-                                     "timeOk": not p.timeStopOn}
+                                     "timeOk": False}
             self._shadow_record(key, code, q.get("name"), "BUY", px, qty, 0.0, 0.0, why, now)
 
     def _shadow_sell(self, key: str, code: str, q: Dict[str, Any], qty: int, kind: str, reason: str,
@@ -748,7 +765,7 @@ class Scalper:
         if p.breakevenOn and not pos.get("floor") and (
             pos.get("partialDone") or pos["peak"] >= first * (1 + p.breakevenPct / 100.0)
         ):
-            pos["floor"] = round(pos["entry"] * (1 + p.costPct / 100.0), 2)
+            pos["floor"] = p.breakeven_floor(pos["entry"])
             if "본전보존선" not in pos.get("skills", []):
                 pos.setdefault("skills", []).append("본전보존선")
         if pos.get("floor") and px <= pos["floor"]:
@@ -764,7 +781,7 @@ class Scalper:
             if pos["peak"] >= first * (1 + p.timeStopPct / 100.0):
                 pos["timeOk"] = True
             elif now.timestamp() - pos.get("atTs", now.timestamp()) >= p.timeStopSec:
-                pos.setdefault("skills", []).append("30초 타임컷")
+                pos.setdefault("skills", []).append(f"{p.timeStopSec:.0f}초 타임컷")
                 self._sell(code, q, pos["remaining"], "TIME",
                            f"{p.timeStopSec:.0f}초 안에 +{p.timeStopPct}% 를 못 찍음 (타임컷)", now)
                 return
@@ -778,7 +795,7 @@ class Scalper:
                 if act["kind"] == "PARTIAL" and code in self.positions and p.breakevenOn:
                     rem_pos = self.positions[code]
                     rem_pos["floor"] = max(rem_pos.get("floor") or 0.0,
-                                           round(rem_pos["entry"] * (1 + p.costPct / 100.0), 2))
+                                           p.breakeven_floor(rem_pos["entry"]))
                     if "본전보존선" not in rem_pos.get("skills", []):
                         rem_pos.setdefault("skills", []).append("본전보존선")
                 return
@@ -815,7 +832,7 @@ class Scalper:
         pos["cost"] = pos.get("cost", 0) + n * px
         pos["pyramided"] = True
         pos["timeOk"] = True
-        pos["floor"] = round(pos["entry"] * (1 + p.costPct / 100.0), 2)     # 비용까지 본전
+        pos["floor"] = p.breakeven_floor(pos["entry"])     # 비용 + 호가 차이까지 본전
         pos.setdefault("skills", []).append(f"불타기 +{n}주")
         self._record(code, pos["name"], "PYRAMID", round(px, 2), n, 0.0, 0.0,
                      f"+{p.pyramidPct}% 돌파 · 거래 몰림 → {p.pyramidAddPct:.0f}% 추가 · 보존선 {pos['floor']:,.0f}원", now)

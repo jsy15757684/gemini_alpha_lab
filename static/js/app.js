@@ -883,7 +883,7 @@ async function loadMuma() {
 
 const SCALP_KIND = { BUY: "매수", PARTIAL: "1차 익절(절반)", TARGET: "목표 익절", TRAIL: "트레일링",
                      STOP_LOSS: "손절", FORCE: "09:30 청산", STALE: "미청산 정리",
-                     TIME: "30초 타임컷", PYRAMID: "불타기", FLOOR: "보존선 이탈" };
+                     TIME: "타임컷", PYRAMID: "불타기", FLOOR: "보존선 이탈" };
 const SCALP_PHASE = { wait: "08:50 후보 훑기 대기", select: "후보 훑는 중 (약 7분)", selected: "08:57:50 다시 거르기 대기",
                       refine: "다시 거르는 중", ready: "09:00 장 시작 대기", trade: "감시 · 매매 중", done: "오늘 끝" };
 
@@ -953,7 +953,7 @@ function renderScalper(s) {
   $("scalperLogs").innerHTML = (s.logs || []).map(l => `${escapeHtml(l.time)} ${escapeHtml(l.message)}`).join("<br>");
 }
 
-// ───────── 국내 200일선 · PEAD 스윙 (모의) ─────────
+// ───────── 국내 PEAD · 기준선 스윙 (모의) ─────────
 
 const PEAD_KIND = {
   BUY: "슬롯 매수",

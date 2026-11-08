@@ -13,7 +13,7 @@
 import logging
 import threading
 import time
-from datetime import datetime, timedelta, date
+from datetime import datetime, timedelta, timezone, date
 from typing import Any, Dict, Optional, Tuple
 
 import requests
@@ -27,7 +27,7 @@ _FX_LOCK = threading.Lock()
 
 def seoul_today() -> "date":
     """서울 기준 오늘 날짜. 서버는 UTC 로 돌지만 공시환율은 한국 영업일이다."""
-    return (datetime.utcnow() + timedelta(hours=9)).date()
+    return (datetime.now(timezone.utc) + timedelta(hours=9)).date()
 
 
 def get_official_fx() -> Dict[str, Any]:

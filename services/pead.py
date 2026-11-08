@@ -1,13 +1,13 @@
-"""국내 주식 [200일선 추세 방패 + PEAD 실적 모멘텀 + 외인·기관 수급] 스윙 엔진 (모의 전용).
+"""국내 주식 [기준 이평선(기본 60일 수급선) 추세 방패 + PEAD 실적 모멘텀 + 외인·기관 수급] 스윙 엔진 (모의 전용).
 
 **실주문은 없다.** 실계좌 봇(bots.json)이나 단타 스캘퍼(scalper.json)와 완전히 분리된
 별도 장부(data/pead.json)에만 가상 포지션과 파킹 이자를 기록한다.
 
 전략 4단계 (한국 시장 맞춤형 하이브리드 설계)
-  1단계 [시장 & 종목 200일선 방패]
-    · 코스피 / 코스닥 지수가 200일 이동평균선 아래(역배열 하락장)면 해당 시장 신규 매수 중단
+  1단계 [시장 & 종목 기준 이평선 방패 — 기본 60일 수급선 · 120/200일선 선택 (indexSmaPeriod)]
+    · 코스피 / 코스닥 지수가 기준 이동평균선 아래(역배열 하락장)면 해당 시장 신규 매수 중단
     · 남는 슬롯 현금은 무위험 금리형 ETF(KODEX KOFR금리액티브 423160)에 파킹해 일복리 이자 적립
-    · 개별 종목도 현재가 > 200일선(정배열)이어야 하며, 발표 전 20일간 이미 과열(+25% 초과)된
+    · 개별 종목도 현재가 > 기준선(정배열)이어야 하며, 발표 전 20일간 이미 과열(+25% 초과)된
       '뉴스에 팔아라(선반영)' 종목은 제외
   2단계 [실적 서프라이즈 · 공시 판독 (PEAD)]
     · 분기 영업이익 흑자 필수 (영업적자인데 일회성 처분이익으로 당기순이익만 흑자인 착시 차단)
@@ -68,7 +68,7 @@ TOXIC_KEYWORDS = (
 
 
 def _make_store() -> botstore.JsonStore:
-    return botstore.JsonStore("pead.json", "국내 200일선·PEAD(모의) 상태")
+    return botstore.JsonStore("pead.json", "국내 PEAD·기준선(모의) 상태")
 
 
 store = _make_store()
@@ -80,7 +80,7 @@ def _active_store() -> botstore.JsonStore:
     want_dir = os.path.abspath(botstore._DATA_DIR)
     cur_dir = os.path.abspath(os.path.dirname(store.path))
     if cur_dir != want_dir:
-        store = botstore.JsonStore("pead.json", "국내 200일선·PEAD(모의) 상태")
+        store = botstore.JsonStore("pead.json", "국내 PEAD·기준선(모의) 상태")
     return store
 
 
@@ -402,6 +402,8 @@ def analyze_bars(bars: List[Dict[str, Any]], sma_long: int = 60, sma_exit: int =
     if price <= 0 or prev_close <= 0:
         return None
 
+    # 이름은 sma200 · above200 이지만 값은 '기준 이평선(sma_long, 기본 60일)' 이다.
+    # 저장된 장부(pead.json) · 화면(app.js)이 이 키를 쓰므로 이름은 그대로 둔다.
     sma200 = sum(closes[-sma_long:]) / float(sma_long)
     sma20 = sum(closes[-sma_exit:]) / float(sma_exit)
     prior_vols = vols[-21:-1]
@@ -521,6 +523,14 @@ def market_allows_entry(regime: Dict[str, Any], market: str) -> Tuple[bool, str]
     if not info.get("bull"):
         return False, f"{info['label']} 지수 {n_ma}일선 하회 ({info['diffPct']:+.2f}%) — 하락장 방어"
     return True, f"{info['label']} {n_ma}일선 상회 ({info['diffPct']:+.2f}%)"
+
+
+def _prev_weekday(ref: datetime) -> datetime:
+    """ref 바로 전 평일 (월요일이면 지난 금요일). 공휴일은 모른다 — 연휴 뒤에는 다시 스캔하면 된다."""
+    d = ref - timedelta(days=1)
+    while d.weekday() >= 5:
+        d -= timedelta(days=1)
+    return d
 
 
 def compute_stop_price(open_px: float, entry_px: float) -> float:
@@ -658,13 +668,22 @@ def evaluate_candidate(
     f_net = int(trend.get("foreignNet") or 0)
     i_net = int(trend.get("instNet") or 0)
     smart_sum = f_net + i_net
+    # 투자자 동향 첫 줄이 오늘 봉 날짜가 아니면 '당일 수급' 이 아직 안 올라온 것 — 어제 수급으로 합격시키지 않는다.
+    # 날짜를 모르면(옛 저장분 · 시험 데이터) 막지 않는다 (2026-11-08 점검)
+    flow_date = str(trend.get("bizdate") or "")
+    bar_date = str(tech.get("date") or "")
+    flow_stale = bool(flow_date and bar_date and flow_date != bar_date)
     if not params.requireSmartMoney:
         flow_ok = True
+    elif flow_stale:
+        flow_ok = False
     else:
         flow_ok = (f_net > 0 or i_net > 0) and smart_sum > 0
 
     if flow_ok:
         reasons.append(f"수급 합격 (외인 {f_net:+,}주 · 기관 {i_net:+,}주)")
+    elif flow_stale:
+        fails.append(f"당일 수급 미집계 (투자자 동향이 {flow_date} 기준 · 오늘 봉 {bar_date})")
     else:
         fails.append(f"외인·기관 순매수 부재 (외인 {f_net:+,}주 · 기관 {i_net:+,}주)")
 
@@ -999,7 +1018,7 @@ class PeadEngine:
                                 pos["sma20"] = tech["sma20"]
                                 pos["peak"] = max(float(pos.get("peak") or tech["price"]), tech["price"])
                                 pos["low"] = min(float(pos.get("low") or tech["price"]), tech["price"])
-                    # 2차 심층 판독 대상: 1순위(200일선 정배열 + 거래량/상승률 활성) 및 조용한 장세 대비 2순위 백업 풀
+                    # 2차 심층 판독 대상: 1순위(기준선 정배열 + 거래량/상승률 활성) 및 조용한 장세 대비 2순위 백업 풀
                     queued_codes = {x["code"] for x in self.after_hours_queue}
                     if r["code"] in queued_codes or (
                         tech["above200"]
@@ -1115,6 +1134,13 @@ class PeadEngine:
                 cand = next((x for x in self.candidates_pool if x["code"] == code), None)
             if not cand:
                 return False, f"최근 스캔 목록에 없는 종목입니다 ({code}). 먼저 스캔을 실행하세요."
+            # 신호는 직전 거래일(평일)까지만 산다 — 더 지나면 손절선(기준봉 시가) · 가격이 며칠 전 것이다.
+            # 강제 승인(force)이어도 막는다: force 는 '관문 미달' 을 넘기는 것이지 '지난 신호' 를 살리는 것이 아니다
+            sig_date = str(cand.get("date") or "")
+            oldest_ok = _prev_weekday(ref).strftime("%Y-%m-%d")
+            if sig_date and sig_date < oldest_ok:
+                return False, (f"{cand.get('name', code)} 신호가 {sig_date} 것이라 너무 오래됐습니다 "
+                               f"(직전 거래일 {oldest_ok} 신호까지만 삽니다). 다시 스캔하세요.")
             if not force:
                 mkt_ok, mkt_msg = market_allows_entry(self.regime, cand.get("market", "kospi"))
                 if not mkt_ok:
@@ -1395,7 +1421,7 @@ class PeadEngine:
         self._stop.clear()
         self._thread = threading.Thread(target=self._loop, name="kr-pead", daemon=True)
         self._thread.start()
-        logger.info("국내 200일선·PEAD 엔진(모의) 시작")
+        logger.info(f"국내 PEAD 엔진(모의) 시작 · 기준선 {self.params.indexSmaPeriod}일")
 
     def stop(self) -> None:
         self._stop.set()

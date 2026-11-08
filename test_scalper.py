@@ -4,6 +4,7 @@
 import os
 import sys
 import tempfile
+from dataclasses import asdict
 from datetime import datetime
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -51,6 +52,12 @@ def orig():
     x.params.timeStopOn = x.params.imbalanceOn = x.params.pyramidOn = False
     x.params.vwapFilterOn = x.params.breakevenOn = x.params.trendHoldOn = False
     x.params.entryMode = "OPEN_BREAK"
+    return x
+
+
+def classic(x):
+    """스킬 동작 시험용 — 시가 돌파 진입 · 옛 타임컷(30초 · +1.5%). 2026-11-08 기본값 변경과 상관없이 같은 장면을 본다."""
+    x.params.entryMode, x.params.timeStopSec, x.params.timeStopPct = "OPEN_BREAK", 30.0, 1.5
     return x
 krx_master.load = lambda: [{"code": "000001"}]
 krx_master.candidates = lambda rows: rows
@@ -208,7 +215,7 @@ SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
 print("── 추가 스킬 (② 30초 타임컷 · ③ 호가 불균형 · ⑥ 불타기) ──")
 check("새 봇은 세 스킬이 켜진 채 시작한다", (lambda p: p.timeStopOn and p.imbalanceOn and p.pyramidOn)(S.ScalpParams()), "")
 SEL["chosen"] = [{"code": "C1", "name": "C1", "gap": 3.0, "score": 1.0}]
-k1 = S.Scalper(namuh_account=object())
+k1 = classic(S.Scalper(namuh_account=object()))
 k1.step(at(8, 50, 5, day=2)); k1.step(at(8, 57, 55, day=2))      # 2026-10-02 금
 Q["C1"] = dict(mk(10_060, hoga="09:01:00", name="C1"), totalAsk=100_000, totalBid=80_000)
 k1.step(at(9, 1, day=2))
@@ -225,7 +232,7 @@ t = k1.trades[-1]
 check("② 30초 안에 +1.5% 를 못 찍으면 판다 (손절선까지 기다리지 않음)", not k1.positions and t["kind"] == "TIME"
       and "30초 타임컷" in t.get("skills", []), f"{t['kind']} {t['pct']}%")
 
-k2 = S.Scalper(namuh_account=object())
+k2 = classic(S.Scalper(namuh_account=object()))
 k2.step(at(8, 50, 5, day=19)); k2.step(at(8, 57, 55, day=19))
 Q["C1"] = dict(mk(10_060, hoga="09:01:00", name="C1", ask=10_070), totalAsk=300_000, totalBid=100_000, volume=100_000)
 k2.step(at(9, 1, day=19))
@@ -337,6 +344,7 @@ print("── 고수익 신규 기법 (VWAP 눌림목 반등 · 윗꼬리/VWAP �
 SEL["chosen"] = [{"code": "P1", "name": "주도주1", "gap": 3.2, "score": 2.5}]
 sp = S.Scalper(namuh_account=object())
 sp.params.imbalanceOn = False
+sp.params.entryMode = "HYBRID_PRO"      # 이 장면은 복합 기법(09:00 시가 돌파 포함)으로 본다 — 기본은 2026-11-08 부터 VWAP_ORB
 sp.step(at(8, 50, 5, day=15)); sp.step(at(8, 57, 55, day=15))
 
 # 1) ④ VWAP 아래 약세 및 윗꼬리 과다(고점 매도 설거지) 진입 차단 검증
@@ -397,6 +405,31 @@ sp.step(at(15, 15, 1, day=15))
 check("⑦ 15:15 장 마감 전 강제 청산으로 큰 추세 수익을 확정한다",
       "P1" not in sp.positions and sp.trades[-1]["kind"] == "FORCE" and sp.trades[-1]["pct"] > 5.0,
       f"수익률 {sp.trades[-1]['pct']:+.2f}% · 손익 {sp.trades[-1]['pnl']:+,}원")
+
+print("── 2026-11-08 기본값 조정 (기법 VWAP_ORB · 타임컷 60초 +0.8% · 본전선에 호가 차이) ──")
+np_ = S.ScalpParams()
+check("새 기본: 진입 기법 VWAP_ORB · 타임컷 60초 · +0.8%",
+      np_.entryMode == "VWAP_ORB" and np_.timeStopSec == 60.0 and np_.timeStopPct == 0.8, "")
+old = S.ScalpParams.from_dict({"entryMode": "HYBRID_PRO", "timeStopSec": 30.0, "timeStopPct": 1.5,
+                               "timeStopOn": False, "pyramidOn": False})
+check("옛 저장분은 기법 · 타임컷 기준만 한 번 새 기본으로 (켜고 끈 스킬은 그대로)",
+      old.entryMode == "VWAP_ORB" and old.timeStopSec == 60.0 and old.timeStopPct == 0.8
+      and not old.timeStopOn and not old.pyramidOn and old.paramsV2, "")
+mine = S.ScalpParams.from_dict({**asdict(np_), "entryMode": "ORB_5M", "timeStopSec": 45.0})
+check("바꾼 뒤 사용자가 고른 값은 다시 덮어쓰지 않는다", mine.entryMode == "ORB_5M" and mine.timeStopSec == 45.0, "")
+check("본전 보존선 = 매수가 × (1 + 비용 + 호가 차이 0.15%)",
+      np_.breakeven_floor(10_000) == round(10_000 * (1 + (np_.costPct + 0.15) / 100), 2), f"{np_.breakeven_floor(10_000):,.2f}원")
+
+# 그림자 A~C 는 실제 타임컷을 끄거나 바꿔도 옛 규칙(30초 · +1.5%)으로 판다 — 쌓인 기록과 같은 기준
+sh = S.Scalper(namuh_account=object())
+sh.params.timeStopOn = False
+sh.day = {"date": "2026-10-22", "shadow": {"A": {"positions": {"Z1": {
+    "code": "Z1", "name": "Z1", "entry": 10_000.0, "qty": 100, "remaining": 100, "peak": 10_050.0, "low": 10_000.0,
+    "partialDone": False, "pnl": 0.0, "atTs": at(9, 6, day=22).timestamp(), "timeOk": False}},
+    "entered": ["Z1"], "closed": []}}}
+sh._shadow_step(dict(mk(10_040, hoga="09:06:31", name="Z1"), code="Z1"), at(9, 6, 31, day=22), at(9, 20, day=22))
+check("그림자 A 는 실제 타임컷을 꺼도 30초 · +1.5% 규칙으로 판다",
+      not sh.day["shadow"]["A"]["positions"] and sh.shadow_trades and sh.shadow_trades[-1]["kind"] == "TIME", "")
 
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")

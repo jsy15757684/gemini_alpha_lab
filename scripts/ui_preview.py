@@ -64,11 +64,13 @@ def isolate() -> str:
     os.environ["PORT"] = str(PORT)
 
     sandbox = tempfile.mkdtemp(prefix="ui-preview-")
-    from services import botstore, tradelog
+    from services import botstore, spread_recorder, tradelog
     botstore._DATA_DIR = sandbox
     botstore.STORE_FILE = os.path.join(sandbox, "bots.json")
     botstore.arb_store.path = os.path.join(sandbox, "arb_bots.json")
     tradelog.LOG_FILE = os.path.join(sandbox, "trades.json")
+    # 괴리 기록기도 저장소의 data/spread_log.csv 대신 임시 디렉터리에 쓴다 (2026-11-08 점검에서 발견)
+    spread_recorder.LOG_FILE = os.path.join(sandbox, "spread_log.csv")
     return sandbox
 
 
@@ -165,7 +167,10 @@ def main() -> None:
     import server as server_module
 
     verify()
-    print(f"  ✅ 데이터 경로 격리: {sandbox}")
+    from services import spread_recorder
+    if not spread_recorder.LOG_FILE.startswith(sandbox):
+        sys.exit(f"❌ 기동을 중단했습니다 — 괴리 기록이 저장소 data/ 로 갑니다: {spread_recorder.LOG_FILE}")
+    print(f"  ✅ 데이터 경로 격리: {sandbox} (괴리 기록 포함)")
     print(f"  ✅ server.py import 후에도 키 없음")
 
     if check_only:

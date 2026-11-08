@@ -382,8 +382,8 @@
           <div class="inline small" style="flex-wrap:wrap;gap:.6rem">
             <b>⚡ 핵심 진입 기법:</b>
             <select class="input input-sm" id="scalperEntryMode">
-              <option value="HYBRID_PRO">🔥 복합 프로: VWAP 첫 눌림목 반등 + 09:05 5분고가 돌파 + VWAP 정배열 (권장)</option>
-              <option value="VWAP_ORB">📐 VWAP 눌림목 + 09:05 5분고가 돌파 (09:03 이전 추격매수 차단)</option>
+              <option value="HYBRID_PRO">🔥 복합 프로: VWAP 첫 눌림목 반등 + 09:05 5분고가 돌파 + VWAP 정배열 (09:00 시초가 돌파 포함)</option>
+              <option value="VWAP_ORB">📐 VWAP 눌림목 + 09:05 5분고가 돌파 (09:03 이전 추격매수 차단 · 기본)</option>
               <option value="VWAP_PULLBACK">🧲 주도주 VWAP 첫 눌림목 반등 전용 (09:03~ 지지 후 +0.3% 재돌파)</option>
               <option value="ORB_5M">🚀 09:05 개장 5분 고가(ORB) 돌파 전용 (그림자 E 최고수익 기법)</option>
               <option value="OPEN_BREAK">⚡ 기존 09:00 시초가 +0.5% 단순 돌파</option>
@@ -395,7 +395,7 @@
             <label class="inline" title="+1.2% 도달 또는 1차 익절 시 손절선을 수수료 포함 본전 위로 자동 격상"><input type="checkbox" class="scalper-skill" data-skill="breakevenOn"> ⑤ 본전 보존선 잠금 (+1.2%)</label>
             <label class="inline" title="+1.5% 수익권에서 체결속도 2배 폭발 시 30% 추가 매수"><input type="checkbox" class="scalper-skill" data-skill="pyramidOn"> ⑥ 거래폭발 불타기 (+30%)</label>
             <label class="inline" title="09:30 에 수익권 & VWAP 위인 강세 대장주는 15:15 까지 트레일링으로 추세 극대화"><input type="checkbox" class="scalper-skill" data-skill="trendHoldOn"> ⑦ 대장주 15:15 추세 홀딩</label>
-            <label class="inline" title="진입 후 30초 안에 +1.5% 못 찍으면 조기 정리"><input type="checkbox" class="scalper-skill" data-skill="timeStopOn"> ② 30초 타임컷</label>
+            <label class="inline" title="진입 후 정해 둔 시간(기본 60초) 안에 정해 둔 상승(기본 +0.8%)을 못 찍으면 조기 정리"><input type="checkbox" class="scalper-skill" data-skill="timeStopOn"> ② 타임컷</label>
           </div>
         </div>
         <div id="scalperAlert"></div>
@@ -700,6 +700,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.23.0"></script>
+<script src="/static/js/app.js?v=5.24.0"></script>
 </body>
 </html>

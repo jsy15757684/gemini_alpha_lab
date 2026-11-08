@@ -148,6 +148,16 @@ lag_fin = dict(good_fin, opYoyPct=None, revYoyPct=None, opQoqPct=None)
 c_lag = P.evaluate_candidate("000108", "재무미반영", "kospi", good_tech, good_trend, lag_fin, clean_disc, reg, params)
 check("재무 데이터가 아직 갱신 전(증감률 없음)이면 잠정실적 공시만으로 통과한다", c_lag["passed"], c_lag["peadBadge"])
 
+# 15:10 스캔 때 네이버 투자자 동향 첫 줄이 아직 어제 것일 수 있다 — 날짜를 보지 않으면 어제 수급으로 합격 (2026-11-08 점검)
+stale_trend = dict(good_trend, bizdate="2026-11-03")          # good_tech 의 봉 날짜는 2026-11-04
+c_stale = P.evaluate_candidate("000109", "어제수급", "kospi", good_tech, stale_trend, good_fin, clean_disc, reg, params)
+check("투자자 동향이 오늘 봉 날짜가 아니면(어제 수급) 수급 관문을 통과시키지 않는다",
+      not c_stale["passed"] and any("당일 수급" in f for f in c_stale["failReasons"]),
+      (c_stale["failReasons"] or ["(통과됨)"])[-1])
+c_today = P.evaluate_candidate("000110", "오늘수급", "kospi", good_tech, dict(good_trend, bizdate="2026-11-04"),
+                               good_fin, clean_disc, reg, params)
+check("투자자 동향 날짜가 오늘 봉과 같으면 그대로 통과", c_today["passed"], "")
+
 print("── 4단계: 슬롯 포트폴리오 · KOFR 파킹 · 시가 손절 · 20일선 추세 익절 ──")
 UNIVERSE = [
     {"code": "000100", "name": "우량반도체", "market": "kospi", "kospi200": True, "kosdaq150": False},
@@ -177,6 +187,11 @@ pos = eng.positions.get("000100")
 check("1클릭 승인 시 시드 20%(200만원) 슬롯 매수 & 기준봉 시가(11,200원)로 손절선 설정",
       ok and pos is not None and pos["stopPrice"] == 11_200 and 1_900_000 <= pos["cost"] <= 2_000_000,
       f"수량 {pos['qty']}주 · 손절선 {pos['stopPrice']:,}원")
+
+# 반자동 모드에서 며칠 지난 추천을 사면 손절선이 며칠 전 양봉 시가로 잡힌다 — 직전 거래일 신호까지만 산다
+ok_old, msg_old = eng.buy_candidate("000105", now=datetime(2026, 11, 9, 10, 0, 0, tzinfo=P.KST), force=True)
+check("신호가 직전 거래일보다 오래됐으면(11/04 신호 · 11/09 매수) 강제 승인이어도 사지 않는다",
+      not ok_old and "000105" not in eng.positions and "다시 스캔" in msg_old, msg_old)
 
 # 다음 날 유휴 4슬롯(800만원)에 대한 KOFR 파킹 이자 적립 확인
 eng.accrue_parking("2026-11-05")
@@ -214,6 +229,7 @@ eng2 = P.PeadEngine(namuh_account=None)
 eng2.update_params({"approvalMode": "AUTO"})
 eng2._trading_day = {"2026-11-06": True, "2026-11-09": True}   # 가짜 일봉 날짜와 상관없이 장이 열린 날로
 BARS_DB["000100"] = make_bars()  # 시가 11,200 / 종가 12,000
+BARS_DB["000100"][-2]["date"], BARS_DB["000100"][-1]["date"] = "2026-11-05", "2026-11-06"   # 스캔한 날의 봉 (지난 신호 막기와 맞춤)
 eng2.step(datetime(2026, 11, 6, 15, 11, 0, tzinfo=P.KST))
 eng2.step(datetime(2026, 11, 6, 15, 19, 0, tzinfo=P.KST))
 check("AUTO 모드는 15:18 에 승인 대기 시그널을 빈 슬롯에 자동 매수한다", "000100" in eng2.positions, "")

@@ -48,7 +48,7 @@ check("빗썸 인증 API 를 차단한다", "빗썸 인증 API" in r.stdout, "4�
 check("나무증권 호출을 차단한다", "나무증권 토큰" in r.stdout, "")
 check(".env 를 읽지 않는다", "APP_SKIP_DOTENV=1" in r.stdout, "server.py 가 건너뜀")
 check("운영 데이터 경로를 쓰지 않는다",
-      "데이터 경로 격리" in r.stdout and "/opt/" not in r.stdout, "임시 디렉터리")
+      "데이터 경로 격리" in r.stdout and "괴리 기록 포함" in r.stdout and "/opt/" not in r.stdout, "임시 디렉터리")
 
 # ── 사고 재현: .env 가 다시 주입되면? ──
 r = run(f"""

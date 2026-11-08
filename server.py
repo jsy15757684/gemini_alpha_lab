@@ -202,7 +202,7 @@ def _startup_log():
         except Exception as e:
             logger.error(f"국내 스캘퍼 시작 실패 (서버는 계속 뜹니다): {e}")
 
-    # 국내 200일선 + PEAD 스윙 엔진 (모의 전용 · 주문 없음). APP_PEAD=0 으로 끈다.
+    # 국내 PEAD 스윙 엔진 (기준선 기본 60일) (모의 전용 · 주문 없음). APP_PEAD=0 으로 끈다.
     if roles.owns("namuh") and \
             (os.getenv("APP_PEAD") or "1").strip().lower() not in ("0", "false", "no", "off"):
         try:
@@ -845,7 +845,7 @@ def namuh_scalper_enable(req: ScalperEnableRequest):
     return sc.status()
 
 
-# ───────────────────────── 국내 200일선 · PEAD 스윙 (모의) ─────────────────────────
+# ───────────────────────── 국내 PEAD · 기준선 스윙 (모의) ─────────────────────────
 
 
 class PeadParamsRequest(BaseModel):
@@ -873,7 +873,7 @@ class PeadCodeRequest(BaseModel):
 
 @app.get("/api/namuh/pead")
 def namuh_pead_status():
-    """국내 200일선 + PEAD 스윙(모의) 상태 조회."""
+    """국내 PEAD 스윙(모의) 상태 조회."""
     return pead.get(namuh_keystore.account).status()
 
 
