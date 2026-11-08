@@ -84,11 +84,16 @@ BARS_DB["KOSPI"] = make_bars(base_px=5000, prev_close=5600, last_open=5620, last
 BARS_DB["KOSDAQ"] = make_bars(base_px=800, prev_close=710, last_open=710, last_high=718, last_low=705, last_close=714)
 BARS_DB["423160"] = make_bars(base_px=110000, prev_close=110685, last_open=110700, last_high=110705, last_low=110700, last_close=110700, n=30)
 
-print("── 1단계: 시장 200일선 신호등 & 종목 추세 방패 ──")
+print("── 1단계: 시장 60일 수급선 신호등 & 종목 추세 방패 ──")
 params = P.PeadParams()
+check("기본 추세 이평선이 한국 분기 실적 주기에 맞춘 60일 수급선(indexSmaPeriod=60)으로 설정된다",
+      params.indexSmaPeriod == 60, f"{params.indexSmaPeriod}일선")
+check("기존 저장분의 옛 200일선 기본값(maMigrated60 없음)은 로드 시 60일 수급선으로 자동 전환된다",
+      P.PeadParams.from_dict({"indexSmaPeriod": 200}).indexSmaPeriod == 60
+      and P.PeadParams.from_dict({"indexSmaPeriod": 120, "maMigrated60": True}).indexSmaPeriod == 120, "")
 reg = P.compute_market_regime(params)
-check("코스피 200일선 상회 · 코스닥 200일선 하회 → 차별화 장세(SPLIT) 판정",
-      reg["gate"] == "SPLIT" and reg["kospi"]["bull"] and not reg["kosdaq"]["bull"], reg["gateLabel"])
+check("코스피 60일선 상회 · 코스닥 60일선 하회 → 차별화 장세(SPLIT) 판정",
+      reg["gate"] == "SPLIT" and reg["kospi"]["bull"] and not reg["kosdaq"]["bull"] and reg["smaPeriod"] == 60, reg["gateLabel"])
 check("코스피 종목은 진입 허용, 코스닥 종목은 하락장 방어로 차단",
       P.market_allows_entry(reg, "kospi")[0] and not P.market_allows_entry(reg, "kosdaq")[0], "")
 

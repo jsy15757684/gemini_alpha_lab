@@ -1007,6 +1007,7 @@ function renderPead(s) {
     if (el && activeId !== id && val != null) el.value = val;
   };
   syncVal("peadApprovalMode", p.approvalMode || "SEMI");
+  syncVal("peadIndexSma", String(p.indexSmaPeriod || 60));
   syncVal("peadCandidateMult", String(p.candidateMultiplier || 2));
   syncVal("peadSeedKrw", Math.round(p.seedKrw || 10000000));
   syncVal("peadMaxSlots", p.maxSlots || 5);
@@ -1018,13 +1019,15 @@ function renderPead(s) {
     $("peadRequireSmart").checked = p.requireSmartMoney !== false;
   }
 
-  // Zone 1: 시장 200일선 신호등 + 포트폴리오 요약
+  // Zone 1: 시장 기준 이평선(기본 60일 수급선) 신호등 + 포트폴리오 요약
   const reg = s.regime || {};
+  const baseMa = p.indexSmaPeriod || reg.smaPeriod || 60;
   const fmtIdx = (label, idx) => {
     if (!idx) return `<span><b>${label}</b> <span class="muted">수신 전</span></span>`;
     const c = idx.bull ? "up" : "down";
+    const maNum = idx.smaPeriod || baseMa;
     return `<span><b>${label}</b> ${Number(idx.price).toLocaleString("ko-KR")} `
-      + `<span class="${c}" style="font-weight:700">(${pct(idx.diffPct)} · ${idx.bull ? "200일선 위" : "200일선 아래"})</span></span>`;
+      + `<span class="${c}" style="font-weight:700">(${pct(idx.diffPct)} · ${idx.bull ? `${maNum}일선 위` : `${maNum}일선 아래`})</span></span>`;
   };
   const kofr = reg.kofr
     ? `<b>KOFR 파킹</b> 연 ~${p.parkingRatePct || 3.25}%`
@@ -1181,8 +1184,8 @@ function renderPead(s) {
           </div>
 
           <div class="pead-chips">
-            ${chip(ck.market200, "시장200일선")}
-            ${chip(ck.stock200, `종목200일선 ${pct(c.sma200DiffPct)}`)}
+            ${chip(ck.market200, `시장${baseMa}일선`)}
+            ${chip(ck.stock200, `종목${baseMa}일선 ${pct(c.sma200DiffPct)}`)}
             ${chip(ck.pead, "실적서프라이즈")}
             ${chip(ck.volume, `거래량 ${Number(c.volRatio || 0).toFixed(1)}배`)}
             ${chip(ck.smartMoney, `외인 ${fmtSigned(c.foreignNet)} · 기관 ${fmtSigned(c.instNet)}`)}
@@ -1254,6 +1257,7 @@ async function savePeadParams() {
   try {
     const body = {
       approvalMode: $("peadApprovalMode")?.value || "SEMI",
+      indexSmaPeriod: parseInt($("peadIndexSma")?.value || "60", 10),
       candidateMultiplier: parseInt($("peadCandidateMult")?.value || "2", 10),
       seedKrw: parseFloat($("peadSeedKrw")?.value || "10000000"),
       maxSlots: parseInt($("peadMaxSlots")?.value || "5", 10),

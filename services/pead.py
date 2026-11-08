@@ -90,8 +90,9 @@ class PeadParams:
     candidateMultiplier: int = 2      # 추천 기업 조회 배수 (남은 빈 슬롯 수 × 2배수만 엄선 노출)
     approvalMode: str = "SEMI"        # "SEMI"(90% 자동 + 1클릭 승인) | "AUTO"(100% 자동 모의매수)
     parkingRatePct: float = 3.25      # 유휴 현금 KOFR 파킹 연환산 수익률 (%)
-    indexSmaPeriod: int = 200         # 시장 신호등 이동평균선 (200일)
-    indexBearBufferPct: float = 0.0   # 지수 200일선 버퍼 (0.0 = 200일선 위만 허용, -2.0 = -2%까지 허용)
+    indexSmaPeriod: int = 60          # 시장·종목 기준 이동평균선 (60일 분기 수급선 기본 · 60/120/200일 선택)
+    maMigrated60: bool = True         # 기존 200일선 기본값 저장분을 60일 수급선으로 1회 자동 전환
+    indexBearBufferPct: float = 0.0   # 지수 기준선 버퍼 (0.0 = 기준선 위만 허용, -2.0 = -2%까지 허용)
     minOpYoyPct: float = 25.0         # 영업이익 YoY 최소 성장률 (%, 흑자전환은 자동 통과)
     minRevYoyPct: float = 10.0        # 매출액 YoY 최소 성장률 (%)
     minVolRatio: float = 3.0          # 20일 평균 대비 최소 거래량 배수 (3.0 = 300%)
@@ -108,13 +109,18 @@ class PeadParams:
     @classmethod
     def from_dict(cls, d: Optional[Dict[str, Any]]) -> "PeadParams":
         p = cls()
-        for k, v in (d or {}).items():
+        raw = d or {}
+        for k, v in raw.items():
             if hasattr(p, k) and v is not None:
                 target_type = type(getattr(p, k))
                 if target_type is bool:
                     setattr(p, k, bool(v))
                 else:
                     setattr(p, k, target_type(v))
+        if raw and "maMigrated60" not in raw and int(raw.get("indexSmaPeriod") or 200) == 200:
+            p.indexSmaPeriod = 60
+            p.maMigrated60 = True
+        p.indexSmaPeriod = max(20, min(240, int(p.indexSmaPeriod)))
         p.maxSlots = max(1, min(10, int(p.maxSlots)))
         p.candidateMultiplier = max(1, min(5, int(p.candidateMultiplier)))
         p.seedKrw = max(500_000.0, float(p.seedKrw))
@@ -380,8 +386,8 @@ def fetch_dart_today_earnings(now: Optional[datetime] = None) -> Dict[str, Dict[
 # ───────────────────── 지표 계산 & 4단계 전략 판정 ─────────────────────
 
 
-def analyze_bars(bars: List[Dict[str, Any]], sma_long: int = 200, sma_exit: int = 20) -> Optional[Dict[str, Any]]:
-    """일봉 배열에서 200일선 · 20일선 · 20일 평균거래량 배수 · 윗꼬리 비율 · 사전 20일 등락률을 계산한다."""
+def analyze_bars(bars: List[Dict[str, Any]], sma_long: int = 60, sma_exit: int = 20) -> Optional[Dict[str, Any]]:
+    """일봉 배열에서 기준 이평선(기본 60일 수급선) · 20일선 · 20일 평균거래량 배수 · 윗꼬리 비율 · 사전 20일 등락률을 계산한다."""
     need = max(sma_long, sma_exit + 22, 25)
     if len(bars) < need:
         return None
@@ -432,9 +438,11 @@ def analyze_bars(bars: List[Dict[str, Any]], sma_long: int = 200, sma_exit: int 
 
 
 def compute_market_regime(params: PeadParams) -> Dict[str, Any]:
-    """코스피 · 코스닥 200일 이동평균선 국면 및 KOFR 파킹 ETF 시세를 계산한다."""
+    """코스피 · 코스닥 기준 이동평균선(기본 60일 수급선) 국면 및 KOFR 파킹 ETF 시세를 계산한다."""
+    n_ma = int(params.indexSmaPeriod or 60)
     out: Dict[str, Any] = {
         "updatedAt": datetime.now(KST).strftime("%Y-%m-%d %H:%M:%S"),
+        "smaPeriod": n_ma,
         "kospi": None,
         "kosdaq": None,
         "kofr": None,
@@ -445,13 +453,13 @@ def compute_market_regime(params: PeadParams) -> Dict[str, Any]:
     errors = []
     for key, sym, label in (("kospi", "KOSPI", "코스피"), ("kosdaq", "KOSDAQ", "코스닥")):
         try:
-            bars = fetch_daily_bars(sym, max(220, params.indexSmaPeriod + 10))
-            if len(bars) < params.indexSmaPeriod:
+            bars = fetch_daily_bars(sym, max(120, n_ma + 15))
+            if len(bars) < n_ma:
                 raise ValueError(f"{label} 일봉 부족 ({len(bars)}개)")
             closes = [b["close"] for b in bars]
             px = closes[-1]
             prev_px = closes[-2] if len(closes) >= 2 else px
-            sma = sum(closes[-params.indexSmaPeriod:]) / float(params.indexSmaPeriod)
+            sma = sum(closes[-n_ma:]) / float(n_ma)
             diff_pct = (px / sma - 1.0) * 100.0 if sma > 0 else 0.0
             bull = diff_pct >= params.indexBearBufferPct
             out[key] = {
@@ -460,6 +468,7 @@ def compute_market_regime(params: PeadParams) -> Dict[str, Any]:
                 "price": round(px, 2),
                 "changePct": round((px / prev_px - 1.0) * 100.0, 2) if prev_px > 0 else 0.0,
                 "sma200": round(sma, 2),
+                "smaPeriod": n_ma,
                 "diffPct": round(diff_pct, 2),
                 "bull": bull,
             }
@@ -489,27 +498,28 @@ def compute_market_regime(params: PeadParams) -> Dict[str, Any]:
         out["error"] = " · ".join(errors)
     elif kp_bull and kq_bull:
         out["gate"] = "BULL"
-        out["gateLabel"] = "🟢 양대 시장 200일선 상회 (전면 강세 · 진입 허용)"
+        out["gateLabel"] = f"🟢 양대 시장 {n_ma}일선 상회 (전면 강세 · 진입 허용)"
     elif kp_bull or kq_bull:
         live_mkt = "코스피" if kp_bull else "코스닥"
         dead_mkt = "코스닥" if kp_bull else "코스피"
         out["gate"] = "SPLIT"
-        out["gateLabel"] = f"🟡 차별화 장세 ({live_mkt} 200일선 위 진입 허용 · {dead_mkt} 현금 파킹)"
+        out["gateLabel"] = f"🟡 차별화 장세 ({live_mkt} {n_ma}일선 위 진입 허용 · {dead_mkt} 현금 파킹)"
     else:
         out["gate"] = "BEAR"
-        out["gateLabel"] = "🛡️ 양대 시장 200일선 하회 (하락장 방어 · 전 슬롯 KOFR 파킹)"
+        out["gateLabel"] = f"🛡️ 양대 시장 {n_ma}일선 하회 (하락장 방어 · 전 슬롯 KOFR 파킹)"
     return out
 
 
 def market_allows_entry(regime: Dict[str, Any], market: str) -> Tuple[bool, str]:
-    """종목 소속 시장(kospi/kosdaq)의 200일선 신호등이 초록불인지 판정한다."""
+    """종목 소속 시장(kospi/kosdaq)의 기준 이평선 신호등이 초록불인지 판정한다."""
     mkey = "kosdaq" if str(market).lower() == "kosdaq" else "kospi"
     info = regime.get(mkey)
+    n_ma = int((info or {}).get("smaPeriod") or regime.get("smaPeriod") or 60)
     if not info:
-        return False, f"{mkey.upper()} 200일선 지표 미수신 (보수적 진입 보류)"
+        return False, f"{mkey.upper()} {n_ma}일선 지표 미수신 (보수적 진입 보류)"
     if not info.get("bull"):
-        return False, f"{info['label']} 지수 200일선 하회 ({info['diffPct']:+.2f}%) — 하락장 방어"
-    return True, f"{info['label']} 200일선 상회 ({info['diffPct']:+.2f}%)"
+        return False, f"{info['label']} 지수 {n_ma}일선 하회 ({info['diffPct']:+.2f}%) — 하락장 방어"
+    return True, f"{info['label']} {n_ma}일선 상회 ({info['diffPct']:+.2f}%)"
 
 
 def compute_stop_price(open_px: float, entry_px: float) -> float:
@@ -533,23 +543,24 @@ def evaluate_candidate(
     regime: Dict[str, Any],
     params: PeadParams,
 ) -> Dict[str, Any]:
-    """단일 종목에 대해 4단계 [시장/종목 200MA -> PEAD 실적 -> 거래량/양봉/수급] 통과 여부와 점수를 매긴다."""
+    """단일 종목에 대해 4단계 [시장/종목 기준이평선(60MA) -> PEAD 실적 -> 거래량/양봉/수급] 통과 여부와 점수를 매긴다."""
     reasons: List[str] = []
     fails: List[str] = []
+    n_ma = int(params.indexSmaPeriod or 60)
 
-    # 1) 시장 200일선 신호등
+    # 1) 시장 기준선 신호등
     mkt_ok, mkt_msg = market_allows_entry(regime, market)
     if mkt_ok:
         reasons.append(mkt_msg)
     else:
         fails.append(mkt_msg)
 
-    # 2) 개별 종목 200일선 정배열 & 사전 과열(선반영) 체크
+    # 2) 개별 종목 기준선(기본 60일 수급선) 정배열 & 사전 과열(선반영) 체크
     above_200 = bool(tech.get("above200"))
     if above_200:
-        reasons.append(f"주가 200일선 위 ({tech['sma200DiffPct']:+.1f}%)")
+        reasons.append(f"주가 {n_ma}일선 위 ({tech['sma200DiffPct']:+.1f}%)")
     else:
-        fails.append(f"주가 200일선 아래 ({tech['sma200DiffPct']:+.1f}%)")
+        fails.append(f"주가 {n_ma}일선 아래 ({tech['sma200DiffPct']:+.1f}%)")
 
     prior_ok = tech["prior20dGainPct"] <= params.maxPrior20dGainPct
     if not prior_ok:
@@ -952,12 +963,12 @@ class PeadEngine:
             total = len(rows)
             self.scan_meta["total"] = total
 
-            # 1차 기술적 퍼널: 일봉 230개로 200일선 · 거래량 · 양봉 여부를 빠르게 계산
+            # 1차 기술적 퍼널: 일봉으로 기준 이평선(기본 60일 수급선) · 거래량 · 양봉 여부를 빠르게 계산
             stage1_primary: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
             stage1_backup: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
 
             def _fetch_one(r: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
-                bars = fetch_daily_bars(r["code"], max(225, self.params.indexSmaPeriod + 22))
+                bars = fetch_daily_bars(r["code"], max(120, self.params.indexSmaPeriod + 22))
                 tech = analyze_bars(bars, self.params.indexSmaPeriod, self.params.exitMaPeriod)
                 if not tech:
                     return None
@@ -1396,8 +1407,8 @@ class PeadEngine:
             self.params = PeadParams.from_dict(merged)
             self.log(
                 "INFO",
-                f"설정 변경: 모드={self.params.approvalMode} · 슬롯={self.params.maxSlots}개 · "
-                f"거래량≥{self.params.minVolRatio}배 · 영업이익YoY≥{self.params.minOpYoyPct}%",
+                f"설정 변경: 모드={self.params.approvalMode} · 기준선={self.params.indexSmaPeriod}일선 · "
+                f"슬롯={self.params.maxSlots}개 · 거래량≥{self.params.minVolRatio}배 · 영업이익YoY≥{self.params.minOpYoyPct}%",
             )
         self.save()
 

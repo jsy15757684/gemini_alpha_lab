@@ -52,7 +52,7 @@
     <button class="tab active" data-panel="panel-bots">🔄 무한매수 봇</button>
     <button class="tab" data-panel="panel-muma">📋 무매법 표</button>
     <button class="tab" data-panel="panel-scalper">🎯 국내 스캘퍼 (모의)</button>
-    <button class="tab" data-panel="panel-pead">📈 국내 PEAD·200일선 (모의)</button>
+    <button class="tab" data-panel="panel-pead">📈 국내 PEAD·60일선 (모의)</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
     <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
     <button class="tab" data-panel="panel-chart">시세·지표</button>
@@ -416,14 +416,14 @@
       </div>
     </section>
 
-    <!-- 국내 200일선 + PEAD 실적 모멘텀 스윙 — 모의 전용 (주문 없음) -->
+    <!-- 국내 60일 수급선 + PEAD 실적 모멘텀 스윙 — 모의 전용 (주문 없음) -->
     <section id="panel-pead" class="panel hidden">
       <div class="card">
         <div class="card-head" style="flex-wrap:wrap">
           <div>
-            <h2 class="card-title">📈 국내 200일선 · PEAD 5슬롯 스윙 <span class="pill">모의 · 주문 없음</span></h2>
+            <h2 class="card-title">📈 국내 60일 수급선 · PEAD 5슬롯 스윙 <span class="pill">모의 · 주문 없음</span></h2>
             <p class="muted small">자본금을 <b>5개 슬롯</b>으로 나누어 비어 있는 슬롯 수의 <b>2배수 기업만 엄선</b>해 보여줍니다.
-              빈 슬롯 현금은 KOFR 금리로 파킹되며, 담은 종목은 <b>기준봉 시가 이탈 시 자동 손절 · 20일선 이탈 시 추세 익절</b>됩니다.</p>
+              한국 분기 실적 주기에 맞춘 <b>60일 수급선(120·200일선 선택 가능)</b>을 기준으로 삼고, 담은 종목은 <b>기준봉 시가 이탈 시 자동 손절 · 20일선 이탈 시 추세 익절</b>됩니다.</p>
           </div>
           <div class="inline" style="flex-wrap:wrap">
             <label class="inline small" style="white-space:nowrap"><input type="checkbox" id="peadEnabled"> 자동 감시</label>
@@ -433,7 +433,7 @@
         </div>
 
         <div id="peadAlert"></div>
-        <div id="peadRegimeBox" class="pead-regime-bar">시장 200일선 신호등 불러오는 중…</div>
+        <div id="peadRegimeBox" class="pead-regime-bar">시장 60일 수급선 신호등 불러오는 중…</div>
         <div id="peadSummary" style="margin-top:.75rem"></div>
 
         <!-- Zone 2: 내 5개 슬롯 보드 -->
@@ -452,13 +452,21 @@
 
         <!-- 접이식 설정 / 체결 내역 / 로그 -->
         <details class="note note-info" style="margin-top:1.3rem">
-          <summary>⚙️ 슬롯 수 · 추천 배수 · 필터 기준 설정</summary>
+          <summary>⚙️ 슬롯 수 · 추천 배수 · 60일 수급선 필터 설정</summary>
           <div class="form-grid" style="margin-top:.4rem">
             <div>
               <label class="label">매수 실행 모드</label>
               <select class="input input-sm" id="peadApprovalMode" style="width:100%">
                 <option value="SEMI">반자동 · 카드에서 직접 선택해 담기 (권장)</option>
                 <option value="AUTO">100% 자동 · 평일 15:18 통과 종목 자동 매수</option>
+              </select>
+            </div>
+            <div>
+              <label class="label">지수·종목 기준 추세 이평선</label>
+              <select class="input input-sm" id="peadIndexSma" style="width:100%">
+                <option value="60" selected>60일 수급선 (분기 실적주기 · 권장)</option>
+                <option value="120">120일 경기선 (반기 추세)</option>
+                <option value="200">200일 장기선 (연간 추세)</option>
               </select>
             </div>
             <div>
@@ -493,7 +501,7 @@
               <label class="label">추세 익절 이동평균선 (일)</label>
               <input class="input input-sm" type="number" id="peadExitMa" value="20" min="5" max="60" step="5" style="width:100%">
             </div>
-            <div class="span-2" style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding-top:.55rem">
+            <div style="display:flex;align-items:center;justify-content:space-between;gap:.6rem;padding-top:.55rem">
               <label class="inline small" style="color:var(--text)"><input type="checkbox" id="peadRequireSmart" checked> 외인·기관 순매수 필수</label>
               <button class="btn btn-primary btn-sm" id="savePeadParamsBtn" style="white-space:nowrap">설정 저장</button>
             </div>
@@ -692,6 +700,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.22.0"></script>
+<script src="/static/js/app.js?v=5.23.0"></script>
 </body>
 </html>
