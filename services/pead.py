@@ -223,9 +223,9 @@ def fetch_financial_surprise(code: str) -> Dict[str, Any]:
         cols = row.get("columns") or {}
         by_title[t] = {k: _parse_num((v or {}).get("value")) for k, v in cols.items()}
 
-    rev_map = by_title.get("매출액") or {}
+    rev_map = by_title.get("매출액") or by_title.get("영업수익") or by_title.get("순영업수익") or {}
     op_map = by_title.get("영업이익") or {}
-    net_map = by_title.get("당기순이익") or {}
+    net_map = by_title.get("당기순이익") or by_title.get("지배주주순이익") or {}
 
     actual_keys = [x["key"] for x in titles if x.get("isConsensus") != "Y" and x.get("key")]
     cons_keys = [x["key"] for x in titles if x.get("isConsensus") == "Y" and x.get("key")]
@@ -936,11 +936,11 @@ class PeadEngine:
     def run_scan(self, now: Optional[datetime] = None) -> Dict[str, Any]:
         """코스피200 ∪ 코스닥150 전종목을 훑어 시장 신호등 · 승인 대기 시그널 · 상위 관심주를 갱신한다."""
         ref = now or datetime.now(KST)
-        if self.scan_meta.get("scanning"):
-            return self.status()
-
-        self.scan_meta["scanning"] = True
-        self.scan_meta["done"] = 0
+        with self.lock:
+            if self.scan_meta.get("scanning"):
+                return self.status()
+            self.scan_meta["scanning"] = True
+            self.scan_meta["done"] = 0
         self.last_error = ""
         try:
             regime = compute_market_regime(self.params)
@@ -953,7 +953,8 @@ class PeadEngine:
             self.scan_meta["total"] = total
 
             # 1차 기술적 퍼널: 일봉 230개로 200일선 · 거래량 · 양봉 여부를 빠르게 계산
-            stage1: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+            stage1_primary: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
+            stage1_backup: List[Tuple[Dict[str, Any], Dict[str, Any]]] = []
 
             def _fetch_one(r: Dict[str, Any]) -> Optional[Tuple[Dict[str, Any], Dict[str, Any]]]:
                 bars = fetch_daily_bars(r["code"], max(225, self.params.indexSmaPeriod + 22))
@@ -982,23 +983,33 @@ class PeadEngine:
                                 pos["sma20"] = tech["sma20"]
                                 pos["peak"] = max(float(pos.get("peak") or tech["price"]), tech["price"])
                                 pos["low"] = min(float(pos.get("low") or tech["price"]), tech["price"])
-                    # 2차 심층 판독 대상: 200일선 정배열 중 거래량/상승률이 살아있는 상위 후보 선별
+                    # 2차 심층 판독 대상: 1순위(200일선 정배열 + 거래량/상승률 활성) 및 조용한 장세 대비 2순위 백업 풀
                     queued_codes = {x["code"] for x in self.after_hours_queue}
                     if r["code"] in queued_codes or (
                         tech["above200"]
                         and (tech["volRatio"] >= max(1.3, self.params.minVolRatio * 0.45)
                              or tech["dayGainPct"] >= max(2.0, self.params.minDayGainPct * 0.6))
                     ):
-                        stage1.append((r, tech))
+                        stage1_primary.append((r, tech))
+                    else:
+                        stage1_backup.append((r, tech))
 
-            # 남은 빈 슬롯의 배수(기본 2배수) + 제외 대비 소량 예비분만 2차 심층(수급+재무+공시) 판독
-            stage1.sort(key=lambda x: (x[1]["volRatio"] * 2.0 + max(0.0, x[1]["dayGainPct"])), reverse=True)
+            # 남은 빈 슬롯의 배수(기본 2배수) + 제외 대비 예비분만큼 2차 심층(수급+재무+공시) 판독
+            stage1_primary.sort(key=lambda x: (x[1]["volRatio"] * 2.0 + max(0.0, x[1]["dayGainPct"])), reverse=True)
+            stage1_backup.sort(
+                key=lambda x: (
+                    1 if x[1]["above200"] else 0,
+                    x[1]["volRatio"] * 1.5 + max(0.0, x[1]["dayGainPct"]),
+                    x[1]["sma200DiffPct"],
+                ),
+                reverse=True,
+            )
             with self.lock:
                 idle_now = max(0, self.params.maxSlots - len(self.positions))
                 rec_want = idle_now * self.params.candidateMultiplier
-            deep_cap = max(10, min(30, rec_want + 8))
-            deep_targets = stage1[:deep_cap]
-            self.scan_meta["stage1Passed"] = len(deep_targets)
+            deep_cap = max(12, min(30, rec_want + 8))
+            deep_targets = (stage1_primary + stage1_backup)[:deep_cap]
+            self.scan_meta["stage1Passed"] = len(stage1_primary)
 
             dart_map = fetch_dart_today_earnings(ref) if deep_targets else {}
             evaluated: List[Dict[str, Any]] = []
@@ -1048,21 +1059,24 @@ class PeadEngine:
                 f"전종목 스캔 완료: {total}종목 → 추천 {len(recs)}종목 엄선 "
                 f"(남은 슬롯 {idle_now}개 × {self.params.candidateMultiplier}배수 · 전관문 통과 {len(passed_all)}종목)",
             )
-            if ref.weekday() < 5:
-                self.accrue_parking(ref.strftime("%Y-%m-%d"))
+            today_str = ref.strftime("%Y-%m-%d")
+            if ref.weekday() < 5 and self.is_trading_day(today_str):
+                self.accrue_parking(today_str)
             self.save()
         except Exception as e:
             self.last_error = f"스캔 실패: {e}"
             self.log("ERROR", self.last_error)
             logger.warning(f"PEAD 스캔 오류: {e}")
         finally:
-            self.scan_meta["scanning"] = False
+            with self.lock:
+                self.scan_meta["scanning"] = False
         return self.status()
 
     def start_scan_async(self) -> Dict[str, Any]:
         """화면에서 [지금 전종목 스캔] 클릭 시 백그라운드 스레드로 즉시 실행한다."""
-        if self._scan_thread and self._scan_thread.is_alive():
-            return self.status()
+        with self.lock:
+            if self.scan_meta.get("scanning") or (self._scan_thread and self._scan_thread.is_alive()):
+                return self.status()
         self._scan_thread = threading.Thread(target=self.run_scan, name="pead-scan", daemon=True)
         self._scan_thread.start()
         time.sleep(0.05)

@@ -260,6 +260,26 @@ check("보유 종목 1개를 청산해 빈 슬롯 1칸이 생기면 재스캔 �
       st4["summary"]["idleSlots"] == 1 and len(st4["recommendations"]) == 2,
       f"남은 {st4['summary']['idleSlots']}칸 → 추천 {len(st4['recommendations'])}개")
 
+# 조용한 장세(전 종목 거래량 1.0배 · 등락 +0.5%)에서도 2순위 백업 풀로 '남은 슬롯 × 2배수(10개)' 추천이 끊기지 않는지 검증
+UNIVERSE_CALM = []
+for idx in range(1, 13):
+    cd = f"002{idx:03d}"
+    UNIVERSE_CALM.append({"code": cd, "name": f"정배열안정{idx:02d}", "market": "kospi", "kospi200": True, "kosdaq150": False})
+    BARS_DB[cd] = make_bars(last_open=11_000, last_high=11_120, last_low=10_980, last_close=11_055, prev_close=11_000, last_vol=105_000)
+    TREND_DB[cd] = good_trend
+    FIN_DB[cd] = dict(good_fin, opYoyPct=28.0 + idx)
+    DISC_DB[cd] = clean_disc
+
+krx_master.load = lambda: UNIVERSE_CALM
+eng_calm = P.PeadEngine(namuh_account=None)
+st_calm = eng_calm.run_scan(datetime(2026, 11, 5, 15, 11, 0, tzinfo=P.KST))  # 11/05 는 가짜 일봉 기준 평일 휴장일
+check("거래량 폭발주가 없는 조용한 장세에도 200일선 정배열 백업 풀로 10개(5칸 × 2배수) 추천을 채운다",
+      len(st_calm["recommendations"]) == 10,
+      f"1차 통과 {st_calm['scanMeta']['stage1Passed']}건 · 최종 추천 {len(st_calm['recommendations'])}개")
+check("평일 휴장일에 수동 스캔을 돌려도 KOFR 파킹 이자를 중복 적립하지 않는다",
+      eng_calm.parking["accruedKrw"] == 0.0,
+      f"휴장일 파킹 이자 {eng_calm.parking['accruedKrw']}원")
+
 print("── 5단계: FastAPI 엔드포인트 · 인증 · CSRF 검증 ──")
 import socket  # noqa: E402
 import threading  # noqa: E402
