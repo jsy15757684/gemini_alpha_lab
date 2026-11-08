@@ -75,18 +75,7 @@ def main():
         if len(ok) < len(prices["prices"]):
             FAILURES.append("04. 일부 종목 시세 실패")
 
-    c = call("05. 캔들+지표", "/api/candles?coin=BTC&interval=24h")
-    if c:
-        ready = [b for b in c["candles"] if b["ready"]]
-        print(f"    캔들 {len(c['candles'])}개 · 지표 유효 {len(ready)}개")
-        if not ready:
-            FAILURES.append("05. 지표가 하나도 계산되지 않음")
-
-    bt = call("06. 백테스트", "/api/backtest", "POST",
-              {"coin": "BTC", "interval": "24h", "initialKrw": 1000000})
-    if bt:
-        print(f"    수익률 {bt['totalReturnPct']:+.2f}% · 벤치마크 {bt['benchmarkReturnPct']:+.2f}%"
-              f" · 거래 {bt['totalTrades']}회")
+    # 05 · 06 (캔들+지표 · 백테스트) 은 2026-11-08 에 화면 탭과 API 를 함께 뺐다
 
     bot = call("07. 모의투자 봇 가동", "/api/bot/deploy", "POST",
                {"coin": "BTC", "interval": "24h", "mode": "PAPER", "capitalKrw": 1000000})

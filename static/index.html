@@ -54,8 +54,6 @@
     <button class="tab" data-panel="panel-scalper">🎯 국내 스캘퍼 (모의)</button>
     <button class="tab" data-panel="panel-pead">📈 국내 PEAD·60일선 (모의)</button>
     <button class="tab" data-panel="panel-trades">📜 매매 일지·수익</button>
-    <button class="tab" data-panel="panel-backtest">전략 백테스트</button>
-    <button class="tab" data-panel="panel-chart">시세·지표</button>
     <button class="tab" data-panel="panel-account">연동 계정·설정</button>
   </nav>
 
@@ -143,7 +141,7 @@
                   <div class="muted small" id="locModeHint" style="margin-bottom:.3rem"></div>
                   <select class="input" id="bp_locMode">
                     <option value="half_half" selected>라오어 원전 반반 LOC · 하루 한 번</option>
-                    <option value="excel">무매법 엑셀 방식 · 1.15 LOC + 평단 LOC + 사다리</option>
+                    <option value="excel">무매법 엑셀 방식 · 1.15 LOC + 평단 LOC</option>
                     <option value="half_half_now">반반 지정가 · 봉마다 즉시 체결</option>
                     <option value="single">단일 묶음 · 시장가</option>
                   </select>
@@ -546,79 +544,6 @@
       </div>
     </section>
 
-    <!-- 백테스트 -->
-    <section id="panel-backtest" class="panel hidden">
-      <div class="card">
-        <h2 class="card-title">전략 백테스트</h2>
-        <p class="muted small">빗썸 실제 과거 캔들로 검증합니다. 봇과 <b>같은 판단 코드</b>를 사용하므로
-          여기 결과가 실제 봇의 행동과 일치합니다.</p>
-        <div class="form-grid">
-          <div>
-            <label class="label">코인</label>
-            <select class="input" id="btCoin"></select>
-          </div>
-          <div>
-            <label class="label">캔들 간격</label>
-            <select class="input" id="btInterval"></select>
-          </div>
-          <div>
-            <label class="label">초기 자본 (원)</label>
-            <input class="input" type="number" id="btCapital" value="1000000" min="10000" step="10000">
-          </div>
-        </div>
-
-        <!-- 백테스트 전략 -->
-        <!-- 선택기를 없앴다. 지표 계열(전통 기술적 지표 · 퀀트 하이브리드)을
-             실매매에서 뺐으니 백테스트에 남겨둘 이유도 없어졌고, 남은 전략이
-             하나뿐인 드롭다운은 혼란만 준다. -->
-        <div style="margin: 16px 0; padding: 12px; background: rgba(255,255,255,0.03); border: 1px solid var(--border); border-radius: 8px;">
-          <label class="label" style="font-weight: 600; margin-bottom: 8px;">🔄 라오어 무한매수법 V4.0 (최신 잔금비례 + 리버스 순환)</label>
-
-          <div id="raoerBtOptions">
-            <div class="form-grid">
-              <div>
-                <label class="label">무한매수 버전</label>
-                <select class="input" id="tp_raoerVersion">
-                  <option value="v4" selected>V4.0 (최신 공식)</option>
-                  <option value="v1">V1.0 (원전)</option>
-                </select>
-              </div>
-              <div>
-                <label class="label">분할 매수 횟수</label>
-                <input class="input" type="number" id="tp_splitCount" value="40" min="5" max="100" step="5">
-              </div>
-              <div>
-                <label class="label">목표 익절률 (%)</label>
-                <input class="input" type="number" id="tp_targetProfitPct" value="10.0" min="1.0" max="50.0" step="0.5">
-              </div>
-              <div>
-                <label class="label">쿼터 방어 매도률 (%)</label>
-                <input class="input" type="number" id="tp_quarterCutPct" value="25" min="5" max="50" step="5">
-              </div>
-            </div>
-          </div>
-        </div>
-
-        <button class="btn btn-primary btn-block" id="runBacktestBtn">백테스트 실행</button>
-        <div class="alert alert-error hidden" id="btError"></div>
-      </div>
-      <div id="btResult" class="hidden"></div>
-    </section>
-
-    <!-- 차트 -->
-    <section id="panel-chart" class="panel hidden">
-      <div class="card">
-        <div class="card-head">
-          <h2 class="card-title">시세·지표</h2>
-          <div class="inline">
-            <select class="input input-sm" id="chartCoin"></select>
-            <select class="input input-sm" id="chartInterval"></select>
-          </div>
-        </div>
-        <div id="chartArea"><div class="empty">불러오는 중…</div></div>
-      </div>
-    </section>
-
     <!-- 계정 및 설정 -->
     <section id="panel-account" class="panel hidden">
       <div class="grid-2">
@@ -700,6 +625,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.25.0"></script>
+<script src="/static/js/app.js?v=5.26.0"></script>
 </body>
 </html>

@@ -19,7 +19,7 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 
 # {자산 경로: (index.html 에 적힌 버전, 그 버전일 때의 내용 sha256)}
 EXPECTED = {
-    "static/js/app.js":    ("5.25.0", "64d14586c07a9bf6fff1f2d118f2b91f"),
+    "static/js/app.js":    ("5.26.0", "15583876ebf6f1bf652da6e6b2fadb9c"),
     "static/css/style.css": ("5.4.0", "dece28c1ab4856a64a948efc17dd7baa"),
 }
 

@@ -201,13 +201,6 @@ function readParams(prefix) {
     } else {
       p.strategyType = "quant_ai";
     }
-  } else if (prefix === "tp_") {
-    // 백테스트는 무한매수만 남았다 (지표 계열을 실매매에서 뺐으니 여기서도 뺐다).
-    p.strategyType = "raoer_infinite";
-    p.raoerVersion = $("tp_raoerVersion")?.value || "v4";
-    p.splitCount = parseInt($("tp_splitCount")?.value || "40", 10);
-    p.targetProfitPct = parseFloat($("tp_targetProfitPct")?.value || "10.0");
-    p.quarterCutPct = parseFloat($("tp_quarterCutPct")?.value || "25.0");
   }
   return p;
 }
@@ -271,7 +264,7 @@ function renderLocModeHint() {
   const native = mode === "half_half" || mode === "excel";
   if (el) {
     el.textContent = mode === "excel"
-      ? "무매법.xlsx 그대로: 1회분할금 = 운용자본 ÷ 분할수(고정). 하루 한 번 0.5회분 현재가×1.15 LOC + 0.5회분 평단 LOC + 아래로 1주씩 사다리 LOC, 평단×(1+목표%) 에 전량 매도. 매크로 기어 · AI 는 쓰지 않습니다."
+      ? "무매법.xlsx 그대로: 1회분할금 = 운용자본 ÷ 분할수(고정). 하루 한 번 0.5회분 현재가×1.15 LOC + 0.5회분 평단 LOC (사다리는 내지 않음), 평단×(1+목표%) 에 전량 매도. 매크로 기어 · AI 는 쓰지 않습니다."
       : native
       ? "하루 한 번, 미국장이 열려 있는 동안 LOC 를 걸어두고 그날 종가로 체결됩니다. 40분할 = 40거래일 — 캔들 간격은 쓰이지 않습니다."
       : (mode === "half_half_now"
@@ -387,7 +380,7 @@ async function deployBot() {
   summary.push(`운용 자본 : ${curr === "$" ? "$" : ""}${Number($("botCapital").value || 0).toLocaleString()}${curr === "원" ? "원" : ""}`);
   if (params.strategyType === "raoer_infinite") {
     const locLabel = { half_half: "라오어 원전 반반 LOC (하루 한 번 · 종가 체결)",
-                       excel: "무매법 엑셀 방식 (1.15 LOC + 평단 LOC + 사다리 · 하루 한 번)",
+                       excel: "무매법 엑셀 방식 (1.15 LOC + 평단 LOC · 하루 한 번)",
                        half_half_now: "반반 지정가 즉시 체결 (봉마다)",
                        single: "단일 묶음 시장가" }[params.locMode] || params.locMode;
     if (isStock) summary.push(`체결 방식 : ${locLabel}`);
@@ -683,91 +676,6 @@ async function actOnBot(url, botId, message, bot) {
                      body: JSON.stringify({ botId }) });
     await loadBots();
   } catch (e) { alert(e.message); }
-}
-
-// ───────── 백테스트 ─────────
-
-async function runBacktest() {
-  const btn = $("runBacktestBtn");
-  setAlert($("btError"), null);
-  $("btResult").classList.add("hidden");
-  btn.disabled = true; btn.textContent = "실행 중…";
-  try {
-    const r = await api("/api/backtest", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        coin: $("btCoin").value, interval: $("btInterval").value,
-        initialKrw: parseFloat($("btCapital").value), params: readParams("tp_"),
-      }),
-    });
-    renderBacktest(r);
-  } catch (e) {
-    setAlert($("btError"), e.message);
-  } finally {
-    btn.disabled = false; btn.textContent = "백테스트 실행";
-  }
-}
-
-// 결과 머리글에 무엇으로 돌렸는지 적는다. 예전에는 진입 규칙만 찍어서,
-// 무한매수로 돌린 결과에도 'RSI 상향돌파 또는 거래량 급증' 이 붙었다 —
-// 실제로는 무한매수가 맞게 돌았는데 화면만 다른 전략처럼 보였다.
-function btStrategyLabel(p) {
-  if (p?.strategyType === "raoer_infinite") {
-    const vTag = (p.raoerVersion || "v4").toUpperCase();
-    return `무한매수 ${vTag} · ${p.splitCount}분할 · 목표 익절 +${p.targetProfitPct}% · `
-      + `쿼터방어 ${p.quarterCutPct}%`
-      + (p.raoerTrendMode && p.raoerTrendMode !== "off" ? ` · 추세 ${p.raoerTrendMode}` : "");
-  }
-  const rules = (p?.entryRules || []).map(k =>
-    (ENTRY_RULES.find(x => x.key === k) || {}).label || k);
-  return rules.length
-    ? `진입: ${rules.join(p.entryMode === "all" ? " AND " : " 또는 ")}` : "";
-}
-
-function renderBacktest(r) {
-  const rows = (r.trades || []).slice().reverse().map(t => `
-    <tr>
-      <td>${when(t.entryTime)}</td><td>${when(t.exitTime)}</td>
-      <td>${won(t.entryPrice)}</td><td>${won(t.exitPrice)}</td>
-      <td class="${cls(t.returnPct)}">${pct(t.returnPct)}</td>
-      <td class="${cls(t.pnlKrw)}">${won(t.pnlKrw)}</td>
-      <td class="reason">${escapeHtml(t.exitReason || "")}</td>
-    </tr>`).join("");
-
-  $("btResult").innerHTML = `<div class="card">
-    <div class="card-head">
-      <h2 class="card-title">${r.coin}/KRW · ${r.interval} · 캔들 ${r.candleCount}개
-        <span class="muted small">${btStrategyLabel(r.params)}</span></h2>
-      <span class="muted small">${when(r.periodFrom)} ~ ${when(r.periodTo)}</span>
-    </div>
-    <div class="metrics">
-      <div class="metric"><div class="metric-k">전략 수익률</div>
-        <div class="metric-v ${cls(r.totalReturnPct)}">${pct(r.totalReturnPct)}</div></div>
-      <div class="metric"><div class="metric-k">그냥 보유했다면</div>
-        <div class="metric-v ${cls(r.benchmarkReturnPct)}">${pct(r.benchmarkReturnPct)}</div></div>
-      <div class="metric"><div class="metric-k">초과수익</div>
-        <div class="metric-v ${cls(r.alphaPct)}">${pct(r.alphaPct)}</div></div>
-      <div class="metric"><div class="metric-k">최대 낙폭</div>
-        <div class="metric-v down">-${r.maxDrawdownPct}%</div></div>
-      <div class="metric"><div class="metric-k">거래 횟수</div>
-        <div class="metric-v">${r.totalTrades}</div></div>
-      <div class="metric"><div class="metric-k">승률</div>
-        <div class="metric-v">${r.totalTrades ? r.winRatePct + "%" : "-"}</div></div>
-      <div class="metric"><div class="metric-k">손익비</div>
-        <div class="metric-v">${r.profitFactor ?? "-"}</div></div>
-      <div class="metric"><div class="metric-k">최종 자산</div>
-        <div class="metric-v">${won(r.finalKrw)}</div></div>
-    </div>
-    ${r.totalTrades === 0 ? `<div class="alert alert-warn">
-      이 구간에서 진입 신호가 한 번도 발생하지 않았습니다. RSI 매수선을 높이거나
-      캔들 간격을 늘려 더 긴 기간을 보세요.</div>` : ""}
-    <div class="alert alert-warn">${r.note}</div>
-    ${rows ? `<div class="tbl-wrap"><table>
-      <thead><tr><th>진입</th><th>청산</th><th>진입가</th><th>청산가</th>
-        <th>수익률</th><th>손익(원)</th><th>청산 사유</th></tr></thead>
-      <tbody>${rows}</tbody></table></div>` : ""}
-  </div>`;
-  $("btResult").classList.remove("hidden");
 }
 
 // ───────── 무매법 표 (무매법.xlsx) ─────────
@@ -1375,48 +1283,6 @@ async function closePeadPos(code, name) {
   }
 }
 
-// ───────── 차트 ─────────
-
-async function loadChart() {
-  const host = $("chartArea");
-  host.innerHTML = `<div class="empty">불러오는 중…</div>`;
-  try {
-    const r = await api(`/api/candles?coin=${$("chartCoin").value}&interval=${$("chartInterval").value}`);
-    const bars = r.candles.filter(b => b.ready);
-    if (!bars.length) return host.innerHTML = `<div class="empty">지표를 만들 캔들이 부족합니다.</div>`;
-    const last = bars[bars.length - 1];
-    host.innerHTML = `
-      <div class="metrics">
-        <div class="metric"><div class="metric-k">현재가(마지막 종가)</div><div class="metric-v">${won(last.close)}</div></div>
-        <div class="metric"><div class="metric-k">RSI(${r.params.rsiPeriod})</div><div class="metric-v">${last.rsi.toFixed(1)}</div></div>
-        <div class="metric"><div class="metric-k">MA(${r.params.fastMa})</div><div class="metric-v">${won(last.smaFast)}</div></div>
-        <div class="metric"><div class="metric-k">MA(${r.params.slowMa})</div><div class="metric-v">${won(last.smaSlow)}</div></div>
-      </div>
-      ${sparkline(bars.map(b => b.close), "가격")}
-      ${sparkline(bars.map(b => b.rsi), "RSI", 0, 100)}
-      <div class="muted small" style="margin-top:.6rem">
-        캔들 ${bars.length}개 · ${when(bars[0].time)} ~ ${when(last.time)} · 출처 ${r.dataSource}</div>`;
-  } catch (e) {
-    host.innerHTML = `<div class="alert alert-error">${escapeHtml(e.message)}</div>`;
-  }
-}
-
-function sparkline(values, label, forceMin, forceMax) {
-  const w = 800, h = 120, pad = 4;
-  const min = forceMin ?? Math.min(...values), max = forceMax ?? Math.max(...values);
-  const span = (max - min) || 1;
-  const pts = values.map((v, i) => {
-    const x = pad + i * (w - pad * 2) / Math.max(1, values.length - 1);
-    const y = h - pad - (v - min) / span * (h - pad * 2);
-    return `${x.toFixed(1)},${y.toFixed(1)}`;
-  }).join(" ");
-  return `<div style="margin-top:.8rem">
-    <div class="stat-k">${label} (${label === "RSI" ? "0~100" : won(min) + " ~ " + won(max)})</div>
-    <svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" role="img" aria-label="${label} 추이">
-      <polyline points="${pts}" fill="none" stroke="var(--accent)" stroke-width="1.6"/>
-    </svg></div>`;
-}
-
 function toggleStrategyUI() {
   const type = $("botStrategyType")?.value || "raoer_v4";
   const raoerOpts = $("raoerBotOptions");
@@ -1913,8 +1779,8 @@ async function boot() {
   COINS = meta.coins; INTERVALS = meta.intervals;
   const coinOpts = COINS.map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`).join("");
   const ivOpts = INTERVALS.map(i => `<option value="${i}"${i === "24h" ? " selected" : ""}>${i}</option>`).join("");
-  ["botCoin", "btCoin", "chartCoin"].forEach(id => $(id).innerHTML = coinOpts);
-  ["botInterval", "btInterval", "chartInterval"].forEach(id => $(id).innerHTML = ivOpts);
+  $("botCoin").innerHTML = coinOpts;
+  $("botInterval").innerHTML = ivOpts;
 
   ENTRY_RULES = meta.entryRules || [];
   renderEntryRules("botRules", "bp_");
@@ -1978,8 +1844,6 @@ async function boot() {
     }
     catch (e) { alert(e.message); }
   };
-  $("runBacktestBtn").onclick = runBacktest;
-  $("chartCoin").onchange = $("chartInterval").onchange = loadChart;
   $("testKeyBtn").onclick = () => keyAction(false);
   $("saveKeyBtn").onclick = () => keyAction(true);
   $("copyIpBtn").onclick = () => {
@@ -2017,7 +1881,6 @@ async function boot() {
     if (tab.dataset.panel === "panel-muma") loadMuma();
     if (tab.dataset.panel === "panel-scalper") loadScalper();
     if (tab.dataset.panel === "panel-pead") loadPead();
-    if (tab.dataset.panel === "panel-chart") loadChart();
     if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadEgressIp(); }
   });
 

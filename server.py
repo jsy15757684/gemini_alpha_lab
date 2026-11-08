@@ -57,7 +57,7 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, backtest, bithumb, spread_recorder, namuh, muma_sheet, tradelog, scalper, pead
+from services import auth, bithumb, spread_recorder, namuh, muma_sheet, tradelog, scalper, pead
 from services import roles, worker_client
 from services.worker_client import WorkerDown
 from services.keystore import keystore, namuh_keystore
@@ -296,37 +296,6 @@ def prices():
         except bithumb.BithumbError as e:
             out.append({"coin": c, "name": bithumb.COINS[c], "error": e.message})
     return {"prices": out}
-
-
-@app.get("/api/candles")
-def candles(coin: str = Query(...), interval: str = Query("1h"),
-            params: Optional[str] = Query(None)):
-    """캔들 + 지표. 차트와 전략 확인용."""
-    try:
-        p = StrategyParams()
-        rows = bithumb.get_candles(coin, interval, limit=200)
-        bars = compute_indicators(rows, p)
-    except bithumb.BithumbError as e:
-        raise HTTPException(502, e.message)
-    return {"coin": bithumb.normalize_coin(coin), "interval": interval,
-            "candles": bars, "params": p.to_dict(), "dataSource": "bithumb-candles"}
-
-
-# ───────────────────────── 백테스트 ─────────────────────────
-
-class BacktestRequest(BaseModel):
-    coin: str = "BTC"
-    interval: str = "1h"
-    initialKrw: float = 1_000_000.0
-    params: Dict[str, Any] = {}
-
-
-@app.post("/api/backtest")
-def run_backtest(req: BacktestRequest):
-    try:
-        return backtest.run(req.coin, req.interval, req.params, req.initialKrw)
-    except bithumb.BithumbError as e:
-        raise HTTPException(502, e.message)
 
 
 # ───────────────────────── 봇 ─────────────────────────
