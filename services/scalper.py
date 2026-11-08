@@ -44,6 +44,14 @@ HOGA_FRESH_SEC = 180          # 호가 시각이 지금과 이보다 멀면 장�
 MAX_TRADES = 3000
 MAX_DAYS = 400
 
+ENTRY_MODES = {
+    "HYBRID_PRO": "복합 프로 (VWAP 눌림목 반등 + 09:05 5분고가 돌파 + 수급돌파)",
+    "VWAP_ORB": "VWAP 눌림목 + 09:05 5분고가 돌파 (09:03 이전 진입 차단)",
+    "VWAP_PULLBACK": "주도주 VWAP 첫 눌림목 반등 전용 (09:03~)",
+    "ORB_5M": "09:05 개장 5분 고가(ORB) 돌파 전용",
+    "OPEN_BREAK": "시초가 +0.5% 단순 돌파 (기존 방식)",
+}
+
 
 @dataclass
 class ScalpParams:
@@ -61,16 +69,25 @@ class ScalpParams:
     seedKrw: float = 10_000_000   # 원본 TOTAL_SEED_KRW — 하루 손실 한도의 기준
     maxDayStops: int = 2          # 하루 손절 이 횟수면 그날 신규 진입 끝 (0 = 끔)
     maxDayLossPct: float = 1.0    # 하루 실현 손실이 시드의 이 %면 그날 신규 진입 끝 (0 = 끔)
-    # ── 추가 스킬 (사용자 2026-10-21 · 처음부터 켬 · 하나씩 끌 수 있다) ──
+    # ── 진입 기법 모드 & 추가 스킬 (하나씩 켜고 끌 수 있다) ──
+    entryMode: str = "HYBRID_PRO" # 진입 기법: HYBRID_PRO · VWAP_ORB · VWAP_PULLBACK · ORB_5M · OPEN_BREAK
     timeStopOn: bool = True       # ② 30초 타임컷: 산 뒤 timeStopSec 안에 +timeStopPct 를 못 찍으면 판다
     timeStopSec: float = 30.0
     timeStopPct: float = 1.5      #   매수가 대비 (비용 빼기 전)
     imbalanceOn: bool = True      # ③ 호가 불균형: 총매도잔량 ÷ 총매수잔량 ≥ imbalanceMin 일 때만 산다
     imbalanceMin: float = 2.0
+    vwapFilterOn: bool = True     # ④ VWAP 정배열·윗꼬리 필터: 현재가 ≥ VWAP 이고 윗꼬리 ≤ maxWickRatio 일 때만 산다
+    maxWickRatio: float = 0.45    #   당일 (고가−현재가)÷(고가−시가) 상한 (피뢰침 고점 매도 폭탄 제외)
+    pullbackBouncePct: float = 0.3  # VWAP 눌림 뒤 재돌파 기준 (+0.3%)
+    breakevenOn: bool = True      # ⑤ 본전 보존선 잠금: +breakevenPct 도달 또는 1차 익절 뒤 손절선을 본전 위로 격상
+    breakevenPct: float = 1.2     #   매수가 대비 +1.2% 이상 오르면 수수료 포함 본전가(floor) 자동 설정
     pyramidOn: bool = True        # ⑥ 불타기: +pyramidPct 를 넘고 거래량이 몰리면 처음 수량의 pyramidAddPct% 를 더 산다
     pyramidPct: float = 1.5       #   그 뒤 평단(비용 포함) 아래로 내려오면 전량 — 수익 보존선
     pyramidAddPct: float = 30.0
     pyramidVolX: float = 2.0      #   직전 몇 초 거래 속도 ≥ 개장 이후 평균 속도 × 이 배수
+    trendHoldOn: bool = True      # ⑦ 대장주 추세 홀딩: 09:30 에 수익권 & VWAP 위면 15:15 까지 트레일링으로 추세 극대화
+    trendHoldMinPct: float = 0.5  #   09:30 추세 홀딩 전환 최소 순수익률(%)
+    trendClose: str = "15:15"     #   장중 추세 홀딩 종목 최종 강제 청산 시각
     gapMinPct: float = 1.5        # 선정: 동시호가 예상 갭 하한 (원본 MIN_GAP_UP_PCT)
     gapMaxPct: float = 7.0        # 선정: 상한 (원본 MAX_GAP_UP_PCT)
     minExpTurnoverEok: float = 0.5
@@ -179,6 +196,70 @@ def can_enter(q: Dict[str, Any], p: ScalpParams) -> bool:
     return o > 0 and px > o * (1 + p.breakoutPct / 100.0) and (q.get("changePct") or 0) <= p.maxChangePct
 
 
+def vwap_wick_check(q: Dict[str, Any], p: ScalpParams) -> tuple:
+    """④ VWAP 정배열 · 윗꼬리 필터 — (통과 여부, 보류 사유).
+
+    당일 거래량가중평균가(VWAP) 아래로 밀린 약세 종목이나,
+    고점을 찍고 강하게 밀려 윗꼬리가 길게 달린 설거지 캔들을 거른다.
+    """
+    if not p.vwapFilterOn:
+        return True, ""
+    px, o = q.get("price") or 0, q.get("open") or 0
+    vw, hi = q.get("vwap") or 0, q.get("high") or 0
+    if vw > 0 and px < vw:
+        return False, f"당일 VWAP({vw:,.0f}원) 아래 약세 (현재 {px:,}원)"
+    if hi > o > 0 and (hi / o - 1.0) * 100.0 >= 0.8:
+        wick_ratio = (hi - px) / (hi - o)
+        if wick_ratio > p.maxWickRatio:
+            return False, f"윗꼬리 과다 {wick_ratio * 100:.0f}% > {p.maxWickRatio * 100:.0f}% (고가 {hi:,}원 대비 밀림)"
+    return True, ""
+
+
+def update_signal_state(q: Dict[str, Any], st: Dict[str, Any], now: datetime) -> None:
+    """실제 매매용 종목별 장중 상태(VWAP 눌림 여부 · 09:05 개장 5분 고가)를 갱신한다."""
+    code = q.get("code") or ""
+    px, vw = q.get("price") or 0, q.get("vwap") or 0
+    if not code or px <= 0:
+        return
+    if vw > 0 and px <= vw * 1.001:
+        st.setdefault("touched", {})[code] = True
+    if now >= _at(now, (9, 5, 0)):
+        st.setdefault("orHigh", {}).setdefault(code, q.get("high") or px)
+
+
+def evaluate_entry_signal(q: Dict[str, Any], st: Dict[str, Any], now: datetime, p: ScalpParams) -> tuple:
+    """선택된 진입 기법(entryMode)에 따라 매수 신호를 판정한다. (진입 사유 문자열, 스킬 태그 리스트)."""
+    code = q.get("code") or ""
+    px, o = q.get("price") or 0, q.get("open") or 0
+    vw = q.get("vwap") or 0
+    chg = q.get("changePct") or 0
+    update_signal_state(q, st, now)
+    if o <= 0 or px <= 0 or chg > p.maxChangePct:
+        return "", []
+
+    mode = (p.entryMode or "HYBRID_PRO").upper()
+    if mode not in ENTRY_MODES:
+        mode = "HYBRID_PRO"
+
+    # 1) 주도주 VWAP 첫 눌림목 지지 후 재돌파 (09:03 이후 — 추격매수 방지 · 손익비 극대화)
+    if mode in ("HYBRID_PRO", "VWAP_ORB", "VWAP_PULLBACK") and now >= _at(now, (9, 3, 0)) and vw > 0:
+        if st.get("touched", {}).get(code) and px >= vw * (1 + p.pullbackBouncePct / 100.0) and px > o:
+            return f"VWAP {vw:,.0f}원 눌림 지지 후 +{(px / vw - 1) * 100:.2f}% 재돌파", ["VWAP눌림반등"]
+
+    # 2) 09:05 개장 5분 고가(ORB) 돌파 (그림자 A · D · E 와 같은 진입 신호)
+    if mode in ("HYBRID_PRO", "VWAP_ORB", "ORB_5M") and now >= _at(now, (9, 5, 0)):
+        orh = st.get("orHigh", {}).get(code) or 0
+        if orh > 0 and px > orh and px > o and (vw <= 0 or px >= vw):
+            return f"09:05 개장 5분 고가 {orh:,}원 돌파", ["5분고가돌파"]
+
+    # 3) 시초가 돌파 (HYBRID_PRO 에서는 VWAP 정배열·무윗꼬리 필터와 결합)
+    if mode in ("HYBRID_PRO", "OPEN_BREAK") and can_enter(q, p):
+        tags = ["VWAP정배열"] if (p.vwapFilterOn and vw > 0 and px >= vw) else []
+        return f"시가 {o:,} 돌파 +{(px / o - 1) * 100:.2f}% (진입 기준 +{p.breakoutPct}%)", tags
+
+    return "", []
+
+
 # ── 그림자 기록 (2026-10-27) ──
 # 실제(모의) 매매는 그대로 두고, 같은 날 같은 종목에서 다른 진입 신호를 가상으로 함께 기록한다.
 # 청산 규칙(30초 타임컷 · 손절 · 트레일링 · 목표 · 1차 익절 · 09:30 청산) · 체결가(호가 잔량) · 호가 불균형 ·
@@ -284,7 +365,8 @@ class Scalper:
             sk[code] = why
             self.log("INFO", f"{code} 진입 보류 — {why}" + ("" if for_day else " (계속 봅니다)"))
 
-    def _buy(self, q: Dict[str, Any], now: datetime) -> None:
+    def _buy(self, q: Dict[str, Any], now: datetime, reason: str = "",
+             extra_skills: Optional[List[str]] = None) -> None:
         code = q["code"]
         fill = walk_buy(q, self.params.positionKrw)
         if not fill:
@@ -296,17 +378,21 @@ class Scalper:
             return
         px = round(px, 2)
         ratio = imbalance(q)
+        skills = list(extra_skills or [])
+        if self.params.imbalanceOn and ratio:
+            skills.append(f"호가불균형 {ratio}배")
+        buy_reason = reason or (
+            f"시가 {q['open']:,} 돌파 +{(q['price'] / q['open'] - 1) * 100:.2f}% (진입 기준 +{self.params.breakoutPct}%)"
+        )
         self.positions[code] = {"code": code, "name": q.get("name") or code, "entry": float(px), "qty": qty,
                                 "remaining": qty, "peak": float(q["price"]), "low": float(q["price"]),
                                 "partialDone": False, "pnl": 0.0, "at": now.strftime("%H:%M:%S"),
                                 "atTs": now.timestamp(), "firstEntry": float(px), "cost": qty * px,
                                 "timeOk": not self.params.timeStopOn, "pyramided": False, "floor": 0.0,
-                                "skills": [f"호가불균형 {ratio}배"] if self.params.imbalanceOn and ratio else []}
+                                "trendHold": False, "skills": skills}
         self.day.setdefault("entered", []).append(code)      # 같은 날 같은 종목은 다시 사지 않는다
-        self._record(code, q.get("name"), "BUY", px, qty, 0.0, 0.0,
-                     f"시가 {q['open']:,} 돌파 +{(q['price'] / q['open'] - 1) * 100:.2f}% (진입 기준 +{self.params.breakoutPct}%)",
-                     now)
-        self.log("INFO", f"모의 매수 {q.get('name')}({code}) {qty:,}주 @ {px:,}원")
+        self._record(code, q.get("name"), "BUY", px, qty, 0.0, 0.0, buy_reason, now)
+        self.log("INFO", f"모의 매수 {q.get('name')}({code}) {qty:,}주 @ {px:,}원 · {buy_reason}")
         self.save()
 
     def _sell(self, code: str, q: Dict[str, Any], qty: int, kind: str, reason: str, now: datetime) -> None:
@@ -476,11 +562,30 @@ class Scalper:
             shadow.setdefault(k, {"positions": {}, "entered": [], "closed": []})
         sh_held = {c for st in shadow.values() for c in st["positions"]}
         if now >= t_close:
+            t_trend_close = _at(now, _hm(p.trendClose)) if p.trendHoldOn else t_close
             for code in list(self.positions):
-                q = self.quotes.get(code) or self._quote(code)
-                if q:
-                    self._sell(code, q, self.positions[code]["remaining"], "FORCE",
-                               f"{p.forceClose} 강제 전량 청산", now)
+                pos = self.positions[code]
+                q = (self._quote(code) if pos.get("trendHold") else self.quotes.get(code)) or self._quote(code)
+                if not q:
+                    continue
+                vw = q.get("vwap") or 0
+                cur_net = net_pct(pos["entry"], q["price"], p.costPct)
+                # ⑦ 대장주 추세 홀딩: 09:30 에 수익권(≥ trendHoldMinPct)이고 당일 VWAP 위면 15:15 까지 트레일링 연장
+                if (p.trendHoldOn and now < t_trend_close and vw > 0 and q["price"] >= vw
+                        and (pos.get("trendHold") or cur_net >= p.trendHoldMinPct)):
+                    if not pos.get("trendHold"):
+                        pos["trendHold"] = True
+                        pos["timeOk"] = True
+                        min_fl = round(pos["entry"] * (1 + p.costPct / 100.0), 2)
+                        pos["floor"] = max(pos.get("floor") or 0.0, min_fl)
+                        if "15:15추세홀딩" not in pos.get("skills", []):
+                            pos.setdefault("skills", []).append("15:15추세홀딩")
+                        self.log("INFO", f"{pos['name']}({code}) 09:30 수익 {cur_net:+.2f}% & VWAP 위 강세 → {p.trendClose} 장중 추세 홀딩 전환")
+                        self.save()
+                    self._manage(code, q, now)
+                    continue
+                end_label = p.trendClose if pos.get("trendHold") else p.forceClose
+                self._sell(code, q, pos["remaining"], "FORCE", f"{end_label} 강제 전량 청산", now)
             for key, st in shadow.items():
                 end = _at(now, SHADOW_RUN[key][1]) if key in SHADOW_RUN else t_close
                 if now < end:
@@ -495,13 +600,14 @@ class Scalper:
                 self._finish_day(f"{p.forceClose} 청산 완료"
                                  + (" · 장중 보유 그림자 15:15 청산" if any(k in shadow for k in SHADOW_RUN) else ""))
                 return 5.0
-            if self.positions:
-                return 5.0
             for code in sorted(late):
-                q = self._quote(code)
-                if q:
-                    self._shadow_step(q, now, t_entry_end)
-            return LATE_POLL_SEC
+                if code not in self.positions:
+                    q = self._quote(code)
+                    if q:
+                        self._shadow_step(q, now, t_entry_end)
+                elif self.quotes.get(code):
+                    self._shadow_step(self.quotes[code], now, t_entry_end)
+            return LATE_POLL_SEC if (late or any(pos.get("trendHold") for pos in self.positions.values())) else 5.0
         # 들고 있는 종목 · 아직 살 수 있는 종목만 본다 — 3종목을 다 보면 한 바퀴 4초+, 줄이면 손절이 덜 미끄러진다
         can_buy = now < t_entry_end and not d.get("halt") and len(self.positions) < p.maxStocks
         active = [c["code"] for c in d["chosen"]
@@ -522,17 +628,28 @@ class Scalper:
                 and not self.positions and not any(self._fresh(q, now) for q in quotes)):
             self._finish_day("호가가 갱신되지 않습니다 — 휴장일(또는 지연 개장)로 보고 쉽니다")
             return 600.0
+        sig_state = d.setdefault("sigState", {})
         for q in quotes:
             code = q["code"]
             if code in self.positions:
+                update_signal_state(q, sig_state, now)
                 self._manage(code, q, now)
             elif (now < t_entry_end and len(self.positions) < p.maxStocks
-                  and code not in d.get("entered", []) and not self._day_halt() and can_enter(q, p)):
+                  and code not in d.get("entered", []) and not self._day_halt()):
+                sig_reason, sig_tags = evaluate_entry_signal(q, sig_state, now, p)
+                if not sig_reason:
+                    continue
+                vw_ok, vw_why = vwap_wick_check(q, p)
+                if not vw_ok:
+                    self._skip(code, vw_why, False)
+                    continue
                 ratio = imbalance(q)
                 if p.imbalanceOn and ratio is not None and ratio < p.imbalanceMin:
                     self._skip(code, f"호가 불균형 {ratio}배 < {p.imbalanceMin}배 (매도잔량이 무겁지 않음)", False)
                     continue
-                self._buy(q, now)
+                self._buy(q, now, reason=sig_reason, extra_skills=sig_tags)
+            else:
+                update_signal_state(q, sig_state, now)
         for q in quotes:
             self._shadow_step(q, now, t_entry_end)
         return 1.0
@@ -613,14 +730,26 @@ class Scalper:
         del self.shadow_trades[:-MAX_TRADES]
 
     def _manage(self, code: str, q: Dict[str, Any], now: datetime) -> None:
-        """보유 하나: 보존선 → 30초 타임컷 → 원래 청산 규칙 → 불타기 순서로 본다."""
+        """보유 하나: ⑤ 본전보존선 갱신 → 보존선 이탈 → 추세홀딩 VWAP 이탈 → ② 타임컷 → 청산 규칙 → ⑥ 불타기."""
         p, pos, px = self.params, self.positions[code], q["price"]
         pos["low"] = min(pos.get("low", pos["entry"]), px)
         pos["peak"] = max(pos["peak"], px)
         first = pos.get("firstEntry", pos["entry"])
+        if p.breakevenOn and not pos.get("floor") and (
+            pos.get("partialDone") or pos["peak"] >= first * (1 + p.breakevenPct / 100.0)
+        ):
+            pos["floor"] = round(pos["entry"] * (1 + p.costPct / 100.0), 2)
+            if "본전보존선" not in pos.get("skills", []):
+                pos.setdefault("skills", []).append("본전보존선")
         if pos.get("floor") and px <= pos["floor"]:
-            self._sell(code, q, pos["remaining"], "FLOOR", f"불타기 뒤 수익 보존선 {pos['floor']:,.0f}원 이탈", now)
+            fl_kind = "불타기 뒤 수익 보존선" if pos.get("pyramided") else "본전 보존선"
+            self._sell(code, q, pos["remaining"], "FLOOR", f"{fl_kind} {pos['floor']:,.0f}원 이탈", now)
             return
+        if pos.get("trendHold"):
+            vw = q.get("vwap") or 0
+            if vw > 0 and px < vw * 0.998:
+                self._sell(code, q, pos["remaining"], "TRAIL", f"장중 추세홀딩 VWAP({vw:,.0f}원) 이탈 익절", now)
+                return
         if not pos.get("timeOk", True):
             if pos["peak"] >= first * (1 + p.timeStopPct / 100.0):
                 pos["timeOk"] = True
@@ -631,8 +760,18 @@ class Scalper:
                 return
         act = decide_exit(pos, px, p)
         if act:
-            self._sell(code, q, act["qty"], act["kind"], act["reason"], now)
-            return
+            # ⑦ 장중 추세 홀딩 중에는 +2.5% 고정 목표가(TARGET)로 상단을 막지 않고 트레일링으로 끝까지 간다
+            if pos.get("trendHold") and act["kind"] == "TARGET":
+                act = None
+            else:
+                self._sell(code, q, act["qty"], act["kind"], act["reason"], now)
+                if act["kind"] == "PARTIAL" and code in self.positions and p.breakevenOn:
+                    rem_pos = self.positions[code]
+                    rem_pos["floor"] = max(rem_pos.get("floor") or 0.0,
+                                           round(rem_pos["entry"] * (1 + p.costPct / 100.0), 2))
+                    if "본전보존선" not in rem_pos.get("skills", []):
+                        rem_pos.setdefault("skills", []).append("본전보존선")
+                return
         if p.pyramidOn and not pos.get("pyramided") and px >= first * (1 + p.pyramidPct / 100.0) \
                 and self._vol_surge(q, now):
             self._pyramid(code, q, now)
@@ -707,15 +846,19 @@ class Scalper:
             self.log("INFO", "켰습니다" if on else "껐습니다 (가상 보유가 있으면 다음 거래일 정리)")
             self.save()
 
-    SKILLS = ("timeStopOn", "imbalanceOn", "pyramidOn")
+    SKILLS = ("timeStopOn", "imbalanceOn", "pyramidOn", "vwapFilterOn", "breakevenOn", "trendHoldOn")
 
     def set_skills(self, flags: Dict[str, Any]) -> None:
-        """추가 스킬 켜고 끄기 (② 타임컷 · ③ 호가 불균형 · ⑥ 불타기). 들고 있는 종목에는 다음 판단부터."""
+        """진입 기법(entryMode) 및 추가 스킬(②~⑦) 켜고 끄기. 들고 있는 종목에는 다음 판단부터."""
         with self.lock:
+            mode = flags.get("entryMode")
+            if mode and str(mode).upper() in ENTRY_MODES:
+                self.params.entryMode = str(mode).upper()
             for k in self.SKILLS:
                 if k in flags and flags[k] is not None:
                     setattr(self.params, k, bool(flags[k]))
-            self.log("INFO", "스킬: " + " · ".join(f"{k}={getattr(self.params, k)}" for k in self.SKILLS))
+            self.log("INFO", f"기법={self.params.entryMode} · 스킬: "
+                     + " · ".join(f"{k}={getattr(self.params, k)}" for k in self.SKILLS))
             self.save()
 
     def status(self) -> Dict[str, Any]:
@@ -733,7 +876,8 @@ class Scalper:
                 px = q.get("price") or pos["entry"]
                 held.append({**pos, "price": px, "netPct": round(net_pct(pos["entry"], px, self.params.costPct), 2)})
             return {"enabled": self.enabled, "running": bool(self._thread and self._thread.is_alive()),
-                    "paper": True, "params": asdict(self.params), "day": dict(self.day), "positions": held,
+                    "paper": True, "params": asdict(self.params), "entryModes": ENTRY_MODES,
+                    "day": dict(self.day), "positions": held,
                     "trades": trades[::-1], "days": days[-30:][::-1],
                     "summary": {"days": len(days), "tradedDays": len(closed_days), "pnl": round(total),
                                 "positions": pos_n, "wins": wins,

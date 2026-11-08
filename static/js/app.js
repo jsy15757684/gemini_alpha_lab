@@ -897,6 +897,9 @@ async function loadScalper() {
 
 function renderScalper(s) {
   $("scalperEnabled").checked = !!s.enabled;
+  if ($("scalperEntryMode") && document.activeElement?.id !== "scalperEntryMode") {
+    $("scalperEntryMode").value = s.params.entryMode || "HYBRID_PRO";
+  }
   document.querySelectorAll(".scalper-skill").forEach(el => { el.checked = !!s.params[el.dataset.skill]; });
   setAlert($("scalperAlert"), !s.running ? "스캘퍼가 돌고 있지 않습니다 (나무증권 키 · APP_SCALPER 확인)"
     : (s.lastError ? `최근 오류: ${s.lastError}` : ""), s.running ? "warn" : "error");
@@ -936,13 +939,17 @@ function renderScalper(s) {
     <td class="muted small">${escapeHtml(t.reason)}${t.mfePct != null ? ` · 최대 +${t.mfePct}% / ${t.maePct}%` : ""}</td></tr>`).join("");
   $("scalperShadowTrades").innerHTML = st ? `<div class="tbl-wrap"><table><thead><tr><th>신호</th><th>시각</th><th>종목</th><th>구분</th><th>가격</th><th>수량</th><th>손익</th><th>사유</th></tr></thead><tbody>${st}</tbody></table></div>` : `<div class="empty">아직 그림자 체결이 없습니다.</div>`;
   const p = s.params;
-  $("scalperRules").innerHTML = `종목 ${p.maxStocks}개 · 종목당 ${won0(p.positionKrw)} · 진입: 시가 +${p.breakoutPct}% 돌파 (등락률 ${p.maxChangePct}% 이하, ${escapeHtml(p.entryEnd)}까지) ·
-    1차 익절 +${p.partialPct}% 절반 · 목표 +${p.targetPct}% · 손절 −${p.stopPct}% · 트레일링 고점 대비 −${p.trailPct}% · ${escapeHtml(p.forceClose)} 강제 청산 ·
+  const modeLabel = (s.entryModes && s.entryModes[p.entryMode]) || p.entryMode || "HYBRID_PRO";
+  $("scalperRules").innerHTML = `진입 기법: <b>${escapeHtml(modeLabel)}</b> · 종목 ${p.maxStocks}개 · 종목당 ${won0(p.positionKrw)} · 등락률 ${p.maxChangePct}% 이하 (${escapeHtml(p.entryEnd)}까지 진입) ·
+    1차 익절 +${p.partialPct}% 절반 · 목표 +${p.targetPct}% · 손절 −${p.stopPct}% · 트레일링 고점 대비 −${p.trailPct}% · ${escapeHtml(p.forceClose)} 기본 청산 ·
     비용 ${p.costPct}% ·
-    ② 타임컷 ${p.timeStopOn ? `켬 (${p.timeStopSec}초 안에 +${p.timeStopPct}% 못 찍으면 매도)` : "끔"} ·
+    ④ VWAP·윗꼬리 필터 ${p.vwapFilterOn ? `켬 (현재가 ≥ VWAP & 윗꼬리 ≤ ${Math.round((p.maxWickRatio || 0.45) * 100)}%)` : "끔"} ·
     ③ 호가 불균형 ${p.imbalanceOn ? `켬 (매도잔량 ÷ 매수잔량 ≥ ${p.imbalanceMin}배일 때만 매수)` : "끔"} ·
+    ⑤ 본전 보존선 ${p.breakevenOn ? `켬 (+${p.breakevenPct || 1.2}% 도달 시 수수료 포함 본전가 잠금)` : "끔"} ·
     ⑥ 불타기 ${p.pyramidOn ? `켬 (+${p.pyramidPct}% · 거래 속도 ${p.pyramidVolX}배면 ${p.pyramidAddPct}% 추가 · 평단 아래면 전량)` : "끔"} ·
-    모의 체결가는 10단계 호가 잔량을 먹어 내려간 평균 (10단계로 못 채우면 진입 안 함) · 정적 VI 상단까지 목표 익절폭 여유가 없으면 진입 안 함 · 같은 종목 하루 1번 · 손절 ${p.maxDayStops}번 또는 시드 ${won0(p.seedKrw)}의 −${p.maxDayLossPct}% 손실이면 그날 신규 진입 끝 · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}% · 체결가 = 살 때 매도1호가, 팔 때 매수1호가`;
+    ⑦ 대장주 추세 홀딩 ${p.trendHoldOn ? `켬 (09:30 수익 +${p.trendHoldMinPct || 0.5}% & VWAP 위면 ${escapeHtml(p.trendClose || "15:15")}까지 트레일링 연장)` : "끔"} ·
+    ② 타임컷 ${p.timeStopOn ? `켬 (${p.timeStopSec}초 안에 +${p.timeStopPct}% 못 찍으면 매도)` : "끔"} ·
+    모의 체결가는 10단계 호가 잔량을 먹어 내려간 평균 · 정적 VI 상단까지 목표 익절폭 여유가 없으면 진입 안 함 · 같은 종목 하루 1번 · 손절 ${p.maxDayStops}번 또는 시드 ${won0(p.seedKrw)}의 −${p.maxDayLossPct}% 손실이면 그날 신규 진입 끝 · 선정 예상 갭 ${p.gapMinPct}~${p.gapMaxPct}%`;
   $("scalperLogs").innerHTML = (s.logs || []).map(l => `${escapeHtml(l.time)} ${escapeHtml(l.message)}`).join("<br>");
 }
 
@@ -1968,6 +1975,15 @@ async function boot() {
         body: JSON.stringify({ on: e.target.checked }),
       }));
     } catch (err) { setAlert($("peadAlert"), `켜기/끄기 실패: ${err.message}`, "error"); loadPead(); }
+  };
+  if ($("scalperEntryMode")) $("scalperEntryMode").onchange = async (e) => {
+    try {
+      renderScalper(await api("/api/namuh/scalper/skills", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ entryMode: e.target.value }),
+      }));
+    } catch (err) { setAlert($("scalperAlert"), `기법 변경 실패: ${err.message}`, "error"); loadScalper(); }
   };
   document.querySelectorAll(".scalper-skill").forEach(el => el.onchange = async () => {
     try {

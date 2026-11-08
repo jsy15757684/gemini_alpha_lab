@@ -822,15 +822,19 @@ def namuh_scalper_status():
 
 
 class ScalperSkillsRequest(BaseModel):
+    entryMode: Optional[str] = None
     timeStopOn: Optional[bool] = None
     imbalanceOn: Optional[bool] = None
     pyramidOn: Optional[bool] = None
+    vwapFilterOn: Optional[bool] = None
+    breakevenOn: Optional[bool] = None
+    trendHoldOn: Optional[bool] = None
 
 
 @app.post("/api/namuh/scalper/skills")
 def namuh_scalper_skills(req: ScalperSkillsRequest):
     sc = scalper.get(namuh_keystore.account)
-    sc.set_skills(req.dict())
+    sc.set_skills(req.model_dump(exclude_none=True))
     return sc.status()
 
 

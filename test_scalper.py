@@ -49,6 +49,8 @@ def orig():
     """원본 규칙만 (추가 스킬 끔) — 원래 규칙을 따로 시험한다."""
     x = S.Scalper(namuh_account=object())
     x.params.timeStopOn = x.params.imbalanceOn = x.params.pyramidOn = False
+    x.params.vwapFilterOn = x.params.breakevenOn = x.params.trendHoldOn = False
+    x.params.entryMode = "OPEN_BREAK"
     return x
 krx_master.load = lambda: [{"code": "000001"}]
 krx_master.candidates = lambda rows: rows
@@ -330,6 +332,59 @@ st = sc.status()
 check("화면용 요약 (모의 · 손익 · 승률 · 1건당 손익 · 평균 MFE/MAE)", st["paper"] and st["summary"]["wins"] == 1
       and st["summary"]["winRate"] == 100.0 and st["summary"]["perPosition"] > 0 and st["summary"]["avgMfePct"] > 0,
       f"{st['summary']}")
+
+print("── 고수익 신규 기법 (VWAP 눌림목 반등 · 윗꼬리/VWAP 필터 · 본전보존선 · 15:15 추세홀딩) ──")
+SEL["chosen"] = [{"code": "P1", "name": "주도주1", "gap": 3.2, "score": 2.5}]
+sp = S.Scalper(namuh_account=object())
+sp.params.imbalanceOn = False
+sp.step(at(8, 50, 5, day=15)); sp.step(at(8, 57, 55, day=15))
+
+# 1) ④ VWAP 아래 약세 및 윗꼬리 과다(고점 매도 설거지) 진입 차단 검증
+Q["P1"] = dict(mk(10_060, hoga="09:01:00", name="P1"), vwap=10_100, high=10_120)
+sp.step(at(9, 1, day=15))
+check("④ 현재가가 당일 VWAP 아래면 시가 +0.5% 돌파여도 매수하지 않는다", "P1" not in sp.positions, sp.day.get("thin", {}).get("P1", ""))
+
+sp.day["thin"].clear()
+Q["P1"] = dict(mk(10_060, hoga="09:01:10", name="P1"), vwap=10_020, high=10_200)  # 고가 10,200 찍고 10,060으로 밀림 (윗꼬리 70%)
+sp.step(at(9, 1, 10, day=15))
+check("④ 당일 윗꼬리 비율이 45%를 초과(피뢰침 캔들)하면 매수하지 않는다", "P1" not in sp.positions, sp.day.get("thin", {}).get("P1", ""))
+
+# 2) VWAP_PULLBACK 모드: VWAP 눌림 지지 후 +0.3% 재돌파 타점 검증
+sp.set_skills({"entryMode": "VWAP_PULLBACK"})
+Q["P1"] = dict(mk(10_010, hoga="09:02:00", name="P1"), vwap=10_010, high=10_040)  # VWAP 터치(눌림)
+sp.step(at(9, 2, day=15))
+Q["P1"] = dict(mk(10_045, hoga="09:03:30", name="P1", ask=10_050), vwap=10_010, high=10_050)  # 시가 +0.45%(<0.5%)지만 VWAP 대비 +0.35% 재돌파
+sp.step(at(9, 3, 30, day=15))
+check("VWAP_PULLBACK: 당일 VWAP 눌림 지지 후 +0.3% 재돌파 시 추격 없이 저점 매수한다",
+      "P1" in sp.positions and "VWAP눌림반등" in sp.positions["P1"]["skills"],
+      f"매수가 {sp.positions['P1']['entry']:,.0f}원 · 태그 {sp.positions['P1']['skills']}")
+
+# 3) ⑤ 본전 보존선(breakevenOn): +1.2% 도달 시 수수료 포함 본전가(floor) 잠금
+Q["P1"] = dict(mk(10_180, hoga="09:03:50", name="P1"), vwap=10_080, high=10_190)  # 매수가 10,050 대비 +1.29%
+sp.step(at(9, 3, 50, day=15))
+pos_p1 = sp.positions["P1"]
+check("⑤ +1.2% 이상 상승 시 1차 익절 전이라도 수수료 포함 본전 보존선(floor)이 자동 잠긴다",
+      pos_p1["floor"] > pos_p1["entry"] and "본전보존선" in pos_p1["skills"],
+      f"매수가 {pos_p1['entry']:,.0f}원 → 보존선 {pos_p1['floor']:,.0f}원")
+
+# 4) ⑦ 대장주 15:15 추세 홀딩(trendHoldOn): 09:30 수익권 & VWAP 위면 청산하지 않고 장중 추세 추종
+Q["P1"] = dict(mk(10_220, hoga="09:30:05", name="P1"), vwap=10_150, high=10_240)
+sp.step(at(9, 30, 5, day=15))
+check("⑦ 09:30 시점에 수익권이고 당일 VWAP 위인 강세 대장주는 09:30 강제청산 대신 15:15 추세 홀딩으로 전환",
+      "P1" in sp.positions and sp.positions["P1"].get("trendHold") is True,
+      f"스킬 {sp.positions['P1']['skills']}")
+
+Q["P1"] = dict(mk(10_600, hoga="11:00:00", name="P1"), vwap=10_350, high=10_620)  # +5.4% 상승 (고정 목표가 +2.5% 돌파)
+sp.step(at(11, 0, day=15))
+check("⑦ 장중 추세 홀딩 중에는 +2.5% 고정 목표가에 막히지 않고 +5% 이상 대시세를 끝까지 탄다",
+      "P1" in sp.positions and sp.positions["P1"]["peak"] == 10_600,
+      f"현재 고점 {sp.positions['P1']['peak']:,.0f}원")
+
+Q["P1"] = dict(mk(10_750, bid=10_740, hoga="15:15:01", name="P1"), vwap=10_500, high=10_780)
+sp.step(at(15, 15, 1, day=15))
+check("⑦ 15:15 장 마감 전 강제 청산으로 큰 추세 수익을 확정한다",
+      "P1" not in sp.positions and sp.trades[-1]["kind"] == "FORCE" and sp.trades[-1]["pct"] > 5.0,
+      f"수익률 {sp.trades[-1]['pct']:+.2f}% · 손익 {sp.trades[-1]['pnl']:+,}원")
 
 print()
 print(f"통과 {len(PASS)} · 실패 {len(FAIL)}")
