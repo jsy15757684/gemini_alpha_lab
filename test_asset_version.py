@@ -19,8 +19,8 @@ BASE = os.path.dirname(os.path.abspath(__file__))
 
 # {자산 경로: (index.html 에 적힌 버전, 그 버전일 때의 내용 sha256)}
 EXPECTED = {
-    "static/js/app.js":    ("5.24.0", "d99579aba9f36ecfd7882d897c3dde6a"),
-    "static/css/style.css": ("5.3.0", "a9f10a29e86d1934d0d7bf479cf33dbd"),
+    "static/js/app.js":    ("5.25.0", "64d14586c07a9bf6fff1f2d118f2b91f"),
+    "static/css/style.css": ("5.4.0", "dece28c1ab4856a64a948efc17dd7baa"),
 }
 
 PASS, FAIL = [], []

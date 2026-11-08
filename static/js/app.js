@@ -1138,17 +1138,31 @@ function renderPead(s) {
     $("peadRecommendations").innerHTML =
       `<div class="empty">표시할 추천 기업이 없습니다. 상단 <b>[🔍 지금 전종목 스캔]</b>을 누르면 코스피200·코스닥150 중 상위 <b>최대 ${recLimit}개 기업</b>만 깔끔하게 추려줍니다.</div>`;
   } else {
-    $("peadRecommendations").innerHTML = `<div class="pead-rec-grid">${recs.map((c, idx) => {
+    const renderCard = (c, idx) => {
       const ck = c.checks || {};
+      const passedCnt = c.passedChecks != null ? c.passedChecks : Object.values(ck).filter(Boolean).length;
+      const totalCnt = c.totalChecks || 5;
+      const ratioPct = Math.min(100, Math.round((passedCnt / Math.max(1, totalCnt)) * 100));
+      const isStrongNear = !c.passed && passedCnt >= 4;
+      const cardCls = c.passed ? "is-pass" : (isStrongNear ? "is-strong-near" : "is-weak-near");
+      const meterCls = c.passed ? "pass" : (isStrongNear ? "strong" : "near");
       const estQty = c.estQty || Math.max(1, Math.floor(slotBudget / Math.max(1, c.price || 1)));
       const badge = c.passed
-        ? `<span class="pead-status-badge pead-status-pass">🟢 추천 · 전 관문 통과 (${c.score}점)</span>`
-        : `<span class="pead-status-badge pead-status-near">🟡 차선 · ${c.passedChecks || 0}/${c.totalChecks || 5} 충족 (${c.score}점)</span>`;
+        ? `<span class="pead-status-badge pead-status-pass">🌟 강력추천 · 5/5 올패스 (${c.score}점)</span>`
+        : isStrongNear
+          ? `<span class="pead-status-badge pead-status-strong">⚡ 유력후보 · ${passedCnt}/${totalCnt} 충족 (${c.score}점)</span>`
+          : `<span class="pead-status-badge pead-status-near">차선 · ${passedCnt}/${totalCnt} 충족 (${c.score}점)</span>`;
       const warnHtml = (!c.passed && (c.failReasons || []).length)
-        ? `<div class="pead-warn-line">⚠️ 미충족 참고: ${escapeHtml(c.failReasons.slice(0, 2).join(" · "))}</div>`
+        ? `<div class="pead-warn-line">⚠️ 미충족 항목: ${escapeHtml(c.failReasons.slice(0, 2).join(" · "))}</div>`
         : "";
+      const btnCls = c.passed ? "btn-pead-pass" : (isStrongNear ? "btn-pead-strong" : "btn-ghost");
+      const btnLabel = c.passed
+        ? "🚀 빈 슬롯에 바로 담기 (전 조건 충족)"
+        : isStrongNear
+          ? "📥 조건 확인 후 슬롯에 담기 (4/5 충족)"
+          : "📥 조건 확인 후 슬롯에 담기";
       return `
-        <div class="pead-rec-card ${c.passed ? "is-pass" : "is-near"}">
+        <div class="pead-rec-card ${cardCls}">
           <div class="pead-rec-head">
             <div style="display:flex;align-items:center;gap:.45rem;flex-wrap:wrap;min-width:0">
               <span class="pead-rank">#${c.rank || (idx + 1)}</span>
@@ -1157,6 +1171,16 @@ function renderPead(s) {
               <span class="${cls(c.dayGainPct)} small mono" style="font-weight:700">${pct(c.dayGainPct)}</span>
             </div>
             ${badge}
+          </div>
+
+          <div class="pead-meter">
+            <span style="color:${c.passed ? "#86efac" : (isStrongNear ? "#93c5fd" : "var(--muted)")}">
+              ${c.passed ? "✅ 5대 관문 100% 통과" : `충족도 ${passedCnt}/${totalCnt} (${ratioPct}%)`}
+            </span>
+            <div class="pead-meter-track">
+              <div class="pead-meter-fill ${meterCls}" style="width:${c.passed ? 100 : ratioPct}%"></div>
+            </div>
+            <span class="mono">${c.score}점</span>
           </div>
 
           <div class="pead-catalyst">
@@ -1192,17 +1216,48 @@ function renderPead(s) {
           </div>
 
           <div class="pead-rec-actions">
-            <button class="btn ${c.passed ? "btn-primary" : "btn-ghost"} btn-sm btn-buy"
+            <button class="btn ${btnCls} btn-sm btn-buy"
               data-pead-buy="${escapeHtml(c.code)}"
               data-pead-name="${escapeHtml(c.name)}"
               data-pead-passed="${c.passed ? "1" : "0"}"
               data-pead-fail="${escapeHtml((c.failReasons || [])[0] || "")}">
-              ${c.passed ? "📥 빈 슬롯에 담기" : "📥 조건 확인 후 슬롯에 담기"}
+              ${btnLabel}
             </button>
             <button class="btn btn-ghost btn-sm" data-pead-reject="${escapeHtml(c.code)}" title="목록에서 빼고 다음 후보 보기">제외</button>
           </div>
         </div>`;
-    }).join("")}</div>`;
+    };
+
+    const passList = recs.filter(c => c.passed);
+    const nearList = recs.filter(c => !c.passed);
+    let htmlOut = "";
+    if (passList.length) {
+      htmlOut += `
+        <div class="pead-pass-banner">
+          <span>🌟 <b>전 관문(5/5) 완벽 충족 종목 ${passList.length}개 포착!</b> — 초록색 강조 카드를 우선 검토하세요</span>
+          <span class="small" style="color:#bbf7d0">60일 수급선 · 실적 서프라이즈 · 거래량 · 수급 올패스</span>
+        </div>
+        <div class="pead-rec-grid">${passList.map((c, i) => renderCard(c, i)).join("")}</div>`;
+      if (nearList.length) {
+        htmlOut += `
+          <div class="pead-sub-divider">
+            <span>📋 부분 충족 · 차순위 관심 후보 (${nearList.length}개 기업)</span>
+            <span class="small">4/5 충족 유력 후보는 파란 테두리로 표시됩니다</span>
+          </div>
+          <div class="pead-rec-grid">${nearList.map((c, i) => renderCard(c, passList.length + i)).join("")}</div>`;
+      }
+    } else {
+      const strongCnt = nearList.filter(c => (c.passedChecks || 0) >= 4).length;
+      if (strongCnt > 0) {
+        htmlOut += `
+          <div class="pead-sub-divider" style="margin-top:0">
+            <span style="color:#93c5fd">⚡ 5개 중 4개 핵심 조건을 충족한 유력 후보 ${strongCnt}곳이 상단에 강조되어 있습니다</span>
+            <span class="small">파란색 강조 카드 우선 확인</span>
+          </div>`;
+      }
+      htmlOut += `<div class="pead-rec-grid">${recs.map((c, i) => renderCard(c, i)).join("")}</div>`;
+    }
+    $("peadRecommendations").innerHTML = htmlOut;
 
     $("peadRecommendations").querySelectorAll("[data-pead-buy]").forEach(b => {
       b.onclick = () => approvePead(
