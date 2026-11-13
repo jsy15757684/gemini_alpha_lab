@@ -64,13 +64,11 @@ def isolate() -> str:
     os.environ["PORT"] = str(PORT)
 
     sandbox = tempfile.mkdtemp(prefix="ui-preview-")
-    from services import botstore, spread_recorder, tradelog
+    from services import botstore, tradelog
     botstore._DATA_DIR = sandbox
     botstore.STORE_FILE = os.path.join(sandbox, "bots.json")
     botstore.arb_store.path = os.path.join(sandbox, "arb_bots.json")
     tradelog.LOG_FILE = os.path.join(sandbox, "trades.json")
-    # 괴리 기록기도 저장소의 data/spread_log.csv 대신 임시 디렉터리에 쓴다 (2026-11-08 점검에서 발견)
-    spread_recorder.LOG_FILE = os.path.join(sandbox, "spread_log.csv")
     return sandbox
 
 
@@ -80,22 +78,14 @@ def block_live_calls() -> None:
     키를 지우는 것만으로는 부족하다. 지우는 데 실패한 적이 있다.
     여기서 막으면 키가 들어와도 요청이 나갈 수 없다.
     """
-    from services import bithumb, keystore
+    from services import keystore
 
     def refuse(what):
         def _inner(*_a, **_kw):
             raise Blocked(f"격리 실행에서는 {what} 를 호출하지 않습니다.")
         return _inner
 
-    # 빗썸: 키가 필요한 메서드 전부 (잔고·주문·연결시험)
-    for name in ("_v1_post", "_v2_headers", "get_balance",
-                 "market_buy", "market_sell", "test_connection"):
-        setattr(bithumb.BithumbAccount, name, refuse(f"빗썸 인증 API({name})"))
-
-    # 키스토어가 키를 들고 있지 않게 한다 (화면은 '미연동' 으로 보인다).
-    # 디스크에 저장된 키도 읽지 않도록 경로를 빈 임시 폴더로 돌린다.
     keys_dir = tempfile.mkdtemp(prefix="ui-preview-keys-")
-    keystore.KEYS_FILE = os.path.join(keys_dir, "keys.json")
 
     # 나무증권: 키 파일 · 토큰 파일을 빈 폴더로 돌리고, 이미 올라온 키도 비운다.
     # 그다음 토큰 발급 · 주문 통로를 예외로 바꾼다.
@@ -114,7 +104,7 @@ def verify() -> None:
     **server.py 를 import 한 뒤에 부른다.** import 시점에 .env 를 읽어 키를
     다시 주입하는 것이 바로 지난번에 뚫린 지점이라, 그 뒤에 봐야 의미가 있다.
     """
-    from services import bithumb, keystore
+    from services import keystore
 
     leaked = [k for k in SECRET_ENV if os.environ.get(k)]
     if leaked:
@@ -133,24 +123,6 @@ def verify() -> None:
             _fail(f"{label} 가 Blocked 가 아닌 예외로 실패했습니다 ({e!r})")
         _fail(f"{label} 호출이 막히지 않았습니다")
 
-    if keystore.keystore.account.configured:
-        _fail(f"빗썸 키스토어가 실계좌 키를 들고 있습니다 "
-              f"({keystore.keystore.account.masked_key()}, 출처 {keystore.keystore.source})")
-
-    acct = bithumb.BithumbAccount("dummy-key", "dummy-secret")
-    for call, label in ((lambda: acct.get_balance(), "빗썸 잔고"),
-                        (lambda: acct.market_buy("BTC", 10000), "빗썸 매수"),
-                        (lambda: acct.market_sell("BTC", 1.0), "빗썸 매도"),
-                        (lambda: acct.test_connection(), "빗썸 연결시험")):
-        try:
-            call()
-        except Blocked:
-            continue
-        except Exception as e:
-            _fail(f"{label} 가 Blocked 가 아닌 예외로 실패했습니다 ({e!r}) — 차단이 아닙니다")
-        _fail(f"{label} 호출이 막히지 않았습니다")
-
-    print("  ✅ 빗썸 인증 API 4종 차단")
     print("  ✅ 나무증권 토큰 · 주문 · 국내 시세 · 실시간 차단")
     print("  ✅ 환경변수에 실키 없음")
     print("  ✅ .env 미로드 (APP_SKIP_DOTENV=1)")
@@ -167,10 +139,7 @@ def main() -> None:
     import server as server_module
 
     verify()
-    from services import spread_recorder
-    if not spread_recorder.LOG_FILE.startswith(sandbox):
-        sys.exit(f"❌ 기동을 중단했습니다 — 괴리 기록이 저장소 data/ 로 갑니다: {spread_recorder.LOG_FILE}")
-    print(f"  ✅ 데이터 경로 격리: {sandbox} (괴리 기록 포함)")
+    print(f"  ✅ 데이터 경로 격리: {sandbox}")
     print(f"  ✅ server.py import 후에도 키 없음")
 
     if check_only:

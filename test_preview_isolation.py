@@ -44,11 +44,10 @@ r = run(f"import runpy,sys; sys.argv=['ui_preview','--check']; "
         f"runpy.run_path({SCRIPT!r}, run_name='__main__')")
 check("정상 경로에서 격리 점검을 통과한다", r.returncode == 0,
       f"종료코드 {r.returncode}")
-check("빗썸 인증 API 를 차단한다", "빗썸 인증 API" in r.stdout, "4종")
 check("나무증권 호출을 차단한다", "나무증권 토큰" in r.stdout, "")
 check(".env 를 읽지 않는다", "APP_SKIP_DOTENV=1" in r.stdout, "server.py 가 건너뜀")
 check("운영 데이터 경로를 쓰지 않는다",
-      "데이터 경로 격리" in r.stdout and "괴리 기록 포함" in r.stdout and "/opt/" not in r.stdout, "임시 디렉터리")
+      "데이터 경로 격리" in r.stdout and "/opt/" not in r.stdout, "임시 디렉터리")
 
 # ── 사고 재현: .env 가 다시 주입되면? ──
 r = run(f"""
@@ -56,7 +55,7 @@ import runpy, os, sys
 sys.path.insert(0, {APP_DIR!r})
 mod = runpy.run_path({SCRIPT!r})
 mod['isolate']()
-os.environ['BITHUMB_API_KEY'] = 'leaked-from-dotenv'   # server.py 가 주입한 상황
+os.environ['NAMUH_APP_KEY'] = 'leaked-from-dotenv'   # server.py 가 주입한 상황
 mod['block_live_calls']()
 mod['verify']()
 print('ERROR: 통과해버렸다')
@@ -86,10 +85,10 @@ sys.path.insert(0, {APP_DIR!r})
 mod = runpy.run_path({SCRIPT!r})
 mod['isolate']()
 mod['block_live_calls']()
-from services import bithumb
-acct = bithumb.BithumbAccount('real-looking-key', 'real-looking-secret')
+from services import namuh
+acct = namuh.NamuhAccount('real-looking-key', 'real-looking-secret', '12345678-01')
 try:
-    acct.market_buy('BTC', 10000)
+    acct.market_buy('TQQQ', 1)
     print('NOT_BLOCKED')
 except Exception as e:
     print('BLOCKED', type(e).__name__)

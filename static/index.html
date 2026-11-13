@@ -14,7 +14,7 @@
 <!-- 인증 게이트 -->
 <div id="authGate" class="gate">
   <form class="gate-card" id="authForm" onsubmit="event.preventDefault(); handleLogin(event); return false;" action="javascript:void(0);">
-    <div class="gate-eyebrow">BITHUMB KRW</div>
+    <div class="gate-eyebrow">ALPHA LAB · US STOCK</div>
     <h1 class="gate-title">자동매매 콘솔</h1>
     <p class="gate-sub" id="authSub">실계좌 API 키와 주문 권한을 다룹니다. 접속 비밀번호를 입력하세요.</p>
     <label class="label" for="authPassword">접속 비밀번호</label>
@@ -31,14 +31,13 @@
 <div id="app" class="hidden">
   <header class="topbar">
     <div class="brand">
-      <span class="brand-mark">₩/$</span>
-      <span class="brand-name">알파랩 (빗썸 &amp; 나무증권)</span>
+      <span class="brand-mark">$</span>
+      <span class="brand-name">알파랩 (나무증권 미국 ETF)</span>
     </div>
     <div class="topbar-right">
       <span class="pill" id="macroGearPill" style="cursor: pointer;" title="매크로 국면 감지 적응형 변속 기어 (QQQ 200일선 & VIX)">⚙️ 기어 확인 중…</span>
       <span class="pill" id="usMarketPill" style="cursor: pointer;" title="미국 증시 운영 시간 상세">🇺🇸 증시 확인 중…</span>
       <span class="pill" id="namuhPill">나무증권 확인 중…</span>
-      <span class="pill" id="accountPill">빗썸 확인 중…</span>
       <button class="btn btn-ghost" id="logoutBtn">로그아웃</button>
     </div>
   </header>
@@ -66,17 +65,16 @@
         <div class="card">
           <h2 class="card-title">봇 가동</h2>
 
-          <div style="display: flex; gap: 8px; margin-bottom: 14px;">
-            <button type="button" class="btn btn-sm btn-primary" id="btnMarketCrypto" style="flex: 1;">🪙 코인 (빗썸 원화)</button>
-            <button type="button" class="btn btn-sm btn-ghost" id="btnMarketStock" style="flex: 1;">🇺🇸 미국 ETF (나무증권)</button>
+          <div style="margin-bottom: 12px;">
+            <span class="badge" style="font-weight: 600; background: rgba(59, 130, 246, 0.15); color: #60a5fa; border: 1px solid rgba(59, 130, 246, 0.3); padding: 5px 12px; border-radius: 6px;">🇺🇸 미국 3배 레버리지 ETF (나무증권)</span>
           </div>
 
           <div class="form-grid">
             <div>
-              <label class="label" id="lblBotCoin">코인</label>
+              <label class="label" id="lblBotCoin">종목 (미국 ETF)</label>
               <select class="input" id="botCoin"></select>
             </div>
-            <div id="botIntervalField">
+            <div id="botIntervalField" style="display: none;">
               <label class="label">캔들 간격</label>
               <select class="input" id="botInterval"></select>
             </div>
@@ -84,12 +82,12 @@
               <label class="label">매매 모드</label>
               <select class="input" id="botMode">
                 <option value="PAPER" selected>모의투자 (주문 안 나감)</option>
-                <option value="LIVE" id="optBotLive">실전 (빗썸 실주문)</option>
+                <option value="LIVE" id="optBotLive">실전 (나무증권 실주문)</option>
               </select>
             </div>
             <div>
-              <label class="label" id="lblBotCapital">운용 자본 (원)</label>
-              <input class="input" type="number" id="botCapital" value="1000000" min="10000" step="10000">
+              <label class="label" id="lblBotCapital">운용 자본 ($)</label>
+              <input class="input" type="number" id="botCapital" value="1000" min="10" step="10">
               <div class="muted small" id="capitalHint" style="margin-top:.35rem">잔고 확인 중…</div>
             </div>
           </div>
@@ -187,8 +185,8 @@
           </div>
 
           <div class="alert alert-danger hidden" id="liveWarning">
-            <b>실전 모드</b>는 빗썸 계좌에서 실제 원화로 주문을 냅니다. 손실이 발생할 수 있습니다.
-            먼저 백테스트와 모의투자로 전략을 확인하세요.
+            <b>실전 모드</b>는 나무증권 계좌에서 실제 달러로 주문을 냅니다. 손실이 발생할 수 있습니다.
+            먼저 모의투자로 전략을 확인하세요.
           </div>
 
           <!-- 전략별 경고문이 길어서 이 버튼이 화면 밖으로 밀렸다. 실제로
@@ -295,12 +293,12 @@
         </div>
 
         <div style="margin-top: 18px;">
-          <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 코인별 손익 요약</h3>
+          <h3 style="font-size: 0.9rem; font-weight: 700; color: var(--muted); margin-bottom: 8px;">📊 종목별 손익 요약</h3>
           <div class="tbl-wrap">
             <table id="coinSummaryTable">
               <thead>
                 <tr>
-                  <th>코인</th>
+                  <th>종목</th>
                   <th>총 거래수</th>
                   <th>승리(익절)</th>
                   <th>승률</th>
@@ -320,7 +318,7 @@
           <h2 class="card-title">📋 상세 매매 체결 일지</h2>
           <div class="inline">
             <select class="input input-sm" id="tradeFilterCoin">
-              <option value="ALL">전체 코인</option>
+              <option value="ALL">전체 종목</option>
             </select>
             <select class="input input-sm" id="tradeFilterAction">
               <option value="ALL">전체 주문</option>
@@ -340,7 +338,7 @@
             <thead>
               <tr>
                 <th>체결 시각</th>
-                <th>코인</th>
+                <th>종목</th>
                 <th>모드</th>
                 <th>구분</th>
                 <th>체결 가격</th>
@@ -546,40 +544,8 @@
 
     <!-- 계정 및 설정 -->
     <section id="panel-account" class="panel hidden">
-      <div class="grid-2">
+      <div>
         <div class="card">
-          <h2 class="card-title">빗썸 API 키</h2>
-          <div id="accountStatus" class="kv"></div>
-
-          <div class="notice">
-            <b>IP 등록이 필요합니다.</b> 빗썸 [API 관리 &gt; IP 주소 등록] 에 아래 IP 를 넣으세요.
-            <div class="ip-row">
-              <code id="egressIp">확인 중…</code>
-              <button class="btn btn-ghost btn-sm" id="copyIpBtn">복사</button>
-            </div>
-            <div class="muted small" id="egressNote"></div>
-          </div>
-
-          <div id="keyForm">
-            <label class="label">Connect Key</label>
-            <input class="input" id="apiKeyInput" spellcheck="false" autocomplete="off">
-            <label class="label">Secret Key</label>
-            <input class="input" id="secretKeyInput" type="password" spellcheck="false" autocomplete="off">
-            <div class="btn-row">
-              <button class="btn btn-ghost" id="testKeyBtn">연결 테스트</button>
-              <button class="btn btn-primary" id="saveKeyBtn">저장</button>
-            </div>
-            <p class="muted small">인증을 통과한 키만 저장됩니다. 영구 보관은 환경변수 <code>BITHUMB_API_KEY</code> / <code>BITHUMB_SECRET_KEY</code> 를 권장합니다.</p>
-          </div>
-          <div class="alert hidden" id="keyResult"></div>
-        </div>
-
-        <div class="card">
-          <h3 class="card-title" style="font-size: 15px;">빗썸 계좌 잔고</h3>
-          <div id="balanceBox"><div class="empty">빗썸 API 키를 등록하면 표시됩니다.</div></div>
-        </div>
-
-        <div class="card" style="grid-column: 1 / -1;">
           <h2 class="card-title">🌳 농협 나무증권 (해외주식) API 키</h2>
           <div id="namuhStatus" class="kv"></div>
 
@@ -625,6 +591,6 @@
   </footer>
 </div>
 
-<script src="/static/js/app.js?v=5.26.0"></script>
+<script src="/static/js/app.js?v=6.0.0"></script>
 </body>
 </html>

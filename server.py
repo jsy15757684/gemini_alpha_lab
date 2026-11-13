@@ -57,16 +57,16 @@ elif os.path.exists(_env_file):
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-from services import auth, bithumb, spread_recorder, namuh, muma_sheet, tradelog, scalper, pead
+from services import auth, namuh, muma_sheet, tradelog, scalper, pead
 from services import roles, worker_client
 from services.worker_client import WorkerDown
-from services.keystore import keystore, namuh_keystore
+from services.keystore import namuh_keystore
 from services.strategy import StrategyParams, compute_indicators, entry_rule_catalog
 from services.trader import MAX_ACTIVE_BOTS, TooManyBots, LiquidationFailed, bot_manager
 from services.envconf import env_int
 
 # /docs · /openapi.json 은 /api 밖이라 로그인 없이 열렸다. 전체 API 지도를 내줄 이유가 없다.
-app = FastAPI(title="빗썸 원화 자동매매 콘솔", version="4.0.0", docs_url=None, redoc_url=None, openapi_url=None)
+app = FastAPI(title="알파랩 자동매매 콘솔", version="4.0.0", docs_url=None, redoc_url=None, openapi_url=None)
 app.add_middleware(GZipMiddleware, minimum_size=500)
 
 # Host 헤더 검사 — DNS 리바인딩 막기. 아무 웹사이트나 자기 이름을 127.0.0.1 로 바꿔
@@ -161,8 +161,6 @@ def _startup_log():
     logger.info(auth.password_debug_line())
     if auth.is_configured() and auth.password_strength_warning():
         logger.warning(auth.password_strength_warning())
-    ks = keystore.status()
-    logger.info(f"빗썸 키: {'등록됨(' + ks['source'] + ')' if ks['connected'] else '미등록'}")
     ns = namuh_keystore.status()
     if roles.ROLE == "crypto":
         logger.info("나무증권: 워커 프로세스가 맡습니다 (이 프로세스는 나무증권을 호출하지 않습니다)")
@@ -192,7 +190,7 @@ def _startup_log():
 
     # 저장된 봇을 복원한다. LIVE 포지션은 거래소 실제 보유량과 대조한 뒤에만 재가동한다.
     global RESTORE_SUMMARY
-    RESTORE_SUMMARY = bot_manager.restore(keystore.account, namuh_keystore.account)
+    RESTORE_SUMMARY = bot_manager.restore(namuh_keystore.account)
 
     # 국내 장초반 스캘퍼 (모의 전용 · 주문 없음). 나무증권 국내 시세만 읽는다. APP_SCALPER=0 으로 끈다.
     if roles.owns("namuh") and \
@@ -210,16 +208,6 @@ def _startup_log():
         except Exception as e:
             logger.error(f"국내 PEAD 시작 실패 (서버는 계속 뜹니다): {e}")
 
-    # 거래소 간 괴리를 계속 기록한다. 주문은 내지 않고 공개 호가만 읽는다.
-    # 무전송 양방향을 구현할지 판단할 근거를 자금 0원으로 모으기 위한 것이다.
-    # APP_SPREAD_RECORDER=0 으로 끌 수 있다.
-    if roles.owns("bithumb") and \
-            (os.getenv("APP_SPREAD_RECORDER") or "1").strip().lower() not in ("0", "false", "no", "off"):
-        try:
-            spread_recorder.start()
-        except Exception as e:
-            logger.error(f"괴리 기록기 시작 실패 (서버는 계속 뜹니다): {e}")
-
 
 # ───────────────────────── 인증 ─────────────────────────
 
@@ -229,7 +217,7 @@ class LoginRequest(BaseModel):
 
 @app.get("/api/health")
 def health():
-    return {"status": "ok", "app": "빗썸 원화 자동매매 콘솔", "version": "4.0.0"}
+    return {"status": "ok", "app": "알파랩 자동매매 콘솔", "version": "4.0.0"}
 
 
 @app.get("/api/auth/status")
@@ -279,33 +267,34 @@ def logout(request: Request):
 
 @app.get("/api/coins")
 def coins():
-    """화면 구성에 필요한 목록. 진입 규칙 카탈로그도 여기서 내려준다."""
-    return {"coins": [{"code": c, "name": n} for c, n in bithumb.COINS.items()],
-            "intervals": bithumb.INTERVALS,
+    """화면 구성에 필요한 미국 ETF 종목 목록."""
+    return {"coins": [{"code": c, "name": info["name"]} for c, info in namuh.NAMUH_STOCKS.items()],
+            "intervals": ["1d"],
             "entryRules": entry_rule_catalog(),
             "defaults": StrategyParams().to_dict()}
 
 
 @app.get("/api/prices")
 def prices():
-    """5종 현재가. 하나가 실패해도 나머지는 돌려주고, 실패는 실패로 표시한다."""
+    """미국 ETF 종목 현재가."""
     out = []
-    for c in bithumb.COINS:
+    for c, info in namuh.NAMUH_STOCKS.items():
         try:
-            out.append(bithumb.get_ticker(c))
-        except bithumb.BithumbError as e:
-            out.append({"coin": c, "name": bithumb.COINS[c], "error": e.message})
+            p = namuh.get_price(c)
+            out.append({"coin": c, "name": info["name"], "price": p})
+        except Exception as e:
+            out.append({"coin": c, "name": info["name"], "error": str(e)})
     return {"prices": out}
 
 
 # ───────────────────────── 봇 ─────────────────────────
 
 class DeployRequest(BaseModel):
-    coin: str = "BTC"
-    interval: str = "1h"
+    coin: str = "TQQQ"
+    interval: str = "1d"
     mode: str = "PAPER"
-    capitalKrw: float = 1_000_000.0
-    broker: str = "bithumb"
+    capitalKrw: float = 1_000.0   # 미국 ETF는 달러($) 기준
+    broker: str = "namuh"
     params: Dict[str, Any] = {}
 
     @field_validator("capitalKrw")
@@ -322,10 +311,6 @@ class BotIdRequest(BaseModel):
     botId: str
 
 
-def _is_namuh_deploy(req: "DeployRequest") -> bool:
-    return (req.broker or "").lower() == "namuh" or req.coin.upper().strip() in namuh.NAMUH_STOCKS
-
-
 def _worker_or_raise(method: str, path: str, payload: Any = None, timeout: float = 90.0) -> Any:
     """워커 응답을 그대로 돌려주고, 실패는 같은 상태코드로 올린다."""
     try:
@@ -340,111 +325,51 @@ def _worker_or_raise(method: str, path: str, payload: Any = None, timeout: float
 
 @app.post("/api/bot/deploy")
 def deploy_bot(req: DeployRequest):
-    if roles.ROLE == "crypto" and _is_namuh_deploy(req):
+    if roles.ROLE == "crypto":
         return _worker_or_raise("POST", "/api/bot/deploy", req.dict())
-    if roles.ROLE == "namuh" and not _is_namuh_deploy(req):
-        raise HTTPException(400, "나무증권 워커는 빗썸 봇을 띄우지 않습니다.")
-    broker = (req.broker or "bithumb").lower()
-    raw_coin = req.coin.upper().strip()
+    coin = req.coin.upper().strip()
 
-    # 전략을 빼고 보내면 StrategyParams 기본값(quant_ai — 화면에서 없앤 지표 전략)으로
-    # 뜬다. 사용자가 본 적 없는 기본 진입조건으로 매매하게 되는 함정이라 명시를 요구한다.
+    # 전략은 라오어 무한매수만 허용
     if (req.params or {}).get("strategyType") != "raoer_infinite":
         raise HTTPException(400, "strategyType 은 raoer_infinite(무한매수) 여야 합니다.")
 
-    if broker == "namuh" or raw_coin in namuh.NAMUH_STOCKS:
-        broker = "namuh"
-        coin = raw_coin
-        if coin not in namuh.NAMUH_STOCKS:
-            raise HTTPException(400, f"나무증권 지원 종목이 아닙니다: {coin} (지원: {', '.join(namuh.NAMUH_STOCKS.keys())})")
-        if req.capitalKrw < 10:
-            raise HTTPException(400, "미국주식 운용 자본은 $10 이상이어야 합니다.")
-        mode = req.mode.upper()
-        if mode not in ("PAPER", "LIVE"):
-            raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
-
-        try:
-            namuh.get_price(coin)
-        except Exception as e:
-            raise HTTPException(503, f"{coin} 시세를 받지 못해 봇을 가동할 수 없습니다: {e}")
-
-        if mode == "LIVE":
-            if not namuh_keystore.account.configured:
-                raise HTTPException(400, "실전(LIVE) 가동 전에 나무증권 API 키를 등록해야 합니다.")
-            test = namuh_keystore.account.test_connection()
-            if not test.get("success"):
-                raise HTTPException(400, f"나무증권 실계좌 연결 실패: {test.get('message')}")
-            # test_connection 은 잔고를 balance 안에 담아 돌려준다. 최상위에서
-            # 찾으면 늘 0 이라, 자본이 얼마든 실전 가동이 막혔다.
-            #
-            # 달러 예수금만 보면 원화만 넣어 둔 실계좌는 봇을 만들 수조차 없다.
-            # 원화 증거금을 쓸 수 있는 설정이면 원화도 공시환율로 환산해 센다.
-            from services.fx import get_official_fx
-            fx = (get_official_fx() or {}).get("rate")
-            bp = namuh.buying_power_usd(namuh_keystore.account.with_orderable(test.get("balance") or {}), fx)
-            if bp["total"] < req.capitalKrw:
-                parts = [f"달러 ${bp['usd']:,.2f}"]
-                if bp["krwCounted"]:
-                    parts.append(f"원화 {bp['krw']:,.0f}원(≈${bp['krwAsUsd']:,.2f})")
-                elif bp["krw"] > 0 and not namuh.use_mock():
-                    parts.append(f"원화 {bp['krw']:,.0f}원은 세지 않음"
-                                 + (" — 공시환율을 받지 못함" if not fx else " — NAMUH_MARGIN=usd"))
-                raise HTTPException(400,
-                    f"나무증권 매수 여력(${bp['total']:,.2f})이 운용 자본(${req.capitalKrw:,.2f})보다 "
-                    f"적습니다 · {' + '.join(parts)}")
-
-        try:
-            bot = bot_manager.deploy(coin, req.interval, mode, req.capitalKrw,
-                                     req.params, account=keystore.account,
-                                     namuh_account=namuh_keystore.account, broker="namuh")
-        except TooManyBots as e:
-            raise HTTPException(429, str(e))
-        return bot.status()
-
-    coin = bithumb.normalize_coin(req.coin)
-    if not coin:
-        raise HTTPException(400, f"빗썸 원화마켓에 없는 코인입니다: {req.coin}")
-    if req.interval not in bithumb.INTERVALS:
-        raise HTTPException(400, f"지원하지 않는 캔들 간격입니다: {req.interval}")
-    if req.capitalKrw < 10_000:
-        raise HTTPException(400, "운용 자본은 10,000원 이상이어야 합니다.")
-
-    # 화면에서 고를 수 있는 전략만 배포를 허용한다.
-    #
-    # 제거한 전략(기술적 지표 · 퀀트 하이브리드 · 밸류리밸런싱 VR ·
-    # Gemini AI)은 설정 화면도 함께 없앴다. API 로 들어오면 사용자가
-    # 본 적 없는 기본값으로 실매매가 나간다. 그 함정을 만들지 않는다.
-    _allowed = ("raoer_infinite",)
-    _st = (req.params or {}).get("strategyType")
-    if _st and _st not in _allowed:
-        raise HTTPException(400,
-            f"'{_st}' 전략은 제거됐습니다. 사용 가능: {', '.join(_allowed)} "
-            f"(화면에서는 무한매수 V4/V1 · USDT 환차익 으로 보입니다).")
+    if coin not in namuh.NAMUH_STOCKS:
+        raise HTTPException(400, f"나무증권 지원 종목이 아닙니다: {coin} (지원: {', '.join(namuh.NAMUH_STOCKS.keys())})")
+    if req.capitalKrw < 10:
+        raise HTTPException(400, "미국주식 운용 자본은 $10 이상이어야 합니다.")
     mode = req.mode.upper()
     if mode not in ("PAPER", "LIVE"):
         raise HTTPException(400, "mode 는 PAPER 또는 LIVE 여야 합니다.")
 
-    # 시세를 못 받으면 봇을 띄우지 않는다.
     try:
-        bithumb.get_price(coin)
-    except bithumb.BithumbError as e:
-        raise HTTPException(503, f"{coin} 시세를 받지 못해 봇을 가동할 수 없습니다: {e.message}")
+        namuh.get_price(coin)
+    except Exception as e:
+        raise HTTPException(503, f"{coin} 시세를 받지 못해 봇을 가동할 수 없습니다: {e}")
 
     if mode == "LIVE":
-        if not keystore.account.configured:
-            raise HTTPException(400, "실전(LIVE) 가동 전에 빗썸 API 키를 등록해야 합니다.")
-        test = keystore.account.test_connection()
+        if not namuh_keystore.account.configured:
+            raise HTTPException(400, "실전(LIVE) 가동 전에 나무증권 API 키를 등록해야 합니다.")
+        test = namuh_keystore.account.test_connection()
         if not test.get("success"):
-            raise HTTPException(400, f"빗썸 실계좌 연결에 실패해 실전 가동을 중단했습니다. {test.get('message')}")
-        if test.get("krwAvailable", 0) < req.capitalKrw:
+            raise HTTPException(400, f"나무증권 실계좌 연결 실패: {test.get('message')}")
+        from services.fx import get_official_fx
+        fx = (get_official_fx() or {}).get("rate")
+        bp = namuh.buying_power_usd(namuh_keystore.account.with_orderable(test.get("balance") or {}), fx)
+        if bp["total"] < req.capitalKrw:
+            parts = [f"달러 ${bp['usd']:,.2f}"]
+            if bp["krwCounted"]:
+                parts.append(f"원화 {bp['krw']:,.0f}원(≈${bp['krwAsUsd']:,.2f})")
+            elif bp["krw"] > 0 and not namuh.use_mock():
+                parts.append(f"원화 {bp['krw']:,.0f}원은 세지 않음"
+                             + (" — 공시환율을 받지 못함" if not fx else " — NAMUH_MARGIN=usd"))
             raise HTTPException(400,
-                f"빗썸 주문가능 원화({test.get('krwAvailable', 0):,.0f}원)가 "
-                f"운용 자본({req.capitalKrw:,.0f}원)보다 적습니다.")
+                f"나무증권 매수 여력(${bp['total']:,.2f})이 운용 자본(${req.capitalKrw:,.2f})보다 "
+                f"적습니다 · {' + '.join(parts)}")
 
     try:
         bot = bot_manager.deploy(coin, req.interval, mode, req.capitalKrw,
-                                 req.params, keystore.account,
-                                 namuh_account=namuh_keystore.account, broker="bithumb")
+                                 req.params,
+                                 namuh_account=namuh_keystore.account, broker="namuh")
     except TooManyBots as e:
         raise HTTPException(429, str(e))
     return bot.status()
@@ -577,73 +502,20 @@ def dismiss_restore_notice():
 def stop_all_bots():
     n, skipped = bot_manager.stop_all()
     if roles.ROLE == "crypto":
-        # 한쪽이 실패해도 다른 쪽은 멈춘다. 실패는 숨기지 않는다.
         try:
             w = _worker_or_raise("POST", "/api/bot/stop_all", timeout=180)
             n += w.get("stoppedCount", 0)
             skipped += w.get("skipped", [])
         except HTTPException as e:
             raise HTTPException(e.status_code,
-                                f"빗썸 봇 {n}개는 정지했지만 나무증권 봇 정지에 실패했습니다: {e.detail}")
+                                f"나무증권 봇 정지에 실패했습니다: {e.detail}")
     return {"success": True, "stoppedCount": n, "skipped": skipped}
-
-
-# ───────────────────────── 빗썸 계정 ─────────────────────────
-
-class KeyRequest(BaseModel):
-    apiKey: str
-    secretKey: str
 
 
 @app.get("/api/account")
 def account_status():
-    st = keystore.status()
-    if keystore.account.configured:
-        try:
-            bal = keystore.account.get_balance()
-            st.update({"balanceOk": True, "apiVersion": bal["apiVersion"],
-                       "krwAvailable": bal["krwAvailable"], "krwTotal": bal["krwTotal"],
-                       "coins": bal["coins"]})
-        except bithumb.BithumbError as e:
-            st.update({"balanceOk": False, "error": e.message})
-    return st
-
-
-@app.post("/api/account/test")
-def test_account(req: KeyRequest):
-    return bithumb.BithumbAccount(req.apiKey, req.secretKey).test_connection()
-
-
-@app.post("/api/account/save")
-def save_account(req: KeyRequest):
-    result = bithumb.BithumbAccount(req.apiKey, req.secretKey).test_connection()
-    if not result.get("success"):
-        # 인증을 통과하지 못한 키는 저장하지 않는다.
-        raise HTTPException(400, result.get("message", "빗썸 인증에 실패했습니다."))
-    try:
-        keystore.save(req.apiKey.strip(), req.secretKey.strip())
-    except PermissionError as e:
-        raise HTTPException(409, str(e))
-    return {"success": True, **keystore.status()}
-
-
-@app.post("/api/account/clear")
-def clear_account():
-    try:
-        keystore.clear()
-    except PermissionError as e:
-        raise HTTPException(409, str(e))
-    return {"success": True, **keystore.status()}
-
-
-@app.get("/api/system/egress_ip")
-def egress_ip():
-    """빗썸 [API 관리 > IP 주소 등록] 에 넣어야 하는 IP."""
-    info = bithumb.egress_ip()
-    return {**info,
-            "registerThisIp": info.get("ip"),
-            "hint": ("프록시 IP 를 확인할 수 없습니다. 프록시가 살아 있는지 점검하세요."
-                     if info.get("proxyConfigured") and not info.get("ip") else None)}
+    """레거시 호환용 (빗썸 제거됨)."""
+    return {"connected": False, "source": "none"}
 
 
 # ───────────────────────── 나무증권 (해외주식) ─────────────────────────

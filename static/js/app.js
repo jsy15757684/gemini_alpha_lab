@@ -231,7 +231,7 @@ async function loadPrices() {
            <div class="tick-price down" style="font-size:.8rem">조회 실패</div>
            <div class="tick-chg muted" title="${escapeHtml(p.error)}">${escapeHtml(p.error.slice(0, 26))}</div></div>`
       : `<div class="tick"><div class="tick-name">${escapeHtml(p.name)} (${escapeHtml(p.coin)})</div>
-           <div class="tick-price">${won(p.price)}</div>
+           <div class="tick-price">${p.price != null ? '$' + Number(p.price).toFixed(2) : '-'}</div>
            <div class="tick-chg ${cls(p.changePercent)}">${pct(p.changePercent)}</div></div>`
     ).join("");
     lastPriceAt = Date.now();
@@ -244,16 +244,8 @@ async function loadPrices() {
 
 // ───────── 봇 ─────────
 
-let currentMarket = "crypto"; // "crypto" | "stock"
-// 취급 종목은 서버(/api/namuh/stocks)가 유일한 출처다. 화면에 목록을 박아두면
-// 서버와 어긋난다 — 실제로 화면 3종 / 서버 5종으로 갈라져 있었다. 서버가 그
-// 목록으로 배포를 검증하므로, 화면이 다른 것을 보여주면 고를 수 없는 종목이
-// 뜨거나 고를 수 있는 종목이 숨는다.
+let currentMarket = "stock"; // 항상 미국 ETF (나무증권)
 let STOCKS = [];
-
-// 봇 가동 화면의 '운용 자본' 밑에 붙일 잔고 힌트. 두 계좌 조회가 각각 다른
-// 주기로 돌기 때문에 마지막 응답을 들고 있다가 시장 전환 때 다시 그린다.
-let lastBithumbAccount = null;
 let lastNamuhAccount = null;
 
 // 원전 LOC 는 거래일 단위(40분할 = 40거래일)라 캔들 간격을 쓰지 않는다.
@@ -272,23 +264,19 @@ function renderLocModeHint() {
           : "캔들이 갱신될 때마다 전액 한 건을 시장가로 매수합니다.");
   }
   const intervalField = $("botIntervalField");
-  if (intervalField && currentMarket === "stock") {
+  if (intervalField) {
     intervalField.classList.toggle("hidden", native);
-  } else if (intervalField && currentMarket !== "stock") {
-    intervalField.classList.remove("hidden");
   }
 }
 
 function renderCapitalHint() {
   const el = $("capitalHint");
   if (!el) return;
-  const isStock = currentMarket === "stock";
-  const a = isStock ? lastNamuhAccount : lastBithumbAccount;
+  const a = lastNamuhAccount;
 
   if (!a) { el.textContent = "잔고 확인 중…"; el.className = "muted small"; return; }
   if (!a.connected) {
-    el.textContent = isStock ? "나무증권 미연동 — 계정 탭에서 API 키를 등록하세요."
-                             : "빗썸 미연동 — 계정 탭에서 API 키를 등록하세요.";
+    el.textContent = "나무증권 미연동 — 계정 탭에서 API 키를 등록하세요.";
     el.className = "muted small"; return;
   }
   if (!a.balanceOk) {
@@ -297,62 +285,48 @@ function renderCapitalHint() {
   }
 
   el.className = "muted small"; el.style.color = "";
-  if (isStock) {
-    const avail = Number(a.usdAvailable || 0);
-    const total = Number(a.usdTotal || 0);
-    const fmt = (v) => v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
-    const mockTag = a.mock ? " · 🧪 모의계좌" : "";
-    // 원화 증거금을 쓸 수 있으면 원화도 달러로 환산해 여력에 넣는다.
-    // 서버의 배포 가드와 같은 계산(buying_power_usd)을 그대로 보여준다.
-    const bp = a.buyingPower || {};
-    if (bp.krwCounted && Number(bp.krw || 0) > 0) {
-      el.innerHTML = `투자가능 <b style="color:var(--accent)">$${fmt(Number(bp.total || 0))}</b>`
-        + ` · 달러 $${fmt(Number(bp.usd || 0))} + 원화 ${won(bp.krw)}원`
-        + ` <span class="muted">(환율 ${Number(bp.fxRate || 0).toLocaleString()}원)</span>`
-        + mockTag;
-    } else {
-      el.innerHTML = `투자가능 달러 <b style="color:var(--accent)">$${fmt(avail)}</b>`
-        + (total && Math.abs(total - avail) >= 0.01 ? ` · 총 외화자산 $${fmt(total)}` : "")
-        + mockTag;
-    }
+  const avail = Number(a.usdAvailable || 0);
+  const total = Number(a.usdTotal || 0);
+  const fmt = (v) => v.toLocaleString("en-US", {minimumFractionDigits: 2, maximumFractionDigits: 2});
+  const mockTag = a.mock ? " · 🧪 모의계좌" : "";
+  const bp = a.buyingPower || {};
+  if (bp.krwCounted && Number(bp.krw || 0) > 0) {
+    el.innerHTML = `투자가능 <b style="color:var(--accent)">$${fmt(Number(bp.total || 0))}</b>`
+      + ` · 달러 $${fmt(Number(bp.usd || 0))} + 원화 ${won(bp.krw)}원`
+      + ` <span class="muted">(환율 ${Number(bp.fxRate || 0).toLocaleString()}원)</span>`
+      + mockTag;
   } else {
-    el.innerHTML = `투자가능 원화 <b style="color:var(--accent)">${won(a.krwAvailable)}원</b>`
-      + ` · 총 보유 ${won(a.krwTotal)}원`;
+    el.innerHTML = `투자가능 달러 <b style="color:var(--accent)">$${fmt(avail)}</b>`
+      + (total && Math.abs(total - avail) >= 0.01 ? ` · 총 외화자산 $${fmt(total)}` : "")
+      + mockTag;
   }
 }
 
-function setMarket(market) {
-  currentMarket = market;
-  const isStock = market === "stock";
-  [["btnMarketCrypto", "crypto"], ["btnMarketStock", "stock"]].forEach(([id, m]) => {
-    if ($(id)) $(id).className = `btn btn-sm ${m === market ? "btn-primary" : "btn-ghost"}`;
-  });
+function setMarket(market = "stock") {
+  currentMarket = "stock";
 
-  // 매크로 기어와 반반 매수는 미국 ETF 전용이다. 엔진이 currency == "USD"
-  // 로만 동작하므로 코인 봇에 켜도 아무 일이 일어나지 않는다. 켜면 뭔가
-  // 달라진다고 오해할 칸은 아예 감춘다.
   const gearField = $("macroGearField");
-  if (gearField) gearField.classList.toggle("hidden", !isStock);
+  if (gearField) gearField.classList.remove("hidden");
   const locField = $("bp_locMode")?.closest("div");
-  if (locField) locField.classList.toggle("hidden", !isStock);
+  if (locField) locField.classList.remove("hidden");
   renderLocModeHint();
 
-  if ($("lblBotCoin")) $("lblBotCoin").textContent = isStock ? "미국 ETF 종목" : "코인";
-  if ($("lblBotCapital")) $("lblBotCapital").textContent = isStock ? "운용 자본 ($ USD)" : "운용 자본 (원)";
+  if ($("lblBotCoin")) $("lblBotCoin").textContent = "종목 (미국 ETF)";
+  if ($("lblBotCapital")) $("lblBotCapital").textContent = "운용 자본 ($ USD)";
   if ($("botCapital")) {
-    $("botCapital").value = isStock ? "1000" : "1000000";
-    $("botCapital").min = isStock ? "10" : "10000";
-    $("botCapital").step = isStock ? "10" : "10000";
+    $("botCapital").value = "1000";
+    $("botCapital").min = "10";
+    $("botCapital").step = "10";
   }
   if ($("optBotLive")) {
-    $("optBotLive").textContent = isStock ? "실전 (나무증권 실주문)" : "실전 (빗썸 실주문)";
+    $("optBotLive").textContent = "실전 (나무증권 실주문)";
   }
 
-  const list = isStock ? STOCKS : COINS;
+  const list = STOCKS.length ? STOCKS : COINS;
   if ($("botCoin")) {
     $("botCoin").innerHTML = list.length
       ? list.map(c => `<option value="${escapeHtml(c.code)}">${escapeHtml(c.name)} (${escapeHtml(c.code)})</option>`).join("")
-      : `<option value="">${isStock ? "종목 목록을 받지 못했습니다" : "코인 목록 없음"}</option>`;
+      : `<option value="">종목 목록을 받지 못했습니다</option>`;
     $("botCoin").disabled = !list.length;
   }
   renderCapitalHint();
@@ -404,7 +378,7 @@ async function deployBot() {
       method: "POST", headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         coin: $("botCoin").value,
-        broker: isStock ? "namuh" : "bithumb",
+        broker: "namuh",
         // 캔들을 안 쓰는 전략이라 화면에서 칸을 숨겼다. 서버는 유효한 값을
         // 요구하므로 고정값을 보낸다 (캔들 갱신 주기로만 쓰인다).
         interval: $("botInterval").value, mode,
@@ -573,8 +547,8 @@ async function loadBots() {
         <div style="display:flex; justify-content:space-between; align-items:flex-start; gap:0.75rem;">
           <div>
             <b>재시작 후 ${restoreSummary.held}개 봇이 보류되었습니다.</b> 
-            내부 기록과 빗썸 실제 보유량이 맞지 않거나 대조에 실패했습니다. 
-            빗썸에서 실제 보유량을 확인하고 정리하세요.<br>
+            내부 기록과 나무증권 실제 보유량이 맞지 않거나 대조에 실패했습니다. 
+            나무증권에서 실제 보유량을 확인하고 정리하세요.<br>
             ${(restoreSummary.notes || []).map(n => `· ${escapeHtml(n)}`).join("<br>")}
           </div>
           <button id="dismissNoticeBtn" class="btn btn-ghost btn-sm" style="white-space:nowrap; padding:0.2rem 0.6rem; font-size:0.75rem; border-color:var(--down); color:var(--down);">닫기 ✕</button>
@@ -608,7 +582,7 @@ async function loadBots() {
 function liquidationNotice(b, action) {
   const isNamuh = b.broker === "namuh";
   const isUsd = b.currency === "USD" || isNamuh;
-  const brokerTitle = isNamuh ? "나무증권 (해외주식)" : "빗썸";
+  const brokerTitle = "나무증권 (미국주식)";
   const name = `${b.coin} 봇 (${brokerTitle} · ${b.mode === "LIVE" ? "실전" : "모의투자"})`;
   const held = Number(b.units || 0) > 0;
 
@@ -1303,77 +1277,10 @@ function toggleStrategyUI() {
 
 // ───────── 계정 ─────────
 
-async function loadAccount() {
-  try {
-    const a = await api("/api/account");
-    lastBithumbAccount = a;
-    renderCapitalHint();
-    const pill = $("accountPill");
-    if (!a.connected) {
-      pill.className = "pill"; pill.textContent = "빗썸 미연동";
-    } else if (a.balanceOk) {
-      pill.className = "pill ok"; pill.textContent = `빗썸 연동 · ${won(a.krwAvailable)}원`;
-    } else {
-      pill.className = "pill bad"; pill.textContent = "빗썸 인증 실패";
-    }
+async function loadAccount() {}
+async function loadEgressIp() {}
 
-    $("accountStatus").innerHTML = [
-      ["연동 상태", a.connected ? "등록됨" : "미등록"],
-      ["키", escapeHtml(a.maskedKey || "-")],
-      ["보관 위치", a.source === "env" ? "환경변수" : a.source === "disk" ? "서버 파일(평문)" : "-"],
-      ["인증 확인", a.connected ? (a.balanceOk ? `성공 (API ${a.apiVersion})` : "실패") : "-"],
-    ].map(([k, v]) => `<div class="kv-row"><span class="kv-k">${k}</span><span class="kv-v">${v}</span></div>`).join("")
-      + `<div class="muted small" style="margin-top:.5rem">${escapeHtml(a.storageNote || "")}</div>`;
-
-    if (a.connected && !a.editable) $("keyForm").classList.add("hidden");
-    else $("keyForm").classList.remove("hidden");
-
-    $("balanceBox").innerHTML = !a.connected
-      ? `<div class="empty">빗썸 API 키를 등록하면 표시됩니다.</div>`
-      : !a.balanceOk
-        ? `<div class="alert alert-error">${escapeHtml(a.error)}</div>`
-        : `<div class="kv">
-             <div class="kv-row"><span class="kv-k">주문가능 원화</span><span class="kv-v">${won(a.krwAvailable)}원</span></div>
-             <div class="kv-row"><span class="kv-k">총 보유 원화</span><span class="kv-v">${won(a.krwTotal)}원</span></div>
-             ${Object.entries(a.coins || {}).map(([c, v]) =>
-               `<div class="kv-row"><span class="kv-k">${escapeHtml(c)}</span><span class="kv-v">${Number(v).toFixed(8)}</span></div>`).join("")}
-           </div>`;
-  } catch (e) { console.error("계정 조회 실패:", e); }
-}
-
-async function loadEgressIp() {
-  try {
-    const r = await api("/api/system/egress_ip");
-    $("egressIp").textContent = r.registerThisIp || "확인 불가";
-    $("egressNote").textContent = r.hint || r.error ||
-      (r.proxyConfigured ? `프록시 ${r.proxyHost} 경유 — 이 IP 를 등록하세요.`
-                         : "이 서버가 빗썸으로 나갈 때 쓰는 IP 입니다.");
-  } catch (e) {
-    $("egressIp").textContent = "확인 불가";
-    $("egressNote").textContent = e.message;
-  }
-}
-
-async function keyAction(save) {
-  const apiKey = $("apiKeyInput").value.trim(), secretKey = $("secretKeyInput").value.trim();
-  if (!apiKey || !secretKey) return setAlert($("keyResult"), "Connect Key 와 Secret Key 를 모두 입력하세요.");
-  const btn = save ? $("saveKeyBtn") : $("testKeyBtn");
-  btn.disabled = true;
-  setAlert($("keyResult"), null);
-  try {
-    const r = await api(save ? "/api/account/save" : "/api/account/test", {
-      method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ apiKey, secretKey }),
-    });
-    if (save || r.success) {
-      setAlert($("keyResult"),
-        `연결 성공 — 주문가능 ${won(r.krwAvailable)}원 / 총 ${won(r.krwTotal)}원` +
-        (save ? " · 저장했습니다." : ""), "ok");
-      $("secretKeyInput").value = "";
-      await loadAccount();
-    } else {
-      setAlert($("keyResult"), r.message);
-    }
+async function keyAction(save) {}
   } catch (e) {
     setAlert($("keyResult"), e.message);
   } finally {
@@ -1739,7 +1646,7 @@ function exportTradesToCsv() {
   const trades = RAW_TRADES_DATA.trades || [];
   if (!trades.length) return alert("내보낼 체결 내역이 없습니다.");
 
-  const headers = ["체결시각", "코인", "코인명", "봇ID", "모드", "주문구분", "회차", "체결단가(KRW)", "체결수량", "체결금액(KRW)", "실현손익(KRW)", "수익률(%)", "체결사유"];
+  const headers = ["체결시각", "종목", "종목명", "봇ID", "모드", "주문구분", "회차", "체결단가", "체결수량", "체결금액", "실현손익", "수익률(%)", "체결사유"];
   const rows = trades.map(t => [
     `"${t.time || ''}"`,
     `"${t.coin || ''}"`,
@@ -1749,7 +1656,7 @@ function exportTradesToCsv() {
     `"${t.action || ''}"`,
     t.turn || 0,
     t.price || 0,
-    Number(t.units || 0).toFixed(8),
+    Number(t.units || 0).toFixed(4),
     t.amountKrw || 0,
     t.pnlKrw || 0,
     t.returnPct || 0,
@@ -1762,7 +1669,7 @@ function exportTradesToCsv() {
   const a = document.createElement("a");
   const now = new Date().toISOString().slice(0, 19).replace(/[-:T]/g, "");
   a.href = url;
-  a.download = `bithumb_bot_trade_journal_${now}.csv`;
+  a.download = `namuh_bot_trade_journal_${now}.csv`;
   document.body.appendChild(a);
   a.click();
   document.body.removeChild(a);
@@ -1844,13 +1751,13 @@ async function boot() {
     }
     catch (e) { alert(e.message); }
   };
-  $("testKeyBtn").onclick = () => keyAction(false);
-  $("saveKeyBtn").onclick = () => keyAction(true);
-  $("copyIpBtn").onclick = () => {
+  if ($("testKeyBtn")) $("testKeyBtn").onclick = () => keyAction(false);
+  if ($("saveKeyBtn")) $("saveKeyBtn").onclick = () => keyAction(true);
+  if ($("copyIpBtn")) $("copyIpBtn").onclick = () => {
     const ip = $("egressIp").textContent.trim();
     if (!/^\d{1,3}(\.\d{1,3}){3}$/.test(ip)) return alert("등록할 IP 를 아직 확인하지 못했습니다.");
     navigator.clipboard.writeText(ip).then(() => alert(`IP ${ip} 복사 완료`))
-      .catch(() => prompt("아래 IP 를 복사해 빗썸에 등록하세요:", ip));
+      .catch(() => prompt("아래 IP 를 복사해 등록하세요:", ip));
   };
 
   // 나무증권 UI 및 키 바인딩
@@ -1881,7 +1788,7 @@ async function boot() {
     if (tab.dataset.panel === "panel-muma") loadMuma();
     if (tab.dataset.panel === "panel-scalper") loadScalper();
     if (tab.dataset.panel === "panel-pead") loadPead();
-    if (tab.dataset.panel === "panel-account") { loadAccount(); loadNamuhAccount(); loadEgressIp(); }
+    if (tab.dataset.panel === "panel-account") { loadNamuhAccount(); }
   });
 
   if ($("refreshMumaBtn")) $("refreshMumaBtn").onclick = () => loadMuma();
@@ -1922,7 +1829,7 @@ async function boot() {
   if ($("usMarketPill")) $("usMarketPill").onclick = () => loadUsMarketStatus();
   if ($("macroGearPill")) $("macroGearPill").onclick = () => loadMacroRegime();
 
-  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadAccount(), loadNamuhAccount(), loadUsMarketStatus(), loadMacroRegime()]);
+  await Promise.allSettled([loadPrices(), loadBots(), loadTradeHistory(), loadNamuhAccount(), loadUsMarketStatus(), loadMacroRegime()]);
   timers.push(
     setInterval(loadPrices, 10000),
     setInterval(loadBots, 8000),

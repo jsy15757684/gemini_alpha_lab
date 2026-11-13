@@ -61,14 +61,14 @@ def check(name, ok, detail=""):
 
 # 실제 봇 루프를 돌린다. 판단 로직을 테스트가 재구현하면 '내 이해' 를
 # 검증할 뿐 배포된 코드를 검증하지 못한다. 시세·환율 공급만 바꿔 끼운다.
-from services import bithumb, fx                 # noqa: E402
+from services import namuh, fx                 # noqa: E402
 
 _MARKET = {"price": 1380.0, "fx": 1382.0, "fxStale": False}
 
 
 def _fake_price(coin):
     if _MARKET["price"] is None:
-        raise bithumb.BithumbError("시세 없음 (시험)")
+        raise RuntimeError("시세 없음 (시험)")
     return _MARKET["price"]
 
 
@@ -99,8 +99,13 @@ def _fake_fx():
     return v["rate"], v["error"]
 
 
-bithumb.get_price = _fake_price
-bithumb.get_candles = _fake_candles
+namuh.get_price = _fake_price
+namuh.get_candles = _fake_candles
+namuh.NamuhAccount.get_price = lambda self, coin: _fake_price(coin)
+namuh.NamuhAccount.get_candles = lambda self, coin, interval, limit=200: _fake_candles(coin, interval, limit=limit)
+namuh.market_session = lambda: {"open": True}
+from services import market_schedule
+market_schedule.get_us_market_status = lambda: {"isOpen": True, "statusText": "미국 정규장 운영 중"}
 fx.get_official_fx_rate = _fake_fx
 fx.get_official_fx = _fake_fx_info
 trader.PRICE_POLL_SEC = 0.2          # 시험을 빠르게
@@ -141,7 +146,7 @@ print("── 라오어 무한매수 (raoer_infinite) · 실제 봇 루프 ─�
 #   4) 분할수 소진 시 쿼터매도 방어 + 회차 롤백
 # splitCount 는 코드가 최소 5로 교정한다(strategy.py). 시험도 5를 쓴다.
 RP = {"strategyType": "raoer_infinite", "splitCount": 5, "targetProfitPct": 10.0,
-      "quarterCutPct": 25.0, "raoerUseAi": False, "feePct": 0.04}
+      "quarterCutPct": 25.0, "raoerUseAi": False, "feePct": 0.04, "locMode": "single"}
 
 
 def run_raoer(price, cash=400_000.0, params=None, ticks=6):

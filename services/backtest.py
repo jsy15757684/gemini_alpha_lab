@@ -12,12 +12,15 @@
 """
 
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from services import bithumb
 from services.strategy import Decision, Position, StrategyParams, compute_indicators, decide
 
 logger = logging.getLogger(__name__)
+
+
+class BacktestError(Exception):
+    pass
 
 
 def _trend_of(bars: List[Dict[str, Any]], i: int, p) -> str:
@@ -53,12 +56,12 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
     """
     p = StrategyParams.from_dict(params)
     if candles is None:
-        candles = bithumb.get_candles(coin, interval, limit=200)
+        raise BacktestError("백테스트를 실행하려면 candles 가 필요합니다.")
     bars = compute_indicators(candles, p)
 
     warmup = p.warmup()
     if len(bars) <= warmup + 2:
-        raise bithumb.BithumbError(
+        raise BacktestError(
             f"캔들이 부족합니다 (필요 {warmup + 3}개, 확보 {len(bars)}개). "
             f"이동평균 기간을 줄이거나 더 짧은 간격을 쓰세요.")
 
@@ -66,7 +69,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
     lo = warmup + int(span * max(0.0, min(1.0, start_frac)))
     hi = warmup + int(span * max(0.0, min(1.0, end_frac)))
     if hi - lo < 3:
-        raise bithumb.BithumbError("지정한 구간의 캔들이 너무 적습니다.")
+        raise BacktestError("지정한 구간의 캔들이 너무 적습니다.")
     warmup = lo
 
     cash = float(initial_krw)
@@ -256,7 +259,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
     bench_return = (bench_value - initial_krw) / initial_krw * 100
 
     return {
-        "coin": bithumb.normalize_coin(coin),
+        "coin": coin.upper().strip(),
         "interval": interval,
         "params": p.to_dict(),
         "currency": "KRW",
@@ -277,7 +280,7 @@ def run(coin: str, interval: str = "1h", params: Dict[str, Any] = None,
         "candleCount": hi - lo,
         "trades": trades[-50:],
         "equityCurve": equity,
-        "dataSource": "bithumb-candles",
+        "dataSource": "candles",
         "note": ("익절·손절은 캔들의 고가/저가로 캔들 내 도달을 판정합니다(한 캔들에서 "
                  "둘 다 닿으면 손절 우선). 진입과 RSI 청산은 종가 체결, 수수료 반영, "
                  "슬리피지 미반영 가정입니다. 실전 성과는 이보다 나쁠 수 있습니다."),
