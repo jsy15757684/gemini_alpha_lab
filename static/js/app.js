@@ -1279,14 +1279,7 @@ function toggleStrategyUI() {
 
 async function loadAccount() {}
 async function loadEgressIp() {}
-
 async function keyAction(save) {}
-  } catch (e) {
-    setAlert($("keyResult"), e.message);
-  } finally {
-    btn.disabled = false;
-  }
-}
 
 // ───────── 미국 증시 운영 시간 & 스케줄 ─────────
 

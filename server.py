@@ -277,11 +277,22 @@ def coins():
 @app.get("/api/prices")
 def prices():
     """미국 ETF 종목 현재가."""
+    if roles.ROLE == "crypto":
+        try:
+            w = worker_client.get_json("/api/namuh/prices", timeout=15)
+            return {"prices": [
+                {"coin": r.get("symbol") or r.get("coin"), "name": r.get("name", ""),
+                 "price": r.get("price"), "changePercent": r.get("changePercent"),
+                 **({"error": r["error"]} if "error" in r else {})}
+                for r in w.get("prices", [])
+            ]}
+        except WorkerDown:
+            pass
     out = []
     for c, info in namuh.NAMUH_STOCKS.items():
         try:
-            p = namuh.get_price(c)
-            out.append({"coin": c, "name": info["name"], "price": p})
+            t = namuh_keystore.account.get_ticker(c)
+            out.append({"coin": c, "name": info["name"], "price": t["price"], "changePercent": t.get("changePercent")})
         except Exception as e:
             out.append({"coin": c, "name": info["name"], "error": str(e)})
     return {"prices": out}

@@ -710,6 +710,34 @@ class NamuhAccount:
             f"{sym} 현재가를 받지 못했습니다 (나무증권·공개시세 모두 실패). "
             f"추정치로 매매하지 않습니다.")
 
+    def get_ticker(self, ticker: str) -> Dict[str, Any]:
+        """미국 주식 현재가 및 등락률 요약 (시세 바·목록 표시용)."""
+        sym = ticker.upper().strip()
+        info = NAMUH_STOCKS.get(sym, {})
+        if self.configured:
+            try:
+                q = self.quote(sym)
+                return {
+                    "symbol": sym,
+                    "coin": sym,
+                    "name": info.get("name") or q.get("name") or sym,
+                    "price": q["price"],
+                    "changePercent": q.get("changePct", 0.0),
+                    "prevClose": q.get("prevClose", 0.0),
+                    "source": "namuh",
+                }
+            except NamuhError as e:
+                logger.warning(f"나무증권 틱 시세 실패, 공개 시세로 넘어갑니다 ({sym}): {e}")
+        p = self.get_price(sym)
+        return {
+            "symbol": sym,
+            "coin": sym,
+            "name": info.get("name") or sym,
+            "price": p,
+            "changePercent": None,
+            "source": "public",
+        }
+
     def get_candles(self, ticker: str, interval: str = "24h", limit: int = 100) -> List[Dict[str, Any]]:
         """미국 주식 캔들 데이터 수신."""
         sym = ticker.upper().strip()

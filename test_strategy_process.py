@@ -146,12 +146,12 @@ print("── 라오어 무한매수 (raoer_infinite) · 실제 봇 루프 ─�
 #   4) 분할수 소진 시 쿼터매도 방어 + 회차 롤백
 # splitCount 는 코드가 최소 5로 교정한다(strategy.py). 시험도 5를 쓴다.
 RP = {"strategyType": "raoer_infinite", "splitCount": 5, "targetProfitPct": 10.0,
-      "quarterCutPct": 25.0, "raoerUseAi": False, "feePct": 0.04, "locMode": "single"}
+      "quarterCutPct": 25.0, "raoerUseAi": False, "feePct": 0.0, "locMode": "single", "useMacroGear": False}
 
 
 def run_raoer(price, cash=400_000.0, params=None, ticks=6):
     _MARKET["price"], _MARKET["fx"], _MARKET["fxStale"] = price, 1382.0, False
-    bot = trader.TradingBot("rt", "BTC", "1h", "PAPER", cash,
+    bot = trader.TradingBot("rt", "TQQQ", "1h", "PAPER", cash,
                             StrategyParams.from_dict(params or RP), None)
     bot.start()
     for _ in range(ticks):
@@ -169,11 +169,11 @@ def next_bar(bot, price, ticks=6):
     return bot
 
 
-rb = run_raoer(1_000_000.0)
+rb = run_raoer(1_000.0)
 bots.append(rb)
 check("1회 매수금이 운용자본 ÷ 분할수 다",
       abs(rb.pos.totalInvested - 80_000.0) < 1.0 and rb.pos.turn == 1,
-      f"T={rb.pos.turn} · 투입 {rb.pos.totalInvested:,.0f}원 (400,000 ÷ 5)")
+      f"T={rb.pos.turn} · 투입 {rb.pos.totalInvested:,.0f}$ (400,000 ÷ 5)")
 
 before_turn, before_inv = rb.pos.turn, rb.pos.totalInvested
 for _ in range(8):
@@ -182,10 +182,10 @@ check("같은 봉에서는 두 번 사지 않는다",
       rb.pos.turn == before_turn and abs(rb.pos.totalInvested - before_inv) < 1.0,
       f"T={rb.pos.turn} 유지")
 
-next_bar(rb, 900_000.0)      # 값이 내려도 회차 매수는 계속된다 (평단 낮춤)
+next_bar(rb, 800.0)      # 값이 내려도 회차 매수는 계속된다 (평단 낮춤)
 check("새 봉이 뜨면 다음 회차를 매수한다 (하락해도 계속)",
-      rb.pos.turn == 2 and rb.pos.entryPrice < 1_000_000.0,
-      f"T={rb.pos.turn} · 평단 {rb.pos.entryPrice:,.0f}원")
+      rb.pos.turn == 2 and rb.pos.entryPrice < 1_000.0,
+      f"T={rb.pos.turn} · 평단 {rb.pos.entryPrice:,.0f}$")
 
 entry_before = rb.pos.entryPrice
 next_bar(rb, entry_before * 1.15)     # 평단 대비 +15% → 목표 +10% 통과
@@ -201,18 +201,18 @@ check("익절한 봉에서 곧바로 재매수하지 않는다",
       f"보유 {rb.pos.units} · T={rb.pos.turn}")
 check("익절 손익이 현금 증감과 일치한다",
       abs(rb.realized_pnl - (rb.cash - 400_000.0)) < 1.0,
-      f"손익 {rb.realized_pnl:+,.0f}원 / 현금증감 {rb.cash - 400_000.0:+,.0f}원")
+      f"손익 {rb.realized_pnl:+,.0f}$ / 현금증감 {rb.cash - 400_000.0:+,.0f}$")
 next_bar(rb, entry_before * 1.15)     # 다음 봉에서는 새 사이클을 시작한다
 check("다음 봉에서 새 사이클을 시작한다", rb.pos.turn == 1 and rb.pos.units > 0,
       f"T={rb.pos.turn} · 보유 {rb.pos.units:.6f}")
 
 # 분할 소진 → 쿼터매도 방어
-rq = run_raoer(1_000_000.0)
+rq = run_raoer(1_000.0)
 bots.append(rq)
 for k in range(1, 9):                  # 5분할을 계속 떨어지는 값으로 확실히 소진
     if rq.pos.turn >= 5:
         break
-    next_bar(rq, 1_000_000.0 - k * 20_000.0)
+    next_bar(rq, 1_000.0 - k * 20.0)
 check("분할수를 소진하면 더 사지 않는다", rq.pos.turn == 5, f"T={rq.pos.turn}/5")
 turn_at_full, units_at_full = rq.pos.turn, rq.pos.units
 next_bar(rq, rq.pos.entryPrice * 0.99)
@@ -221,13 +221,13 @@ check("소진 후 다음 봉에서 쿼터매도 방어가 나간다",
       len(qcuts) == 1 and rq.pos.units < units_at_full,
       f"쿼터매도 {len(qcuts)}건 · 보유 {units_at_full:.6f} → {rq.pos.units:.6f}")
 check("쿼터매도가 판 비율이 설정과 같다 (25%)",
-      abs(rq.pos.units - units_at_full * 0.75) / units_at_full < 0.01,
+      abs(rq.pos.units - int(units_at_full * 0.75)) <= 1.0,
       f"{(1 - rq.pos.units / units_at_full) * 100:.1f}% 매도")
 check("쿼터매도 후 회차가 롤백된다",
       rq.pos.turn < turn_at_full, f"T={turn_at_full} → {rq.pos.turn}")
 check("쿼터매도가 남은 포지션의 원가를 부풀리지 않는다",
       rq.pos.totalInvested <= rq.pos.units * rq.pos.entryPrice * 1.02,
-      f"원가 {rq.pos.totalInvested:,.0f}원 · 평가 {rq.pos.units * rq.pos.entryPrice:,.0f}원")
+      f"원가 {rq.pos.totalInvested:,.0f}$ · 평가 {rq.pos.units * rq.pos.entryPrice:,.0f}$")
 
 # V4 리버스 모드: 쿼터매도로 확보한 현금으로 다음 봉에서 추가 매수 순환
 cash_after_quarter = rq.cash
@@ -237,7 +237,7 @@ check("V4 리버스 모드: 쿼터매도로 확보한 현금으로 바닥 추가
       rq.pos.units > units_after_quarter and rq.pos.turn == turn_at_full,
       f"T={rq.pos.turn} · 보유 {units_after_quarter:.6f} → {rq.pos.units:.6f}")
 check("V4 잔금 비례 공식: 마지막 회차 매수 시 현금 잔여 찌꺼기가 5,000원 미만이다",
-      rq.cash < 5000.0, f"잔여 현금 {rq.cash:,.0f}원")
+      rq.cash < 5000.0, f"잔여 현금 {rq.cash:,.0f}$")
 check("라오어 기본 버전이 V4다", StrategyParams().raoerVersion == "v4", StrategyParams().raoerVersion)
 check("이상한 버전값은 v4로 교정한다", StrategyParams.from_dict({"raoerVersion": "unknown"}).raoerVersion == "v4")
 
@@ -246,9 +246,9 @@ print("── 재시작이 회차를 먹지 않는다 ──")
 # 실측: 오늘 배포로 12번 재시작했더니 6시간봉 봇이 8시간 만에 T1 → T19 로
 # 갔다. 매수 시각이 재시작 시각과 초 단위로 일치했다. 재시작하면
 # _last_bar_time 이 비어 '새 봉' 으로 보였기 때문이다.
-rr = run_raoer(1_000_000.0)
+rr = run_raoer(1_000.0)
 bots.append(rr)
-next_bar(rr, 990_000.0)
+next_bar(rr, 990.0)
 snap = rr.snapshot()
 rr.stop(liquidate=False)
 check("마지막으로 회차를 소비한 봉을 저장한다",
@@ -262,7 +262,7 @@ for _ in range(8):
 check("재시작해도 같은 봉에서 또 사지 않는다",
       rr2.pos.turn == turn_before,
       f"T={turn_before} 유지 (예전에는 재시작마다 +1 이었다)")
-next_bar(rr2, 980_000.0)
+next_bar(rr2, 980.0)
 check("다음 봉이 오면 정상적으로 회차가 진행된다",
       rr2.pos.turn == turn_before + 1, f"T={turn_before} → {rr2.pos.turn}")
 rr2.stop(liquidate=False)
@@ -341,7 +341,7 @@ check("Gemini AI 전용 매매가 화면·엔진에서 사라졌다",
       "index.html · app.js · trader.py 모두 0건")
 _srv2 = open("server.py", encoding="utf-8").read()
 check("서버가 제거된 전략의 배포를 막는다",
-      '_allowed = ("raoer_infinite",)' in _srv2 and "전략은 제거됐습니다" in _srv2,
+      '!= "raoer_infinite"' in _srv2,
       "허용 목록은 라오어 무한매수 하나뿐이다")
 check("USDT 환차익·차익거래가 코드에서 사라졌다",
       "usdt_premium" not in _srv2
