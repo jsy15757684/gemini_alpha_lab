@@ -70,28 +70,32 @@ class ScalpParams:
     maxDayStops: int = 2          # 하루 손절 이 횟수면 그날 신규 진입 끝 (0 = 끔)
     maxDayLossPct: float = 1.0    # 하루 실현 손실이 시드의 이 %면 그날 신규 진입 끝 (0 = 끔)
     # ── 진입 기법 모드 & 추가 스킬 (하나씩 켜고 끌 수 있다) ──
-    # 기본 VWAP_ORB (2026-11-08): HYBRID_PRO 는 09:00 부터 옛 시초가 +0.5% 돌파가 섞여, 초반 진입이 수익이 안 났던
-    # 예전 방식과 거의 같았다. 새 기법(VWAP 눌림 · 5분 고가 돌파)만 보려고 기본을 바꿨다. 화면에서 고를 수 있다.
-    entryMode: str = "VWAP_ORB"   # 진입 기법: HYBRID_PRO · VWAP_ORB · VWAP_PULLBACK · ORB_5M · OPEN_BREAK
-    timeStopOn: bool = True       # ② 타임컷: 산 뒤 timeStopSec 안에 +timeStopPct 를 못 찍으면 판다
-    timeStopSec: float = 60.0     #   2026-11-08: 30초 · +1.5% → 60초 · +0.8%. 산 뒤 평균 최대 상승이 +0.36% 라
-    timeStopPct: float = 0.8      #   18건 중 15건이 타임컷으로 끝나 ⑤ 본전선 · ⑦ 추세 홀딩이 일할 기회가 없었다
-    imbalanceOn: bool = True      # ③ 호가 불균형: 총매도잔량 ÷ 총매수잔량 ≥ imbalanceMin 일 때만 산다
+    # 기본 ORB_5M + 타임컷 해제 (2026-11-23 실측 개편):
+    #   · 60초 타임컷이 전체 매매의 81% 를 호가 스프레드+세금 확정 손실로 끊어내고 있었음 → 기본 해제(False)
+    #   · 그림자 D/E 실측에서 유일하게 높은 손익비를 낸 09:05 개장 5분 고가 돌파(ORB_5M)를 기본 기법으로 전환
+    #   · 매도벽 2배(imbalanceOn)는 호가창이 무거운 대형주만 골라내어 탄력을 떨어뜨리므로 기본 해제(False)
+    entryMode: str = "ORB_5M"     # 진입 기법: ORB_5M · VWAP_ORB · VWAP_PULLBACK · HYBRID_PRO · OPEN_BREAK
+    timeStopOn: bool = False      # ② 타임컷: 기본 해제 (켜면 timeStopSec 안에 +timeStopPct 못 찍을 때 매도)
+    timeStopSec: float = 180.0    #   수동으로 켤 때도 최소 3분(180초) 여유 부여
+    timeStopPct: float = 0.6
+    imbalanceOn: bool = False     # ③ 호가 불균형: 기본 해제 (매도벽이 두꺼운 대형주 역선택 방지)
     imbalanceMin: float = 2.0
     vwapFilterOn: bool = True     # ④ VWAP 정배열·윗꼬리 필터: 현재가 ≥ VWAP 이고 윗꼬리 ≤ maxWickRatio 일 때만 산다
     maxWickRatio: float = 0.45    #   당일 (고가−현재가)÷(고가−시가) 상한 (피뢰침 고점 매도 폭탄 제외)
     pullbackBouncePct: float = 0.3  # VWAP 눌림 뒤 재돌파 기준 (+0.3%)
+    pullbackMaxPct: float = 0.85  # VWAP 눌림 재돌파 상한 (+0.85% 초과 시 이미 날아간 고점 추격매수로 보고 차단)
     breakevenOn: bool = True      # ⑤ 본전 보존선 잠금: +breakevenPct 도달 또는 1차 익절 뒤 손절선을 본전 위로 격상
-    breakevenPct: float = 1.2     #   매수가 대비 +1.2% 이상 오르면 수수료 포함 본전가(floor) 자동 설정
+    breakevenPct: float = 1.0     #   매수가 대비 +1.0% 이상 오르면 수수료 포함 본전가(floor) 자동 설정
     breakevenBufferPct: float = 0.15  # 보존선에 더하는 호가 차이 몫 — 팔 때는 매수1호가에 붙어 비용만 넣으면 0.1~0.2% 손실
-    pyramidOn: bool = True        # ⑥ 불타기: +pyramidPct 를 넘고 거래량이 몰리면 처음 수량의 pyramidAddPct% 를 더 산다
+    pyramidOn: bool = False       # ⑥ 불타기: 기본 해제 (평단 상승으로 인한 본전선 조기 이탈 방지)
     pyramidPct: float = 1.5       #   그 뒤 평단(비용 포함) 아래로 내려오면 전량 — 수익 보존선
     pyramidAddPct: float = 30.0
     pyramidVolX: float = 2.0      #   직전 몇 초 거래 속도 ≥ 개장 이후 평균 속도 × 이 배수
     trendHoldOn: bool = True      # ⑦ 대장주 추세 홀딩: 09:30 에 수익권 & VWAP 위면 15:15 까지 트레일링으로 추세 극대화
     trendHoldMinPct: float = 0.5  #   09:30 추세 홀딩 전환 최소 순수익률(%)
     trendClose: str = "15:15"     #   장중 추세 홀딩 종목 최종 강제 청산 시각
-    paramsV2: bool = True         # 2026-11-08 기본값 변경(기법 · 타임컷)을 옛 저장분에 한 번만 적용했다는 표시
+    paramsV2: bool = True
+    paramsV3: bool = True         # 2026-11-23 실측 개편(ORB_5M · 타임컷 해제 · 호가불균형 해제 · 본전선 1.0%) 적용 표시
     gapMinPct: float = 1.5        # 선정: 동시호가 예상 갭 하한 (원본 MIN_GAP_UP_PCT)
     gapMaxPct: float = 7.0        # 선정: 상한 (원본 MAX_GAP_UP_PCT)
     minExpTurnoverEok: float = 0.5
@@ -103,10 +107,17 @@ class ScalpParams:
         for k, v in raw.items():
             if hasattr(p, k) and v is not None:
                 setattr(p, k, type(getattr(p, k))(v))
-        if raw and "paramsV2" not in raw:
-            # 옛 저장분: 기본 기법 · 타임컷 기준을 새 기본으로 한 번만 바꾼다 (켜고 끈 스킬은 그대로)
-            p.entryMode, p.timeStopSec, p.timeStopPct = cls.entryMode, cls.timeStopSec, cls.timeStopPct
-            p.paramsV2 = True
+        if raw and "paramsV3" not in raw:
+            # 2026-11-23 실측 기반 엔진 수술: 기존 저장분을 새 기본값으로 한 번 마이그레이션
+            p.entryMode = cls.entryMode
+            p.timeStopOn = cls.timeStopOn
+            p.timeStopSec = cls.timeStopSec
+            p.timeStopPct = cls.timeStopPct
+            p.imbalanceOn = cls.imbalanceOn
+            p.pyramidOn = cls.pyramidOn
+            p.breakevenPct = cls.breakevenPct
+            p.pullbackMaxPct = cls.pullbackMaxPct
+            p.paramsV3 = True
         p.maxStocks = max(1, min(10, p.maxStocks))
         return p
 
@@ -232,20 +243,21 @@ def update_signal_state(q: Dict[str, Any], st: Dict[str, Any], now: datetime,
                         bounce_pct: float = 0.3) -> None:
     """실제 매매용 종목별 장중 상태(VWAP 눌림 여부 · 09:05 개장 5분 고가)를 갱신한다.
 
-    눌림은 'VWAP 위로 +bounce_pct% 넘게 올랐다가(armed) VWAP 까지 내려온 것' 만 센다.
-    개장 직후에는 VWAP ≈ 현재가라, 그냥 'VWAP 근처' 를 세면 첫 시세에서 모든 종목이 터치로 잡히고
-    눌림 없이 오른 종목도 09:03 에 '눌림 반등' 으로 샀다 (2026-11-08 점검).
+    눌림은 '09:03 이후 VWAP 위로 +bounce_pct% 넘게 올랐다가(armed) VWAP 까지 내려온 것' 만 센다.
+    09:03 이전(09:00~09:02) 개장 직후 노이즈에서 찍힌 touched 가 09:03:00 정각에 이미 급등한 종목을
+    고점 추격매수하는 버그를 막기 위해, VWAP 눌림 상태는 09:03 이후부터만 기록하고 터치 시각을 함께 남긴다.
     """
     code = q.get("code") or ""
     px, vw = q.get("price") or 0, q.get("vwap") or 0
     if not code or px <= 0:
         return
-    if vw > 0:
+    if vw > 0 and now >= _at(now, (9, 3, 0)):
         armed = st.setdefault("armed", {})
         if px >= vw * (1 + bounce_pct / 100.0):
             armed[code] = True
-        elif armed.get(code) and px <= vw * 1.001:
+        elif armed.get(code) and px <= vw * 1.0015:
             st.setdefault("touched", {})[code] = True
+            st.setdefault("touchedAt", {})[code] = now.timestamp()
     if now >= _at(now, (9, 5, 0)):
         st.setdefault("orHigh", {}).setdefault(code, q.get("high") or px)
 
@@ -260,19 +272,23 @@ def evaluate_entry_signal(q: Dict[str, Any], st: Dict[str, Any], now: datetime, 
     if o <= 0 or px <= 0 or chg > p.maxChangePct:
         return "", []
 
-    mode = (p.entryMode or "HYBRID_PRO").upper()
+    mode = (p.entryMode or "ORB_5M").upper()
     if mode not in ENTRY_MODES:
-        mode = "HYBRID_PRO"
+        mode = "ORB_5M"
 
-    # 1) 주도주 VWAP 첫 눌림목 지지 후 재돌파 (09:03 이후 — 추격매수 방지 · 손익비 극대화)
+    # 1) 주도주 VWAP 첫 눌림목 지지 후 재돌파 (09:03 이후 — 눌림 터치 직후 120초 이내 & +0.3~+0.85% 신선한 반등만 허용)
     if mode in ("HYBRID_PRO", "VWAP_ORB", "VWAP_PULLBACK") and now >= _at(now, (9, 3, 0)) and vw > 0:
-        if st.get("touched", {}).get(code) and px >= vw * (1 + p.pullbackBouncePct / 100.0) and px > o:
-            return f"VWAP {vw:,.0f}원 눌림 지지 후 +{(px / vw - 1) * 100:.2f}% 재돌파", ["VWAP눌림반등"]
+        touched_at = st.get("touchedAt", {}).get(code) or 0
+        vw_diff_pct = (px / vw - 1.0) * 100.0
+        fresh_touch = (not touched_at) or (now.timestamp() - touched_at <= 120.0)
+        if (st.get("touched", {}).get(code) and fresh_touch
+                and p.pullbackBouncePct <= vw_diff_pct <= p.pullbackMaxPct and px > o):
+            return f"VWAP {vw:,.0f}원 눌림 지지 후 +{vw_diff_pct:.2f}% 재돌파", ["VWAP눌림반등"]
 
-    # 2) 09:05 개장 5분 고가(ORB) 돌파 (그림자 A · D · E 와 같은 진입 신호)
+    # 2) 09:05 개장 5분 고가(ORB) 돌파 (그림자 D · E 실측 최고 수익 기법 · 5분 고가 대비 +1.2% 이내 신선한 돌파만)
     if mode in ("HYBRID_PRO", "VWAP_ORB", "ORB_5M") and now >= _at(now, (9, 5, 0)):
         orh = st.get("orHigh", {}).get(code) or 0
-        if orh > 0 and px > orh and px > o and (vw <= 0 or px >= vw):
+        if orh > 0 and orh < px <= orh * 1.012 and px > o and (vw <= 0 or px >= vw):
             return f"09:05 개장 5분 고가 {orh:,}원 돌파", ["5분고가돌파"]
 
     # 3) 시초가 돌파 (HYBRID_PRO 에서는 VWAP 정배열·무윗꼬리 필터와 결합)

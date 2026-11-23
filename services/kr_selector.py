@@ -130,9 +130,13 @@ def _sweep(acc, rows: List[Dict[str, Any]], budget: float, p: SelectParams, dead
                                   key=lambda j: -j["score"])[:10]}
 
 
-def affordable(cands: List[Dict[str, Any]], budget: float) -> List[Dict[str, Any]]:
-    # 전일 종가로 먼저 거른다 — 살 수 없는 종목에 호출을 쓰지 않는다. 시가총액 큰 순.
-    pool = [c for c in cands if not c.get("prevClose") or c["prevClose"] * 1.01 <= budget]
+def affordable(cands: List[Dict[str, Any]], budget: float, max_cap_eok: int = 150_000) -> List[Dict[str, Any]]:
+    # 전일 종가로 먼저 거른다 — 살 수 없는 종목에 호출을 쓰지 않는다.
+    # 시가총액 상한(기본 15조 원)을 넘어가는 무거운 초대형주(삼성전자·SK하이닉스·LG화학·삼성SDI 등)는
+    # 장초반 호가 슬리피지와 거래세를 이길 단기 탄력이 부족하므로 스캘핑 후보에서 제외한다.
+    pool = [c for c in cands
+            if (not c.get("prevClose") or c["prevClose"] * 1.01 <= budget)
+            and (not max_cap_eok or int(c.get("capEok") or 0) <= max_cap_eok)]
     return sorted(pool, key=lambda c: -int(c.get("capEok") or 0))
 
 

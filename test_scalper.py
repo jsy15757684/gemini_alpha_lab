@@ -56,8 +56,9 @@ def orig():
 
 
 def classic(x):
-    """스킬 동작 시험용 — 시가 돌파 진입 · 옛 타임컷(30초 · +1.5%). 2026-11-08 기본값 변경과 상관없이 같은 장면을 본다."""
+    """스킬 동작 시험용 — 시가 돌파 진입 · 옛 타임컷(30초 · +1.5%). 기본값 변경과 상관없이 같은 장면을 본다."""
     x.params.entryMode, x.params.timeStopSec, x.params.timeStopPct = "OPEN_BREAK", 30.0, 1.5
+    x.params.timeStopOn = x.params.imbalanceOn = x.params.pyramidOn = True
     return x
 krx_master.load = lambda: [{"code": "000001"}]
 krx_master.candidates = lambda rows: rows
@@ -212,8 +213,10 @@ check("서버 중단으로 남은 미청산분은 손익 0 으로 정리한다 (
       not s9.positions and s9.trades[-1]["kind"] == "STALE" and s9.trades[-1]["pnl"] == 0, f"{s9.trades[-1]['pnl']}")
 SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
 
-print("── 추가 스킬 (② 30초 타임컷 · ③ 호가 불균형 · ⑥ 불타기) ──")
-check("새 봇은 세 스킬이 켜진 채 시작한다", (lambda p: p.timeStopOn and p.imbalanceOn and p.pyramidOn)(S.ScalpParams()), "")
+print("── 추가 스킬 (② 타임컷 · ③ 호가 불균형 · ⑥ 불타기) ──")
+check("새 봇은 실측 기반 개편으로 타임컷·불균형·불타기는 꺼지고 VWAP·본전선·추세홀딩이 켜진 채 시작한다",
+      (lambda p: not p.timeStopOn and not p.imbalanceOn and not p.pyramidOn
+       and p.vwapFilterOn and p.breakevenOn and p.trendHoldOn and p.entryMode == "ORB_5M")(S.ScalpParams()), "")
 SEL["chosen"] = [{"code": "C1", "name": "C1", "gap": 3.0, "score": 1.0}]
 k1 = classic(S.Scalper(namuh_account=object()))
 k1.step(at(8, 50, 5, day=2)); k1.step(at(8, 57, 55, day=2))      # 2026-10-02 금
@@ -258,8 +261,9 @@ check("⑥ 불타기로 시드를 넘으면 더 사지 않는다", k3.positions[
 SEL["chosen"] = [{"code": "000001", "name": "가나", "gap": 3.1, "score": 2.0}]
 
 k4 = S.Scalper(namuh_account=object())
-k4.set_skills({"pyramidOn": False, "timeStopOn": None})
-check("스킬을 하나씩 끌 수 있다 (안 보낸 것은 그대로)", not k4.params.pyramidOn and k4.params.timeStopOn and k4.params.imbalanceOn, "")
+k4.set_skills({"pyramidOn": True, "timeStopOn": None, "breakevenOn": False})
+check("스킬을 하나씩 켜고 끌 수 있다 (안 보낸 것은 그대로)",
+      k4.params.pyramidOn and not k4.params.timeStopOn and not k4.params.breakevenOn, "")
 
 print("── 시세 오류 표시 ──")
 ke = S.Scalper(namuh_account=object())
@@ -359,8 +363,10 @@ check("④ 당일 윗꼬리 비율이 45%를 초과(피뢰침 캔들)하면 매�
 
 # 2) VWAP_PULLBACK 모드: VWAP 눌림 지지 후 +0.3% 재돌파 타점 검증
 sp.set_skills({"entryMode": "VWAP_PULLBACK"})
-Q["P1"] = dict(mk(10_010, hoga="09:02:00", name="P1"), vwap=10_010, high=10_040)  # VWAP 터치(눌림)
-sp.step(at(9, 2, day=15))
+Q["P1"] = dict(mk(10_045, hoga="09:03:05", name="P1"), vwap=10_010, high=10_050)  # 09:03 이후 VWAP 위로 +0.35% 상승(armed)
+sp.step(at(9, 3, 5, day=15))
+Q["P1"] = dict(mk(10_010, hoga="09:03:15", name="P1"), vwap=10_010, high=10_050)  # VWAP 터치(눌림)
+sp.step(at(9, 3, 15, day=15))
 Q["P1"] = dict(mk(10_045, hoga="09:03:30", name="P1", ask=10_050), vwap=10_010, high=10_050)  # 시가 +0.45%(<0.5%)지만 VWAP 대비 +0.35% 재돌파
 sp.step(at(9, 3, 30, day=15))
 check("VWAP_PULLBACK: 당일 VWAP 눌림 지지 후 +0.3% 재돌파 시 추격 없이 저점 매수한다",
@@ -378,6 +384,8 @@ check("VWAP_PULLBACK: 개장 직후 VWAP 과 같은 가격은 눌림이 아니�
 S.evaluate_entry_signal(vq(10_105, 10_110), vst, at(9, 4, day=15), vp)              # VWAP 위에 있다가 VWAP 으로 내려옴
 sig_pb, _ = S.evaluate_entry_signal(vq(10_160, 10_115), vst, at(9, 5, 30, day=15), vp)
 check("VWAP_PULLBACK: VWAP 위로 올랐다가 VWAP 까지 내려온 뒤 다시 오르면 산다", sig_pb != "", sig_pb)
+sig_chased, _ = S.evaluate_entry_signal(vq(10_300, 10_115), vst, at(9, 5, 45, day=15), vp)  # VWAP 대비 +1.83% (> 0.85% 상한)
+check("VWAP_PULLBACK: VWAP 대비 +0.85% 를 훌쩍 넘긴 고점 추격매수는 차단한다", sig_chased == "", sig_chased or "차단됨")
 
 # 3) ⑤ 본전 보존선(breakevenOn): +1.2% 도달 시 수수료 포함 본전가(floor) 잠금
 Q["P1"] = dict(mk(10_180, hoga="09:03:50", name="P1"), vwap=10_080, high=10_190)  # 매수가 10,050 대비 +1.29%
@@ -406,17 +414,17 @@ check("⑦ 15:15 장 마감 전 강제 청산으로 큰 추세 수익을 확정�
       "P1" not in sp.positions and sp.trades[-1]["kind"] == "FORCE" and sp.trades[-1]["pct"] > 5.0,
       f"수익률 {sp.trades[-1]['pct']:+.2f}% · 손익 {sp.trades[-1]['pnl']:+,}원")
 
-print("── 2026-11-08 기본값 조정 (기법 VWAP_ORB · 타임컷 60초 +0.8% · 본전선에 호가 차이) ──")
+print("── 2026-11-23 실측 기반 개편 (기법 ORB_5M · 타임컷 해제 · 호가불균형 해제 · 본전선 +1.0%) ──")
 np_ = S.ScalpParams()
-check("새 기본: 진입 기법 VWAP_ORB · 타임컷 60초 · +0.8%",
-      np_.entryMode == "VWAP_ORB" and np_.timeStopSec == 60.0 and np_.timeStopPct == 0.8, "")
-old = S.ScalpParams.from_dict({"entryMode": "HYBRID_PRO", "timeStopSec": 30.0, "timeStopPct": 1.5,
-                               "timeStopOn": False, "pyramidOn": False})
-check("옛 저장분은 기법 · 타임컷 기준만 한 번 새 기본으로 (켜고 끈 스킬은 그대로)",
-      old.entryMode == "VWAP_ORB" and old.timeStopSec == 60.0 and old.timeStopPct == 0.8
-      and not old.timeStopOn and not old.pyramidOn and old.paramsV2, "")
-mine = S.ScalpParams.from_dict({**asdict(np_), "entryMode": "ORB_5M", "timeStopSec": 45.0})
-check("바꾼 뒤 사용자가 고른 값은 다시 덮어쓰지 않는다", mine.entryMode == "ORB_5M" and mine.timeStopSec == 45.0, "")
+check("새 기본: 진입 기법 ORB_5M · 타임컷 해제 · 호가불균형 해제 · 본전선 1.0%",
+      np_.entryMode == "ORB_5M" and not np_.timeStopOn and not np_.imbalanceOn and np_.breakevenPct == 1.0, "")
+old = S.ScalpParams.from_dict({"entryMode": "VWAP_ORB", "timeStopSec": 60.0, "timeStopPct": 0.8,
+                               "timeStopOn": True, "imbalanceOn": True, "pyramidOn": True, "paramsV2": True})
+check("옛 저장분(paramsV2)은 V3 개편 기본값(ORB_5M · 타임컷/불균형/불타기 해제)으로 한 번 마이그레이션된다",
+      old.entryMode == "ORB_5M" and not old.timeStopOn and not old.imbalanceOn and not old.pyramidOn and old.paramsV3, "")
+mine = S.ScalpParams.from_dict({**asdict(np_), "entryMode": "VWAP_ORB", "timeStopSec": 45.0, "timeStopOn": True})
+check("바꾼 뒤 사용자가 고른 값은 다시 덮어쓰지 않는다",
+      mine.entryMode == "VWAP_ORB" and mine.timeStopSec == 45.0 and mine.timeStopOn, "")
 check("본전 보존선 = 매수가 × (1 + 비용 + 호가 차이 0.15%)",
       np_.breakeven_floor(10_000) == round(10_000 * (1 + (np_.costPct + 0.15) / 100), 2), f"{np_.breakeven_floor(10_000):,.2f}원")
 
