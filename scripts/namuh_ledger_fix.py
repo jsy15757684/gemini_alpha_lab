@@ -12,6 +12,11 @@
     sudo -u bithumb venv/bin/python scripts/namuh_ledger_fix.py SOXL --remove-buy 2026-10-30            # 미리 보기
     sudo -u bithumb venv/bin/python scripts/namuh_ledger_fix.py SOXL --remove-buy 2026-10-30 --apply
     sudo systemctl start bithumb-namuh
+
+봇 밖에서(앱에서 직접) 판 봇 몫을 반영하고 봇을 지울 때 — 2026-11-23 SOXL 3주 @ $42.72:
+
+    sudo -u bithumb venv/bin/python scripts/namuh_ledger_fix.py SOXL --external-sell 3 42.72 2026-11-23 --delete
+    sudo -u bithumb venv/bin/python scripts/namuh_ledger_fix.py SOXL --external-sell 3 42.72 2026-11-23 --delete --apply
 """
 
 import os
@@ -43,7 +48,88 @@ def reverse_buy(rec: dict, row: dict) -> dict:
     return {k: (before[k], rec[k]) for k in before}
 
 
+def book_external_sell(rec: dict, qty: float, price: float, date: str) -> dict:
+    """앱에서 직접 판 봇 몫을 장부에 매도로 적는다 (실현손익 · 현금). 체결 행을 돌려준다."""
+    fee = float((rec.get("params") or {}).get("feePct") or 0.0) / 100.0
+    units = float(rec.get("units") or 0.0)
+    if qty <= 0 or qty > units + 1e-9:
+        raise ValueError(f"매도 수량 {qty:g} 가 봇 장부 {units:g}주를 넘습니다")
+    proceeds = qty * price * (1 - fee)
+    cost = float(rec.get("totalInvested") or 0.0) * (qty / units) if units else 0.0
+    pnl = proceeds - cost
+    entry = float(rec.get("entryPrice") or 0.0)
+    rec["units"] = round(units - qty, 8)
+    rec["totalInvested"] = round(float(rec.get("totalInvested") or 0.0) - cost, 6)
+    rec["cash"] = round(float(rec.get("cash") or 0.0) + proceeds, 6)
+    rec["realizedPnl"] = round(float(rec.get("realizedPnl") or 0.0) + pnl, 6)
+    rec["totalTrades"] = int(rec.get("totalTrades") or 0) + 1
+    rec["winningTrades"] = int(rec.get("winningTrades") or 0) + (1 if pnl > 0 else 0)
+    if rec["units"] <= 1e-9:
+        rec.update(units=0.0, entryPrice=0.0, peakPrice=0.0, turn=0, totalInvested=0.0)
+    row = {"id": f"t-ext-{rec.get('botId')}-{date}", "botId": rec.get("botId"), "coin": rec.get("coin"),
+           "coinName": rec.get("coin"), "broker": "namuh", "currency": "USD", "mode": rec.get("mode"),
+           "action": "SELL", "turn": rec.get("turn", 0), "time": f"{date} 00:00:00", "price": round(price, 2),
+           "units": qty, "amountKrw": round(proceeds, 2), "pnlKrw": round(pnl, 2),
+           "returnPct": round((price / entry - 1) * 100, 2) if entry else 0.0,
+           "reason": "앱에서 직접 매도한 봇 몫을 장부에 반영 (봇 주문 아님)"}
+    rec["tradeHistory"] = [row] + list(rec.get("tradeHistory") or [])
+    return row
+
+
+def main_external(argv) -> int:
+    apply, delete = "--apply" in argv, "--delete" in argv
+    i = argv.index("--external-sell")
+    try:
+        coin, qty, price, date = argv[0].upper(), float(argv[i + 1]), float(argv[i + 2]), argv[i + 3]
+    except (IndexError, ValueError):
+        print(__doc__)
+        return 2
+    if namuh_to_excel.service_active():
+        print(f"❌ {namuh_to_excel.SERVICE} 가 돌고 있습니다. 먼저 'sudo systemctl stop {namuh_to_excel.SERVICE}' 로 멈추세요.")
+        return 1
+    path = botstore.namuh_store_file()
+    recs = read_records(path, "bots", "나무증권 봇 상태") or []
+    hits = [r for r in recs if r.get("coin") == coin and botstore.broker_of(r) == "namuh"]
+    if len(hits) != 1:
+        print(f"❌ {coin} 봇이 {len(hits)}개입니다 — 하나일 때만 고칩니다.")
+        return 1
+    rec = hits[0]
+    if rec.get("orderHold") or rec.get("inflightOrder") or rec.get("pendingOrders") or rec.get("sellOrder"):
+        print("❌ 결과를 모르는 주문 · 정산 전 LOC · 걸어 둔 매도가 있습니다. 정리된 뒤에 고치세요.")
+        return 1
+    before = (float(rec.get("units") or 0), float(rec.get("entryPrice") or 0), float(rec.get("cash") or 0))
+    try:
+        row = book_external_sell(rec, qty, price, date)
+    except ValueError as e:
+        print(f"❌ {e}")
+        return 1
+    print(f"{coin} ({rec.get('botId')}) {date} 직접 매도 {qty:g}주 @ ${price:,.2f} 반영")
+    print(f"  보유 {before[0]:g}주 (평단 ${before[1]:,.2f}) → {rec['units']:g}주 · 현금 ${before[2]:,.2f} → ${rec['cash']:,.2f}"
+          f" · 실현손익 {row['pnlKrw']:+,.2f}$ ({row['returnPct']:+.2f}%)")
+    if delete:
+        if rec["units"] > 1e-9:
+            print(f"❌ 반영 뒤에도 {rec['units']:g}주가 남아 봇을 지우지 않습니다.")
+            return 1
+        recs = [r for r in recs if r is not rec]
+        print("  봇 삭제 (체결 일지에는 이 매도가 남습니다)")
+    if not apply:
+        print("\n미리 보기입니다. 쓰려면 --apply 를 붙이세요.")
+        return 0
+    stamp = time.strftime("%Y%m%d%H%M%S")
+    shutil.copy2(path, f"{path}.before-fix-{stamp}")
+    if os.path.exists(TRADE_LOG):
+        shutil.copy2(TRADE_LOG, f"{TRADE_LOG}.before-fix-{stamp}")
+    write_records(path, "bots", recs)
+    log = read_records(TRADE_LOG, "trades", "체결 일지") or []
+    if not any(t.get("id") == row["id"] for t in log):
+        write_records(TRADE_LOG, "trades", [row] + log)
+    print(f"\n✅ 저장했습니다 (원본: *.before-fix-{stamp}). 'sudo systemctl start {namuh_to_excel.SERVICE}' 로 다시 띄우세요.")
+    return 0
+
+
 def main(argv) -> int:
+    if "--external-sell" in argv:
+        return main_external(argv)
     apply = "--apply" in argv
     args = [a for a in argv if not a.startswith("--")]
     if "--remove-buy" not in argv or len(args) != 2:
