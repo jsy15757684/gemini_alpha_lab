@@ -1,14 +1,17 @@
 #!/usr/bin/env python3
-"""크립토 / 나무증권 프로세스 분리를 실제 두 프로세스로 띄워 확인한다.
+"""화면 / 나무증권 프로세스 분리를 실제 두 프로세스로 띄워 확인한다.
+
+2026-11-13 v6.0.0 에서 빗썸(암호화폐) 봇을 기능째 뺐다. 화면 프로세스(APP_ROLE=crypto — 이름만 남았다)는
+이제 봇을 들지 않고, 저장 파일에 남은 옛 빗썸 봇 기록은 되살리지 않는다. 시험도 그 기준으로 바꿨다.
 
 임시 폴더에서만 돈다. .env 를 읽지 않고, 키 파일·토큰 파일·장부 경로를
 모두 임시 폴더로 돌린다. 봇은 PAPER · 미가동 상태로만 넣어 주문이 나갈
 길이 없다.
 
 보는 것
-  - 처음 뜰 때 나무증권 봇이 bots_namuh.json 으로 옮겨지고, 원래 파일에는
-    빗썸 봇만 남는다 (봇이 사라지거나 두 번 돌지 않는다)
-  - 화면(crypto)에서 두 쪽 봇이 모두 보인다
+  - 처음 뜰 때 나무증권 봇이 bots_namuh.json 으로 옮겨진다 (사라지거나 두 번 돌지 않는다)
+  - 옛 빗썸 봇 기록은 어느 프로세스도 되살리지 않는다
+  - 화면(crypto)에서 나무증권 봇이 보인다
   - 워커는 내부 토큰 없는 요청을 거절한다
   - 매매일지는 두 쪽을 합치되 같은 체결을 두 번 세지 않는다
   - 나무증권 경로(/api/namuh · /api/muma)는 워커로 넘어간다
@@ -120,8 +123,8 @@ try:
     print("── 장부 분리 ──")
     main_bots = read_records(os.path.join(sb, "bots.json"), "bots", "test") or []
     namuh_bots = read_records(os.path.join(sb, "bots_namuh.json"), "bots", "test") or []
-    check("bots.json 에는 빗썸 봇만 남는다", [b["botId"] for b in main_bots] == ["XRP-1-aaaaaa"],
-          f"{[b['botId'] for b in main_bots]}")
+    check("옛 빗썸 봇은 되살리지 않는다 (bots.json 에 나무증권 봇이 남지 않는다)",
+          "TQQQ-1-bbbbbb" not in [b["botId"] for b in main_bots], f"{[b['botId'] for b in main_bots]}")
     check("나무증권 봇은 bots_namuh.json 으로 옮겨진다", [b["botId"] for b in namuh_bots] == ["TQQQ-1-bbbbbb"],
           f"{[b['botId'] for b in namuh_bots]}")
     namuh_trades = read_records(os.path.join(sb, "trades_namuh.json"), "trades", "test") or []
@@ -168,7 +171,7 @@ try:
     check("로그인 없이 나무증권 경로를 넘기지 않는다", r.status_code == 401, f"HTTP {r.status_code}")
     lst = s.get(f"http://127.0.0.1:{cport}/api/bot/list", timeout=20).json()
     ids = sorted(b["botId"] for b in lst["bots"])
-    check("두 쪽 봇이 모두 보인다", ids == ["TQQQ-1-bbbbbb", "XRP-1-aaaaaa"], f"{ids}")
+    check("나무증권 봇만 보인다 (옛 빗썸 봇은 복원하지 않는다)", ids == ["TQQQ-1-bbbbbb"], f"{ids}")
     check("워커 오류 표시가 없다", "workerError" not in lst, lst.get("workerError", ""))
     tr = s.get(f"http://127.0.0.1:{cport}/api/bot/trades", timeout=20).json()
     tids = sorted(t["id"] for t in tr["trades"])
@@ -183,7 +186,7 @@ try:
     namuh_bots = read_records(os.path.join(sb, "bots_namuh.json"), "bots", "test") or []
     main_bots = read_records(os.path.join(sb, "bots.json"), "bots", "test") or []
     check("워커 장부에서 지워진다", namuh_bots == [], f"{len(namuh_bots)}개")
-    check("빗썸 장부는 그대로다", [b["botId"] for b in main_bots] == ["XRP-1-aaaaaa"], "")
+    check("화면 쪽 장부에 나무증권 봇이 다시 생기지 않는다", "TQQQ-1-bbbbbb" not in [b["botId"] for b in main_bots], "")
     r = s.post(f"http://127.0.0.1:{cport}/api/bot/delete", json={"botId": "NOPE-1"}, timeout=10)
     check("없는 봇은 404 (워커 응답을 그대로 전한다)", r.status_code == 404, f"HTTP {r.status_code}")
 
@@ -191,7 +194,7 @@ try:
     procs[1].terminate()
     procs[1].wait(10)
     lst = s.get(f"http://127.0.0.1:{cport}/api/bot/list", timeout=20).json()
-    check("화면과 빗썸 봇은 계속 보인다", [b["botId"] for b in lst["bots"]] == ["XRP-1-aaaaaa"], "")
+    check("화면은 계속 응답한다 (봇 목록은 비어 있음)", lst.get("bots") == [], f"{[b['botId'] for b in lst.get('bots', [])]}")
     check("워커가 꺼졌다고 알린다", "나무증권 프로세스" in (lst.get("workerError") or ""),
           (lst.get("workerError") or "")[:50])
     r = s.get(f"http://127.0.0.1:{cport}/api/namuh/market_status", timeout=10)
@@ -218,7 +221,7 @@ try:
     s2.headers.update({"X-Requested-With": "alpha-console"})
     s2.post(f"http://127.0.0.1:{aport}/api/auth/login", json={"password": PASSWORD}, timeout=5)
     ids = sorted(b["botId"] for b in s2.get(f"http://127.0.0.1:{aport}/api/bot/list", timeout=20).json()["bots"])
-    check("두 파일의 봇을 모두 복원한다", ids == ["SOXL-2-cccccc", "XRP-1-aaaaaa"], f"{ids}")
+    check("나눠 돌던 동안의 나무증권 봇을 복원한다 (옛 빗썸 봇은 빼고)", ids == ["SOXL-2-cccccc"], f"{ids}")
     tids = sorted(t["id"] for t in s2.get(f"http://127.0.0.1:{aport}/api/bot/trades", timeout=20).json()["trades"])
     check("나눠 돌던 동안의 체결도 일지에 보인다", "t-after-split" in tids and len(tids) == len(set(tids)), f"{tids}")
 finally:
