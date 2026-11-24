@@ -136,6 +136,19 @@ except trader.LiquidationFailed as e:
     ok = "결과를 모르는 주문" in str(e) and b3.bot_id in mgr.bots
 check("결과를 모르는 주문이 있는 봇은 지우지 않는다 (확인할 기록이 사라진다)", ok, "")
 
+print("── 재시작 복원은 나무증권 계정을 봇에 붙인다 ──")
+_acct = FakeAcct()
+_acct.get_balance = lambda fresh=False: {"qtyByTicker": {"TQQQ": 0.0}, "holdings": {}}
+_b0 = bot(_acct)
+botstore.save([_b0.snapshot()])
+_mgr = trader.BotManager()
+_mgr.restore(_acct)
+_rb = _mgr.bots.get(_b0.bot_id)
+check("BotManager.restore 가 봇에 나무증권 계정을 넘긴다 (2026-11-23: 계정 없이 떠 실주문이 모두 보류됐다)",
+      _rb is not None and _rb.namuh_account is _acct, f"{type(getattr(_rb, 'namuh_account', None)).__name__}")
+for _x in _mgr.bots.values():
+    _x.is_running = False
+
 print("── 주문을 보내던 중 재시작 ──")
 
 

@@ -2434,7 +2434,9 @@ class BotManager:
                 notes.append(f"[{r.get('botId')}] 국내 ORB 는 제거된 기능이라 복원하지 않았습니다.")
                 continue
             try:
-                bot = TradingBot.restore(r, namuh_account)
+                # 키워드로 넘긴다 — 두 번째 자리는 옛 빗썸 계정(account) 칸이라, 자리로 넘기면 나무증권 계정이
+                # 빗썸 칸에 들어가 봇이 계좌 없이 뜬다 (2026-11-23 재시작 뒤 실주문이 '키 미등록' 으로 전부 보류됐다)
+                bot = TradingBot.restore(r, namuh_account=namuh_account)
             except Exception as e:
                 logger.error(f"봇 복원 실패 {r.get('botId')}: {e}")
                 continue
